@@ -47,6 +47,14 @@
 - 不透明谓词、条件取反 + 分支交换、永不执行诱饵分支（`--cfg=low|medium|high`）。
 - **GOTO 状态机扁平化**（`--goto` / `--goto-cpx`）：函数体改写为 `while (1) { switch ($__s) { … } }`，支持嵌套与分块。
 
+### 语义等价变换（反静态模式匹配）
+用**类型安全、恒等保真**的重写打乱静态分析赖以匹配的代码形态（`--semantic`，强度 `--semantic-strength=1|2|3` 递增施加）：
+- **if/else 逆置 + 交换**：`if (C) T else E` ⇄ `if (!(C)) E else T`。
+- **德摩根律**：`!(A && B)` ⇄ `!A || !B`。
+- **三元逆置**：`C ? T : E` ⇄ `!C ? E : T`。
+- **for → while**：无 `continue` 的 `for` 改写为等价 `while`。
+- 刻意**排除** `a*2→a<<1`、`a+1→-~a` 等浮点 / 溢出不保真的「小聪明」改写；每轮结束 `php -l` 校验，失败自动回滚上一版本。
+
 ### 虚拟机保护（VM）
 把整段程序编译为**自定义字节码**，由内置解释器逐条解密执行（`--vm`）：
 - **模块链接**（`--vm-linker`）：命中清单的函数调用内联进同一 Program，产物无 `include`、无模块路径、调用关系无法静态还原。
@@ -61,9 +69,14 @@
 ### 加壳
 - GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`）。
 
+### 运行时垃圾与执行缠结（反删除剥离）
+- **运行时垃圾注入**（`--junk-runtime`，强度 `--junk-intensity=N`）：在真实语句间插入 `crc32` / `base64_decode` / `strrev` 等无副作用计算，稀释真实逻辑密度。
+- **执行缠结**（`--junk-tangle`）：让垃圾值**参与真实赋值**再以恒等式抵消——`$v = intdiv($v * $jt, $jt)`（整型保真）。一旦攻击者删掉 `$jt = ($k|1)` 这类垃圾定义行，缠结行退化为 `intdiv($v * null, null)`，运行即抛 `DivisionByZeroError` 自杀。垃圾从「可剔除的噪音」升级为「正确性的组成部分」，直接反制「删代码块就完事」的剥离式破解。
+
 ### 完整性防护
 - **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / 调试回溯。
 - **防 hook eval**（`--anti-hook`）：运行期探针验证 eval 真实生效，识别被 uopz / runkit 劫持。
+- **守卫内移藏匿**：反调试 / 防 hook 守卫置于 VM / EVAL / GZ 编码壳**最内层**，被后续壳裹入密文——攻击者剥离外层代码块时够不到它们；自校验 / 授权绑定因依赖 `__FILE__` 明文锚点，仍留在最外层。
 - **自校验防篡改**（`--anti-tamper`）：掩码自校验 + 分段哈希 + 总长校验 + shutdown 二次校验。
 - **授权绑定**（`--license-domain` / `--license-expire`）：域名绑定（仅 Web SAPI，支持泛子域）+ 有效期，默认关闭。
 
@@ -107,10 +120,12 @@ src/
 ```
 token 级（可逆、保语义）：标识符重命名 → 控制流(cfg/goto) → 数字/字符串编码 → 死代码/压缩
         ↓
-字符串级外壳（依次包裹，每步 php -l 校验，失败回滚）：
-  目标 PHP 版本壳 → 反调试探针 → VM 壳 → EVAL 多层壳 → GZ 壳
-  → 诱饵函数 → 文件头版权 → 防 hook eval 守卫 → 自校验防篡改 → 授权绑定守卫
+字符串级外壳（由内到外依次包裹，每步 php -l 校验，失败回滚）：
+  目标 PHP 版本壳 → 反调试探针 → 防 hook eval 守卫 → VM 壳 → EVAL 多层壳 → GZ 壳
+  → 诱饵函数 → 文件头版权 → 自校验防篡改 → 授权绑定守卫
         ↓
+  · 反调试 / 防 hook 位于编码壳最内层，被 VM/EVAL/GZ 裹入密文藏匿（删外层代码块够不到）
+  · 自校验 / 授权绑定依赖 __FILE__ 明文锚点，须留在最外层
 自校验防篡改基线 = 上述全部内容（含文件头注释），运行期读取自身文件即可校验
 ```
 
@@ -132,6 +147,10 @@ php entry.php --input=src/ --output=dist/ --salt=team-salt --manifest=dist/.obf-
 # 最强保护：VM + 一键加固 + 反检测
 php entry.php --input=app.php --output=app_obf.php --vm --vm-p8 \
     --str-xor --num-enc --anti-debug --anti-tamper --salt=team-salt
+
+# 语义等价变换 + 执行缠结（反静态模式匹配 / 反删除剥离）
+php entry.php --input=app.php --output=app_obf.php \
+    --semantic --semantic-strength=3 --junk-runtime --junk-tangle --salt=team-salt
 
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
