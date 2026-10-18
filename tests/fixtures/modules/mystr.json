@@ -1,0 +1,7 @@
+{
+  "name": "mystr",
+  "match": ["my_strlen"],
+  "entry": "mystr.php",
+  "replace": true,
+  "priority": 10
+}

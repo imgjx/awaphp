@@ -1,0 +1,350 @@
+<?php
+/**
+ * 自定义虚拟机操作码（VM Opcode Set）
+ *
+ * 这是一套与 PHP 语义无关的"自定义指令集"。用户源码在构建期被编译为这些 opcode
+ * 组成的字节码，运行期由 src/Vm/runtime.php 里的解释器逐条取指执行。
+ *
+ * 关键性质（与旧版 VM 壳的区别）：
+ *   - 旧版 VM 壳只是"把 PHP 语句 XOR 后逐条 eval"，解出来直接就是 PHP，等于没壳；
+ *   - 本版字节码是真正的自定义 ISA（栈式机 + 自定义 opcode 编号），
+ *     静态分析拿到的只是一串 opcode 序号与常量池，看不到任何 PHP 语句。
+ *
+ * 栈约定：所有运算数从操作数栈弹出 / 结果压回操作数栈。
+ * 变量：以名字（字符串）为单位存于当前帧的局部变量表，跨语句共享。
+ */
+
+declare(strict_types=1);
+
+final class VmOp
+{
+    // ---- 数据搬运 ----
+    public const PUSH_C    = 1;   // 操作数: constIdx  -> 压入常量池 constIdx
+    public const PUSH_V    = 2;   // 操作数: name      -> 压入局部变量 name 的值
+    public const POP_V     = 3;   // 操作数: name      -> 弹出栈顶写入局部变量 name
+    public const DUP       = 4;   // 复制栈顶
+    public const DROP      = 5;   // 丢弃栈顶
+    public const LOAD_THIS = 6;   // 压入当前 $this（方法上下文中才有效）
+    public const PUSH_NULL = 7;   // 压入 null
+
+    // ---- 算术 / 字符串 ----
+    public const ADD     = 10;    // +
+    public const SUB     = 11;    // -
+    public const MUL     = 12;    // *
+    public const DIV     = 13;    // /
+    public const MOD     = 14;    // %
+    public const POW     = 15;    // **
+    public const CONCAT  = 16;    // .
+    public const NEG     = 17;    // 一元 -
+    public const BW_NOT  = 18;    // ~
+
+    // ---- 位运算 ----
+    public const BW_AND = 20;     // &
+    public const BW_OR  = 21;     // |
+    public const BW_XOR = 22;     // ^
+    public const BW_SHL = 23;     // <<
+    public const BW_SHR = 24;     // >>
+
+    // ---- 比较 ----
+    public const EQ      = 30;    // ==
+    public const NE      = 31;    // !=
+    public const LT      = 32;    // <
+    public const GT      = 33;    // >
+    public const LE      = 34;    // <=
+    public const GE      = 35;    // >=
+    public const IDENT   = 36;    // ===
+    public const NIDENT  = 37;    // !==
+    public const SPACESHIP = 38;  // <=> 返回 -1/0/1
+
+    // ---- 逻辑 ----
+    public const BOOL_AND = 40;    // &&
+    public const BOOL_OR  = 41;    // ||
+    public const BOOL_NOT = 42;    // !
+
+    // ---- 控制流 ----
+    public const JMP  = 50;        // 操作数: offset（相对当前 pc 的有符号偏移）
+    public const JZ   = 51;        // 弹出 v，若为假则 pc += offset
+    public const JNZ  = 52;        // 弹出 v，若为真则 pc += offset
+    public const CALL = 53;        // 操作数: name, argc  -> 弹出 argc 个参数，调用函数
+    public const MECALL = 54;      // 操作数: argc        -> 栈[对象,参数...,方法名]：弹方法名、argc参数、对象
+    public const NEW  = 55;        // 操作数: class, argc -> 弹出 argc 参数，构造对象
+    public const PROPGET = 56;     // 操作数: prop -> 弹出对象，取属性
+    public const PROPSET = 57;     // 操作数: prop -> 弹出值、弹出对象，写属性
+    public const RET  = 58;        // 弹出返回值并返回当前帧
+    public const RET_VOID = 59;    // 返回 null
+    public const ECHO = 60;        // 弹出并输出
+    public const HALT = 61;        // 终止整个程序
+
+    // ---- 数组 / 容器 ----
+    public const ARRAY_MAKE  = 70; // 操作数: argc   -> 弹出 argc 元素，构造索引数组
+    public const ARRAY_KV    = 71; // 操作数: pairs  -> 弹出 2*pairs（值,键），构造关联数组
+    public const INDEX_GET   = 72; // 弹出 key、弹出 arr，按下标取
+    public const INDEX_SET   = 73; // 弹出 val、弹出 key、弹出 arr，写下标
+    public const COUNT       = 74; // 弹出 arr，压入 count()
+    public const ARRAY_PUSH  = 75; // 弹出 val、弹出 arr，执行 $arr[] = val（再压回 arr）
+
+    // ---- 变量自增自减 ----
+    public const PRE_INC  = 80;    // 操作数: name
+    public const PRE_DEC  = 81;    // 操作数: name
+    public const POST_INC = 82;    // 操作数: name -> 压入旧值后自增
+    public const POST_DEC = 83;    // 操作数: name -> 压入旧值后自减
+    public const CALL_VAR = 90;    // 操作数: argc -> 弹出 argc 参数 + 函数名（变量值），动态调用
+
+    // ---- 静态成员 / 语言构造 ----
+    public const SCALL   = 91;     // 操作数: class, method, argc -> 静态/类方法调用
+    public const SPROP   = 92;     // 操作数: class, prop -> 类常量 / 静态属性
+    public const ISSET_  = 93;     // 操作数: name, nkeys -> 栈上有 nkeys 个键，压入 isset() 结果
+    public const EMPTY_  = 94;     // 操作数: name, nkeys -> 压入 empty() 结果
+    public const UNSET_  = 95;     // 操作数: name, nkeys -> 删除变量或下标
+    public const EXIT_   = 96;     // 弹出值并 exit（等价于 PHP 的 exit($v)）
+    public const EXIT_VOID = 97;   // exit
+    public const PRINT_  = 98;     // 弹出并输出，压回 1（print 语义）
+
+    // ---- 间接执行（_PHPRUN 指令模块）----
+    // 弹出 $argc 个参数（最后一个为待执行 PHP 源码串），经"间接 eval"执行。
+    // 仅当源码出现 _PHPRUN() 时才会出现在已用操作码集合中 —— 否则本 handler 根本不生成。
+    public const PHPRUN   = 99;    // 操作数: argc -> 弹出 argc 参数，间接 eval 最后一个
+
+    // ---- 类型转型（(int)/(float)/(string)/(bool)/(array)/(object)）----
+    public const CAST_INT    = 100; // 弹出栈顶，压入 (int) 转型结果
+    public const CAST_FLOAT  = 101; // (float)/(double)/(real)
+    public const CAST_STRING = 102; // (string)
+    public const CAST_BOOL   = 103; // (bool)/(boolean)
+    public const CAST_ARRAY  = 104; // (array)
+    public const CAST_OBJECT = 105; // (object)
+
+    // ---- 超全局变量桥接（$GLOBALS 直通真实 PHP 全局符号表）----
+    // VM 帧变量表与真实 PHP 全局符号表是两套存储；$GLOBALS 的读写必须穿透到
+    // 真实 $GLOBALS，否则函数/方法帧内读不到全局（如编码混淆层下发的密钥串）。
+    public const PUSH_GLOBALS = 106; // 压入真实 $GLOBALS 数组（副本，仅供读取）
+    public const GLOBALS_SET  = 107; // 弹出 val、key、容器副本，执行 $GLOBALS[$key] = val
+    public const GLOBAL_REF   = 108; // 操作数: 变量名（含$）——把帧槽位绑定为共享全局帧的引用
+    public const DEFINE       = 109; // 操作数: 常量名——define(name, 弹出值)
+    public const CONST_FETCH  = 110; // 操作数: 常量名——运行期取常量（const 语句声明的用户常量）
+
+    // ---- include / require（构建期内嵌 + 运行期真实包含两路）----
+    // INCLUDE_EMBED：构建期已把目标文件编译进 embeds 表的路径走此路。
+    //   操作数: embedId(i), once(i) —— 在当前帧变量表（共享，PHP 包含作用域语义）中
+    //   执行嵌入段，压入被包含文件的 return 值；once=1 且已执行过则直接压 true。
+    public const INCLUDE_EMBED = 111;
+    // INCLUDE_RT：运行期才能确定路径（$var / 插值串 / 函数调用等）。
+    //   操作数: flags(i)（bit0=once, bit1=require）—— 弹路径，运行期做真实
+    //   include/require，经"帧变量表 ⇄ 真实局部变量"桥接保住作用域语义。
+    public const INCLUDE_RT    = 112;
+
+    // ---- 语句级回退 / 原生间接调用 ----
+    // EVAL_STMT：编译器对【单条语句】的兜底——编译该语句时遇到不支持的结构，
+    //   不整文件回退，而是把该语句的源码文本压栈并由本指令在运行期 eval 执行，
+    //   经"帧变量表 ⇄ 真实局部变量"快照差分桥接保住作用域（与 INCLUDE_RT 同构）。
+    //   操作数: 无（源码串弹栈）。
+    public const EVAL_STMT   = 113;
+    // CALL_NATIVE：原生函数间接调用。操作数: nativeIdx(i), argc(i), refMask(i)。
+    //   函数名不进字节码常量池，而是索引构建期生成的"原生函数名表"（natTbl），
+    //   静态分析看不到 strlen/array_map 等调用点；运行期查表后交还原生分发
+    //   （保留高阶函数回调包装语义）。refMask 标记按引用传参的位置（sort/usort/
+    //   array_push/preg_match 等），对应实参由 PUSH_REF 压入引用句柄。
+    public const CALL_NATIVE = 114;
+    // PUSH_REF：压入【引用句柄】（非值）——句柄为 ['__vmref__', 帧变量名]，
+    //   仅供 CALL_NATIVE 的 refMask 位置消费：运行期把该句柄绑定为帧变量的
+    //   真实引用后传给原生函数，从而支持 sort()/usort()/array_push() 等
+    //   第一参 by-ref 的原生函数对 VM 帧变量的原地修改。
+    public const PUSH_REF    = 115;  // 操作数: name -> 压入变量 name 的引用句柄
+
+    // ---- 参数化指令（ISA 精简：合并同构族，sub-id 指明具体子操作；见 src/Vm/VmIsa.php）----
+    // 旧 opcode 常量全部保留为「内部 sub-id」，此处仅新增 6 个能覆盖 41 条旧码的顶层码。
+    public const BINOP        = 200; // 操作数: sub -> 二元/比较/逻辑运算（见 VmIsa::BIN）
+    public const UNOP         = 201; // 操作数: sub -> 一元运算（见 VmIsa::UN）
+    public const CAST_OP      = 202; // 操作数: sub -> 类型转型（见 VmIsa::CAST）
+    public const INC_OP       = 203; // 操作数: sub, name -> 自增/自减（见 VmIsa::INC）
+    public const VAROP        = 204; // 操作数: sub, name, nkeys -> isset/empty/unset（见 VmIsa::VAR）
+    public const ARRAY_BUILD  = 205; // 操作数: sub, n -> ARRAY_MAKE / ARRAY_KV（见 VmIsa::ARR）
+
+    // ---- 控制流平坦化 / 跳转表 ----
+    public const JMP_B   = 62;     // 操作数: blockId -> 经跳转表做绝对跳转
+    public const SET_ST  = 63;     // 操作数: state -> 写入当前帧状态寄存器
+    public const DISPATCH = 64;    // 读取状态寄存器，经调度表跳到对应基本块（无匹配则结束）
+
+    /**
+     * 操作数规格表：opcode => 各操作数类型。
+     * 类型：'i' 整数（变长 zigzag）/ 'n' 名字表索引 / 'c' 常量（带类型标记）
+     *
+     * 序列化器（src/Vm/Serializer.php）据此为每个操作数写类型标记，
+     * 运行期解码器据此还原。新增 opcode 必须同步登记，否则会漏编码操作数。
+     */
+    public const OPERANDS = [
+        self::PUSH_C    => ['c'],
+        self::PUSH_V    => ['n'],
+        self::POP_V     => ['n'],
+        self::DUP       => [],
+        self::DROP      => [],
+        self::LOAD_THIS => [],
+        self::PUSH_NULL => [],
+        self::ADD       => [], self::SUB  => [], self::MUL  => [], self::DIV  => [],
+        self::MOD       => [], self::POW  => [], self::CONCAT => [], self::NEG => [],
+        self::BW_NOT    => [],
+        self::BW_AND    => [], self::BW_OR => [], self::BW_XOR => [],
+        self::BW_SHL    => [], self::BW_SHR => [],
+        self::EQ        => [], self::NE    => [], self::LT    => [], self::GT  => [],
+        self::LE        => [], self::GE    => [], self::IDENT => [], self::NIDENT => [],
+        self::SPACESHIP => [],
+        self::BOOL_AND  => [], self::BOOL_OR => [], self::BOOL_NOT => [],
+        self::JMP       => ['i'], self::JZ  => ['i'], self::JNZ => ['i'],
+        self::CALL      => ['n', 'i'],
+        self::MECALL    => ['i'],
+        self::NEW       => ['n', 'i'],
+        self::PROPGET   => ['n'], self::PROPSET => ['n'],
+        self::RET       => [], self::RET_VOID => [], self::ECHO => [], self::HALT => [],
+        self::ARRAY_MAKE => ['i'], self::ARRAY_KV => ['i'],
+        self::INDEX_GET => [], self::INDEX_SET => [], self::COUNT => [], self::ARRAY_PUSH => [],
+        self::PRE_INC   => ['n'], self::PRE_DEC => ['n'],
+        self::POST_INC  => ['n'], self::POST_DEC => ['n'],
+        self::CALL_VAR  => ['i'],
+        self::JMP_B     => ['i'], self::SET_ST => ['i'], self::DISPATCH => [],
+        self::SCALL     => ['n', 'n', 'i'],
+        self::SPROP     => ['n', 'n'],
+        self::ISSET_    => ['n', 'i'],
+        self::EMPTY_    => ['n', 'i'],
+        self::UNSET_    => ['n', 'i'],
+        self::EXIT_     => [], self::EXIT_VOID => [], self::PRINT_ => [],
+        self::PHPRUN    => ['i'],
+        self::CAST_INT => [], self::CAST_FLOAT => [], self::CAST_STRING => [],
+        self::CAST_BOOL => [], self::CAST_ARRAY => [], self::CAST_OBJECT => [],
+        self::PUSH_GLOBALS => [], self::GLOBALS_SET => [],
+        self::GLOBAL_REF   => ['n'],
+        self::DEFINE       => ['n'],
+        self::CONST_FETCH  => ['n'],
+        self::INCLUDE_EMBED => ['i', 'i'],
+        self::INCLUDE_RT    => ['i'],
+        self::EVAL_STMT     => [],
+        self::CALL_NATIVE   => ['i', 'i', 'i'],
+        self::PUSH_REF      => ['n'],
+    ];
+
+    /** opcode => 可读名（仅调试用） */
+    public const NAMES = [
+        self::PUSH_C    => 'PUSH_C',
+        self::PUSH_V    => 'PUSH_V',
+        self::POP_V     => 'POP_V',
+        self::DUP       => 'DUP',
+        self::DROP      => 'DROP',
+        self::LOAD_THIS => 'LOAD_THIS',
+        self::PUSH_NULL => 'PUSH_NULL',
+        self::ADD       => 'ADD',
+        self::SUB       => 'SUB',
+        self::MUL       => 'MUL',
+        self::DIV       => 'DIV',
+        self::MOD       => 'MOD',
+        self::POW       => 'POW',
+        self::CONCAT    => 'CONCAT',
+        self::NEG       => 'NEG',
+        self::BW_NOT    => 'BW_NOT',
+        self::BW_AND    => 'BW_AND',
+        self::BW_OR     => 'BW_OR',
+        self::BW_XOR    => 'BW_XOR',
+        self::BW_SHL    => 'BW_SHL',
+        self::BW_SHR    => 'BW_SHR',
+        self::EQ        => 'EQ',
+        self::NE        => 'NE',
+        self::LT        => 'LT',
+        self::GT        => 'GT',
+        self::LE        => 'LE',
+        self::GE        => 'GE',
+        self::IDENT     => 'IDENT',
+        self::NIDENT    => 'NIDENT',
+        self::SPACESHIP => 'SPACESHIP',
+        self::BOOL_AND  => 'BOOL_AND',
+        self::BOOL_OR   => 'BOOL_OR',
+        self::BOOL_NOT  => 'BOOL_NOT',
+        self::JMP       => 'JMP',
+        self::JZ        => 'JZ',
+        self::JNZ       => 'JNZ',
+        self::CALL      => 'CALL',
+        self::MECALL    => 'MECALL',
+        self::NEW       => 'NEW',
+        self::PROPGET   => 'PROPGET',
+        self::PROPSET   => 'PROPSET',
+        self::RET       => 'RET',
+        self::RET_VOID  => 'RET_VOID',
+        self::ECHO      => 'ECHO',
+        self::HALT      => 'HALT',
+        self::ARRAY_MAKE => 'ARRAY_MAKE',
+        self::ARRAY_KV   => 'ARRAY_KV',
+        self::INDEX_GET  => 'INDEX_GET',
+        self::INDEX_SET  => 'INDEX_SET',
+        self::COUNT      => 'COUNT',
+        self::ARRAY_PUSH  => 'ARRAY_PUSH',
+        self::PRE_INC    => 'PRE_INC',
+        self::PRE_DEC    => 'PRE_DEC',
+        self::POST_INC   => 'POST_INC',
+        self::POST_DEC   => 'POST_DEC',
+        self::CALL_VAR   => 'CALL_VAR',
+        self::JMP_B      => 'JMP_B',
+        self::SET_ST     => 'SET_ST',
+        self::DISPATCH   => 'DISPATCH',
+        self::SCALL      => 'SCALL',
+        self::SPROP      => 'SPROP',
+        self::ISSET_     => 'ISSET',
+        self::EMPTY_     => 'EMPTY',
+        self::UNSET_     => 'UNSET',
+        self::EXIT_      => 'EXIT',
+        self::EXIT_VOID  => 'EXIT_VOID',
+        self::PRINT_     => 'PRINT',
+        self::PHPRUN     => 'PHPRUN',
+        self::CAST_INT    => 'CAST_INT',
+        self::CAST_FLOAT  => 'CAST_FLOAT',
+        self::CAST_STRING => 'CAST_STRING',
+        self::CAST_BOOL   => 'CAST_BOOL',
+        self::CAST_ARRAY  => 'CAST_ARRAY',
+        self::CAST_OBJECT => 'CAST_OBJECT',
+        self::PUSH_GLOBALS => 'PUSH_GLOBALS',
+        self::GLOBALS_SET  => 'GLOBALS_SET',
+        self::GLOBAL_REF   => 'GLOBAL_REF',
+        self::DEFINE       => 'DEFINE',
+        self::CONST_FETCH  => 'CONST_FETCH',
+        self::INCLUDE_EMBED => 'INCLUDE_EMBED',
+        self::INCLUDE_RT    => 'INCLUDE_RT',
+        self::EVAL_STMT     => 'EVAL_STMT',
+        self::CALL_NATIVE   => 'CALL_NATIVE',
+        self::PUSH_REF      => 'PUSH_REF',
+        self::BINOP         => 'BINOP',
+        self::UNOP          => 'UNOP',
+        self::CAST_OP       => 'CAST_OP',
+        self::INC_OP        => 'INC_OP',
+        self::VAROP         => 'VAROP',
+        self::ARRAY_BUILD   => 'ARRAY_BUILD',
+    ];
+
+    /** 基本块终结指令（其后不再顺序执行） */
+    public const TERMINATORS = [
+        self::RET => true, self::RET_VOID => true, self::HALT => true,
+        self::JMP => true, self::JMP_B => true, self::DISPATCH => true,
+        self::EXIT_ => true, self::EXIT_VOID => true,
+    ];
+
+    /** 条件跳转指令（有 fall-through 与 taken 两个出口） */
+    public const COND_JUMPS = [self::JZ => true, self::JNZ => true];
+
+    /** 指令的跳转目标（相对偏移）所在的操作数下标 */
+    public const JUMP_OPERAND_INDEX = [
+        self::JMP => 1, self::JZ => 1, self::JNZ => 1, self::JMP_B => 1,
+    ];
+
+    public static function isTerminator(int $op): bool
+    {
+        return isset(self::TERMINATORS[$op]);
+    }
+
+    public static function isCondJump(int $op): bool
+    {
+        return isset(self::COND_JUMPS[$op]);
+    }
+
+    /**
+     * 相对跳转指令的绝对目标下标。
+     * 运行期取指后 pc 已 +1，故目标 = 指令下标 + 1 + 偏移。
+     */
+    public static function relTarget(int $idx, int $offset): int
+    {
+        return $idx + 1 + $offset;
+    }
+}

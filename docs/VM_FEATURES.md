@@ -1,0 +1,300 @@
+# 自定义虚拟机（VM）特性支持文档
+
+> 适用模块：`src/Vm/`（编译器 `Compiler.php` + 动态运行时生成器 `RuntimeGenerator.php` + 操作码 `Op.php`）
+> 接入点：`src/ControlFlow/VirtualMachine::wrap()`（自定义 ISA 路径，失败优雅回退）
+
+---
+
+## 1. 这是什么
+
+本 VM **不是**把 PHP 语句 XOR 后逐条 `eval` 的旧壳，而是一套**真正的自定义指令集（ISA）**：
+
+- 栈式机（stack machine），操作数从操作数栈弹出 / 结果压回；
+- 用户源码在**构建期**被编译成一组自定义 opcode 序号 + 常量池；
+- 运行期由**每次构建动态生成**的专属解释器**逐条取指、解码、执行**；
+- 破解者拿到的只有被打乱编号的 opcode 与一段分片加密的字节码，**看不到任何 PHP 语句，也看不到固定特征**。
+
+数据流：`PHP 源码 → VmCompiler::compile() → ['consts','funcs','classes','main'] → VmRuntimeGenerator 动态生成专属 runtime + 二进制字节码容器（varint + 操作数类型标记 + gzip + 分片独立加密）→ 自包含产物（内联 runtime）解释执行`。
+
+与旧版"一份固定 `runtime.php` + 明文操作码"的本质区别：新生成器在**每次构建**产出**每文件一份专属运行时**——操作码编号随机化、随机变量名、switch case 顺序打乱并注入诱饵、字节码分片独立加密。两个文件生成的解释器互不相同，通用特征库（按固定 `1=ADD`）直接失效。
+
+---
+
+## 2. 支持的语法特性
+
+| 类别 | 支持的写法 | 说明 / 备注 |
+|------|-----------|-------------|
+| **变量** | `$x = 1; $x; $arr[$k]; $this->prop` | 标量、数组、对象属性均可读写 |
+| **复合赋值** | `$x += 1; $x -= ; *= /= %= .=` | 仅**简单变量**支持；数组/属性的复合赋值会回退 |
+| **数组** | `[1,2,3]`、`array(1,2)`、`['k'=>v]`、`$a[]=v`、`$a[$k]=v`、`$a[$k]` | 索引数组 / 关联数组 / push / 下标读写 |
+| **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
+| **函数** | `function f($a,$b){ return ...; }`、递归、`$f()` 变量函数 | 每次调用获得**独立变量帧**，无跨函数污染 |
+| **内建 PHP 函数** | `strlen()`、`substr()`、`implode()`、`range()`… 任意 `function_exists` | 经 `call_user_func_array` 桥接；含引用返回/特殊签名的函数按 PHP 默认语义 |
+| **类** | `class C { public $p=...; function m(){...} }` | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链 |
+| **对象** | `new C()`、`new $cls()`、`$obj->m()`、`$obj->p` | 对象以 `\stdClass` + 元信息存储，行为等价 |
+| **循环** | `while` / `for` / `foreach`（索引 + 键值 `as $k=>$v`） | `break` / `continue` 均支持，跳转到正确位置 |
+| **条件** | `if / elseif / else`、三元 `?:`、短三元 `?:`（elvis）、`match` 表达式 | `match($subj){ 1,2=>"a", default=>"b" }`；多分支共享同一条件；支持嵌套 `match`、默认分支、表达式结果 |
+| **算术** | `+ - * / % **`、一元负 `-`、字符串连接 `.` | — |
+| **位运算** | `~ & \| ^ << >>` | `&` 与 `&&`、`<<` 与 `<` 已正确区分 |
+| **比较** | `== != === !== < > <= >=`、**太空船 `<=>`** | `<=>` 返回 -1/0/1，已支持 |
+| **逻辑** | `&& || !`、**空合并 `??`** | `??` 等价于 `isset(lhs) ? lhs : rhs` |
+| **自增/自减** | `++$x` / `--$x`（前缀）、`x++` / `x--`（后缀） | 仅**简单变量**；复杂表达式上的后缀 `++` 会回退 |
+| **常量** | `true / false / null`、整型/浮点/字符串字面量（含 `\n \t \r \xNN \u{NNNN}` 转义）、编译期常量（`PHP_VERSION` 等） | 双引号插值**支持**（`"a{$x}b"`、`"{$arr['k']}"`、`"${x}"` 三种形态均已修复） |
+| **输出** | `echo $a, $b;` | 多参数逗号分隔 |
+
+### 2.1 一个能跑的示例（`tests/fixtures/complex_app.php`）
+
+包含：递归（斐波那契）、素数判定（while）、阶乘（for）、类与属性、方法调用链、foreach 键值遍历、位运算、字符串统计、三元 + 循环求和。在 VM 模式下**输出与原生 `require` 完全一致**（见第 4 节基准）。
+
+---
+
+## 3. 不支持 / 会优雅回退的特性
+
+当遇到下列语法时，编译器抛出 `VmUnsupported`；上层的 `VirtualMachine::wrap()` 捕获后**保留原始代码、不破坏构建**（即该文件整体退回普通加壳，而非用 VM 包裹）。
+
+| 特性 | 回退原因 |
+|------|---------|
+| `interface` / `trait` | 未实现类层级 |
+| 引用参数 `function f(&$x)` | 值语义 VM 无法表达引用 |
+| 可变参数 `function f(...$args)` | 未实现 |
+| 静态调用 `C::m()` / `self::` / `static::` | 未实现 `T_DOUBLE_COLON` |
+| 匿名函数 `function(){}` / 箭头函数 `fn()=>` | 外层 VM 壳直接跳过整段（等价语法：命名函数 / 函数调用可正常 VM 化） |
+| `$this->prop[]` 属性数组追加 | 不支持属性 push |
+| 数组/属性复合赋值 `$a['k'] += x`、`$this->p *= 2` | 仅简单变量支持 `+=` 等 |
+| 复杂表达式上的后缀 `++/--`（如 `$a[0]++`） | 仅简单变量支持 |
+| 顶层 `return` / `exit` / `break` / `continue`（裸顶层） | 会破坏解释循环，外层 VM 壳跳过整段 |
+| `do-while` / `switch` / `try-catch` / `goto` / `throw` | 未实现对应指令 |
+
+> **编写可被 VM 包裹的代码时的建议**：函数/方法体保持"直来直去"——用 `for/foreach/while + if/三元`，避免 `static` 调用、引用参数、匿名函数、双引号插值；属性数组追加改用局部临时数组。
+
+---
+
+## 4. 性能损耗（实测基准）
+
+测试驱动：`tests/vm_run.php`（编译 → 打包自包含产物 → 运行 → 与原生对比 + 多轮取中位数）。
+
+| 场景 | 原生 | VM 模式 | 时间损耗 | 峰值内存 | 内存损耗 |
+|------|------|---------|---------|---------|---------|
+| 复杂业务（`complex_app.php`） | 0.063 ms | 0.95 ms | **≈15×** | 2.0 MB | 1.0× |
+| 重型循环（1,000,000 次迭代，`perf_heavy.php`） | 22 ms | 1885 ms | **≈85×** | 2.0 MB → 26 MB | **≈13×** |
+
+**解读：**
+- 时间开销主要来自"逐条 opcode 的大 `switch` + 操作数栈进出"——每条 PHP 语句被放大成数条字节码指令，再经解释器执行，典型 **10–85×**；
+- 轻量逻辑（少量语句）开销约 15×，紧循环被放大到 80×+；
+- 内存：解释器本身（运行时闭包、栈数组）带来额外常驻开销，重负载下可达十余倍；
+- **产物体积**：自包含产物 = 运行时(~13KB) + 编码字节码。对 3KB 复杂源码膨胀约 **4.7×**；对 230B 微型源码膨胀约 **57×**（运行时占比主导）。
+
+> VM 模式的定位是**强混淆 / 抗静态分析**，不是性能优化。它适合对安全性敏感、对运行速度不敏感的分发包。若某段代码性能关键且 VM 不支持，编译器会自动回退普通加壳。
+
+---
+
+## 5. 使用与集成
+
+```php
+use VmRuntimeGenerator;
+use Salt;
+
+// 单文件 VM 化（构建期，动态生成专属 runtime + 分片加密字节码）
+$gen = new VmRuntimeGenerator(new Salt('可选固定种子，保证可复现'));
+$artifact = $gen->buildArtifact($sourceWithoutPhpTags, [
+    'flatten'      => true,   // 或 'stateMachine' => true（二者互斥，取其一）
+    'chunks'      => 3,      // 字节码分片数，每片独立密钥
+])['php'];                    // 自包含 PHP 源码，可直接运行
+
+// 仅运行并取标准输出（测试 / 校验）：
+$out = $gen->execute($sourceWithoutPhpTags, ['stateMachine' => true, 'chunks' => 3]);
+
+// 经 VirtualMachine::wrap() 接入混淆流水线：
+//   - 优先编译为自定义 ISA；
+//   - 抛 VmUnsupported 时优雅回退，保留原代码，不破坏产物。
+```
+
+测试与回归：
+- `tests/vm_gen_probe.php` — **81 个用例 × 4 模式**（flat_off/flat_on/sm_off/sm_on 组合）全 PASS，覆盖循环/条件/数组/运算符/递归/类/break-continue/三元/`match`/`<=>`/`??`/双引号插值/内置函数等；
+- `tests/vm_run.php <php文件> [轮数]` — 任意 PHP 的"能否运行 + 性能损耗"自动化度量；
+- demo 构建：`php build_vm_demo.php` 生成 `vm_demo/`（含 `example_source.php` 与扁平化 / 状态机两套自包含产物，输出与原生一致）。
+
+---
+
+## 6. 模块链接（ModuleLinker，P6）
+
+独立功能模块以 JSON 清单管理在一个目录下。VM 构建时若主程序源码在【函数调用位】调用了命中清单的函数，则把该模块对应的 PHP 代码**自动引入并一起编译进同一个 Program** —— 源码里的"调用模块函数"变成"调用同一 Program 内的联函数"，原始路径上的间接调用指令消失，调用关系无从分析：
+
+1. 产物中**没有模块文件路径、没有 include 指令**，只有"某函数体内部的字节码 + 一个普通 `CALL`"；
+2. `__FILE__` / `realpath` / `debug_backtrace` 里都不会出现模块文件名；
+3. 模块代码经过符号表重命名（NameStyle 别名）+ 字符串/数字编码后再进 VM，与主程序融合度极高。
+
+### 6.1 清单格式（`modules/xxx.json`）
+
+```json
+{
+  "name": "strlen",
+  "match": ["strlen", "mb_strlen"],        // 精确名匹配（函数调用位）
+  "match_regex": ["/^strlen/", "/^mb_/"],  // 正则匹配（可选）
+  "entry": "strlen.php",                   // 模块入口文件（相对本 json 所在目录）
+  "deps": ["strlen_helper.php"],           // 依赖文件，一并打包（可选）
+  "replace": true,                          // 命中后把源码调用替换为内联模块（默认 true）
+  "priority": 10,                           // 多清单命中时的优先级（大者优先）
+  "target": "my_strlen"                     // 可选：调用点改指向模块内的该函数
+}
+```
+
+### 6.2 加载与命中扫描
+
+- 构建期 `ModuleLinker::loadDir($dir)` 载入目录下全部 `*.json`（按文件名排序，保证 `priority` 同级时取先加载者）。
+- 主程序源码经 `matchSource()` 扫描**函数调用位**（下一个有效 token 是左括号，且非 `->` / `::` / `new` / `function` / `use` 等位置的 `T_STRING`）：先精确 `match`，再 `match_regex`；多清单命中取 `priority` 高者。
+- 返回 `matchedName => spec`，作为后续链接的种子。
+
+### 6.3 传递式依赖链接
+
+主源码命中的模块，其源码里可能调用**另一个未在主源码出现的模块**（如 `cross_run` → `mathx_double`）。`linkModules()` 以主源码的命中点为种子，递归发现并链接被引用模块（`linkRecursive`），**依赖方优先编译** —— 保证被调用方先进入 `linkedAlias`，调用点才会走 `CALL` 而非 `CALL_NATIVE`（否则运行期在真实函数表里找不到而致命）。
+
+### 6.4 别名机制与合并
+
+- 模块顶层函数以 `'_ml' . substr(hash('sha256', specName.'|'.fn), 0, 12)` 注册，字节码里**不出现模块原始函数名**。
+- `renameMap()` 把调用点原名 → 别名；主程序 / 嵌入段已定义的原始名不重写（**主程序优先**）。
+- 模块的函数表 / 类表 / 参数表 / 全局表合并进主 Program；模块内的 `include` 复用主程序的 `IncludeResolver`，嵌入 id 落在主程序 id 空间。
+- 同模块被多个名命中（如 `match_regex /^rx_/` 同时命中 `rx_tag` / `rx_wrap`）只链一次，但每个命中名都登记到 `linked`，使主编译器预登记走 `CALL`（否则运行期 `CALL_NATIVE` 致命）。
+
+### 6.5 原生兜底内嵌
+
+模块**匹配但未被 VM 内联**（`replace=false` 或链接失败）时，调用点仍走 `CALL_NATIVE`；若产物里没有该函数会运行期致命。此时 `inlineSource()` 把模块源码（entry + deps + 静态 include 全部递归内联、去开/闭标签、移除 include 指令）以**原生形式兜底**进产物顶层，保证自包含、不致命。
+
+### 6.6 与 IncludeResolver（P4）的分工
+
+- 模块链接优先：命中的模块 → 内联进 Program（本类）；
+- 未命中但路径可静态解析的 include → IncludeResolver 静态内联；
+- 两者都做不动的（变量路径）→ `INCLUDE_EMBED` 运行期嵌入。
+
+### 6.7 用法
+
+```bash
+# CLI：指定模块目录（JSON 清单所在目录）
+php entry.php --input=app.php --output=app_obf.php --vm --vm-linker=tests/fixtures/modules
+```
+
+GUI（LayerDescriptor 分层参数 `modules`）与 CLI 等价：分层配置传 `modules` 键、`vm_linker` 散装键会自动折算为 `moduleDir`。相对路径优先按主文件所在目录解析（与 include 的 `baseDir` 一致）。
+
+构建日志会报告每个命中 / 跳过：
+
+- `shell:vm module-link: cross_run -> 模块[crossmod]（已内联）`
+- `shell:vm module-link 跳过 mathx_double: 模块 mathx replace=false，未内联（调用点保持原生分发）`
+
+### 6.8 测试
+
+`tests/vm_module_link.php`（17 项）覆盖：精确 / 正则命中、多命中名复用、传递式跨模块链接、别名重写、原生兜底内嵌（`replace=false` / 链接失败）、模块内 `include` 扁平化、顶层语句忽略等。回归 `tests/run_tests.php`（32 项）、`tests/hardening_test.php`（32 项）全绿、无回退。
+
+### 6.9 字节码级真实垃圾指令（`--vm-junk`，P7）
+
+在**编译期、字节码层面**向已编译的 VM `Program` 注入"真实执行"的垃圾指令序列（而非在原始 PHP 源码 token 层插入废代码，那是 `src/Optimize/RuntimeJunk.php` 的职责）。
+
+**与 RuntimeJunk 的本质区别**：垃圾指令是 VM **opcode 序列**，进入 gzip 二进制字节码容器、并随分片加密 + 操作码随机化一起被掩盖。静态分析者反编译出的只有一串被打乱编号的操作码，看不到任何 PHP 语句，抗分析更强。
+
+**注入时机**（`RuntimeGenerator::buildArtifact` 合并完所有段之后、`collectUsed` / `remap` / 控制流平坦化之前）：
+
+- 此时垃圾 opcode 会被纳入"已用操作码集合"——分配随机编号 + 生成 handler；
+- 且能被随后的 `flatten` / `stateMachine` 进一步打散，与跳转表 / 分片加密叠加。
+
+**安全性论证（绝不破坏语义）**：
+
+1. 仅使用 `PUSH_C` / 二元运算 / 一元运算 / `DROP`，**绝不**读写帧变量表、不碰操作数栈之外的状态；
+2. 每条"片段"以 `PUSH_C` 开头、以 `DROP` 结尾，中间每个运算恰好消耗一个 / 两个操作数并压回一个，**净栈变化恒为 0**（各模板均有平衡推导），执行前后操作数栈完全一致；
+3. **不含 `JMP/JZ/JNZ`**（避免引入非法跳转目标破坏偏移），不含 `RET/HALT/ECHO/EXIT/CALL` 等终结 / 输出 / 调用指令，故插入到任何合法指令之前都安全可达、无害；
+4. 经 salt 确定性生成，同 salt + 同源码 + 同强度 ⇒ 产物逐字节一致（可复现）。
+
+**相对跳转偏移修正（关键正确性保证）**：注入会改变段内指令下标，而 `JMP/JZ/JNZ` 的偏移是"相对指令自身下标"的（绝对目标 = `源下标 + 1 + 偏移`，取指后 pc 已 `+1`）。`VmJunk::spliceSeg` 在 `array_splice` **之前**快照所有跳转的旧下标与旧绝对目标，splice 之后按"旧源 / 旧目标各自是否越过插入点 p"分别平移 `len` 重算新偏移：
+
+```
+新源   = 旧源   + (旧源   >= p ? len : 0)
+新目标 = 旧目标 + (旧目标 >= p ? len : 0)
+新偏移 = 新目标 - (新源 + 1)
+```
+
+> ⚠️ 早期实现在 `array_splice` **之后**用"已平移的新下标"去套"未平移的旧偏移"算目标（`t = j(+len) + 1 + d`），导致源 / 目标平移不一致时偏移错算——`junk=6` 以上的 `for/while` 循环在 linear 模式即死循环 / 超时。修复后 `junk` 在 linear / flatten / stateMachine 三种模式下输出均与原始一致。
+
+**用法**：
+
+```bash
+php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=6
+php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatten
+```
+
+- 强度建议：`0`（默认，不注入）~ `200`（LayerDescriptor `shell:vm` 的 `junk` 参数，默认 0，上限 200）。值过大时被 `min(1, ceil(段长/4))` 的逐段上限自动钳制，避免单段被塞爆。
+- GUI：分层 `shell:vm` → **字节码垃圾指令**（整数，0–200）。
+
+**测试**：`tests/vm_junk.php`（120 项，junk∈{0,3,6,12} × 3 种模式 × 10 个用例）全部 PASS，并额外做"注入增量检查"（junk>0 时 Program 操作码总数严格大于 junk=0，90/90 通过），回归 `run_tests` / `hardening` / `vm_gen_probe` / `vm_module_link` 全绿、无回退。
+
+---
+
+## 7. 动态运行时生成器：反分析能力
+
+`VmRuntimeGenerator` 在每次构建时产出**每文件专属**的 VM 解释器，叠加多层互不影响的能力：
+
+| 能力 | 机制 | 抗分析效果 |
+|------|------|-----------|
+| **操作码随机化** | 每文件把逻辑操作码映射到一组打乱的随机编号（再叠加 `scramble` 异或） | 按"固定 1=ADD"的特征库直接失效；两个文件的 opcode 数值互不相同 |
+| **选择性发射** | 仅源码真正用到的操作码进入 runtime；未出现的指令（如 `_PHPRUN`）根本不生成 handler | 体积更小、特征更少 |
+| **混淆分发** | 主循环以随机变量名编写；`switch` 的 case 顺序被打乱并注入诱饵 case；操作码以"被异或后的随机数字"作标签 | 看不到 `VmOp::ADD=10` 这类明文，难以还原指令语义 |
+| **二进制字节码容器** | 操作码 + 操作数经 **varint + 操作数类型标记**编码为二进制，再 gzip | 静态无法直接读取明文指令序列 |
+| **分片独立加密** | gzip 字节码切分为 N 片，每片用独立密钥 XOR 后 base64 内联，运行期分别解密再拼接 | 单一密钥泄露无法还原整段字节码 |
+| **跳转表调度** | `opcode ^ scramble` 经随机化跳转表（`array(...)` 字面量）映射到 case 标签，条目顺序随机 | 指令执行顺序被打乱，控制流难以线性还原 |
+| **控制流平坦化**（可选 `flatten`） | 编译期把线性指令重写为通用 `JMP/JZ/JNZ + 状态变量`，不新增专用指令 | 删除原有的自然块结构 |
+| **状态机混淆**（可选 `stateMachine`，与 flatten 互斥） | 在基本块划分之上做状态 ID 随机化（salted 非连续）+ 注入不可达诱饵状态 | 更激进的状态转移路径，诱饵状态干扰分析 |
+
+> 两种控制流混淆层（`flatten` / `stateMachine`）取其一即可；二者均比"运行期 GOTO 平坦化"更可控、更易与跳转表/分片加密叠加。
+
+---
+
+## 8. 已知坑（已修 / 需规避）
+
+- ✅ **`for` 初始化段必须是赋值**：早期 `compileFor` 误用 `compileExpr` 编译初始化段，导致 `$i=2` 的右值被吞掉（只压入 `$i`，循环从 0 开始）——已修复为 `compileExprOrAssign`，并补 `for_init` / `for_nested` 回归用例。
+- ✅ **JMP 回跳必须指向条件起点**：上述修复同时修正了 `for` 循环回跳偏移的 off-by-one。
+- ⚠️ 跨函数变量**无**污染（每次调用独立帧），但**顶层语句共享同一个全局帧**（与 PHP 全局作用域一致），注意变量名复用。
+- ⚠️ `ARRAY_KV` 构建关联数组时按"值→键"压栈，运行期已正确逆序，遍历顺序与原生一致（有 `arr_kv_order` 用例守护）。
+- ✅ **`match` 表达式的 token 边界**：`StatementSplitter` 曾把尾部 `;` 单独切成 `[';']` 空语句，导致 `parsePrimary(';')` 报错；已修正为 flush 时剔除顶层 `;`（裸空语句直接丢弃）。同时 `parseMatch` 收集分支结果改用 brace/paren/bracket **平衡收集器** `collectMatchArmResult()`，正确处理结果中含嵌套 `match`/`函数调用`/`数组` 的情形（其内部的 `,` 与 `}` 不再被误判为分支分隔符 / 体结束符）。已补 `match_int/match_var/match_multi/match_assign/match_nested` 等回归用例。
+- ✅ **花括号字符串插值**：`T_CURLY_OPEN` 的成对花括号曾被误判为语句块边界而 flush，导致插值串被截断；已引入独立的插值串深度 `$iDepth` 跟踪，`"$x"` / `{$arr['k']}` / `"${x}"` 三种形态均可正确编译。
+
+---
+
+## 9. 五个架构方向（P8）
+
+在既有 VM 之上再叠加五个**可独立开关**的架构级加固方向。全部默认关闭（`--vm-p8` 一键全开，单项可覆盖），开启后产物运行结果与原文逐字节一致（`tests/vm_p8.php` 77 项断言守护：语义保真 + 反分析实效）。
+
+| 方向 | CLI | 机制 | 抗分析效果 |
+|------|-----|------|-----------|
+| **arch_key_chain** 密钥链分片加密 | `--vm-keychain` | 分片密钥由**哈希链**派生：`k0` = 盐派生的 master seed，`k[i]=sha256(k[i-1]‖i)`；运行期从 seed 起逐片顺序推导，`keys` 仅存 seed 一个元素 | 静态提取单点密钥无法还原其它分片（前向链）；密钥非单一静态串 |
+| **arch_builtin_replace** 内置名编码 | `--vm-builtin-replace` | `natTbl` 里的内置函数名在 `packProgram` 时经 `base64(name XOR keystream)` 编码后写入二进制包，运行期 `$___CALLFN___` 内解码还原 | 解压后的字节码 blob 中**不再出现** `strlen`/`array_map` 等明文调用名 |
+| **arch_morph_runtime** 运行时变形 | `--vm-morph` | 操作码派发叠加**独立的第二层 scramble**（盐派生），`jt` 键与运行期 `$op^scramble2` 同步；派发临时变量名随机化 | 每构建的"派发数学"不同，消除固定 dispatch 指纹；跨 salt 产物结构互异（多态） |
+| **arch_fake_fog** 诱饵函数 | `--vm-fake-fog=N` | 向 `funcs` 表注入 N 个**永不调用**的栈平衡假函数（`_fg_<hex>`，无输出、不写变量，附 0~2 个默认参数），在 `collectUsed` 前注入 | 诱饵 opcode 进入"已用集合"→真实指令被噪声淹没；函数表规模膨胀，统计特征失效 |
+| **arch_probe_matrix** 反分析探针 | `--vm-probe=N` | 解释器运行前注入 N 个自检探针（`dbg`：xdebug/phpdbg/uopz/runkit 检测；`crc`：对解码后 blob 取 crc32 与构建期期望值比对），判定量拆到随机变量，命中即静默 `exit(0)` | 调试 / hook / patch 字节码均无法产出正确结果；正常 standalone 运行下恒为假、无副作用 |
+
+### 9.1 组合与分层
+
+- 五者与 `flatten` / `stateMachine` / `--vm-junk` / `--vm-linker` **正交**，可任意组合；`tests/vm_p8.php` 覆盖 `all_linear` / `all_flatten` / `all_sm` 三态全开。
+- 分层 JSON / GUI：`shell:vm` 层参数新增 `keychain` / `builtinReplace` / `morph` / `fakeFog` / `probe`（见 `LayerDescriptor`）。
+- `--vm-p8` 聚合预设：`keychain`+`builtinReplace`+`morph` 开、`fakeFog=6`、`probe=4`；单项参数可再覆盖。
+
+### 9.2 实现要点 / 边界
+
+- **keychain**：链式解码序章与 `encryptChunks($blob,$n,$chain)` 严格对称；空 blob 亦保证 `keys[0]` 存在。关闭时每片独立派生（旧行为）。
+- **builtinReplace**：解码器经字符串注入到 `$___CALLFN___` 的 `use(...)` 列表（闭包作用域，必须显式捕获）；`program` 逻辑层 natTbl 仍保留原名，仅打包层编码。关闭时产物不含任何额外代码。
+- **morph**：关闭时 `scramble2=0`，派发 `^0` 与旧行为逐字节等价（默认产物不受影响）。
+- **probe**：刻意**不做**"调用栈回溯深度"探针——被保护脚本常被第三方 `require`/`eval` 嵌入，回溯深度不可作调试判据（误杀正常用法）；仅 `dbg`（真实调试器/hook 敏感）+ `crc`（字节码改动敏感）。
+
+---
+
+## 10. 二进制容器：varint 整数往返（修复记录）
+
+`packProgram` 的整数操作数走 **zigzag + varint** 编码（`bWriteZig` → `bWriteVarint`）。
+
+**曾存在的 bug**：`bWriteVarint` 内含 `$v &= 0x7FFFFFFF` 截断。zigzag 会把数值翻倍
+（`n → n<<1`），任何 `|n| ≥ 2^30` 的常数翻倍后即越过 2^31，最高位被静默砍掉——
+运行期解包（读端无截断）得到错误值。典型症状：**乘积低 32 位偶然正确、高位全错**
+（如 `119673848*1103515245` 在产物中算出 `3563099859194008` 而非 `132061915695812760`），
+极易被"看起来差不多对"的测试漏过。用户代码中的 LCG 常数（`1103515245`/`2246822519`/`3266489917`
+等）恰好密集落在该区间，由大整数常量回归用例（`tests/vm_gen_probe.php` 的 `bigconst_*`）首次暴露。
+
+**修复**：移除截断（调用点均为非负值：zigzag 结果 / 指令数 / 字符串长度），
+仅保留负值防御护栏（`&= PHP_INT_MAX`，防算术移位死循环，不影响任何正值路径）。
+`tests/vm_gen_probe.php` 新增 5 条大整数常量回归用例（`bigconst_*`：
+原始乘积 / 掩码运算 / 负常数 / 函数内 LCG），三态模式全覆盖。
