@@ -138,7 +138,7 @@ php tests/run_tests.php          # CLI 集成：32 项
 php tests/hardening_test.php    # 加固专项：32 项
 ```
 
-> 可用保护开关远多于上方示例，详见 `entry.php --help`。
+> 可用保护开关远多于上方示例，完整清单见 [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)。
 
 ---
 
