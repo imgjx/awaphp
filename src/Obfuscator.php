@@ -99,12 +99,18 @@ final class Obfuscator
         $phpVer->setTarget((string) $this->config->get('php_version'));
         $current = $this->shell($current, '目标PHP版本外壳', fn ($c) => $phpVer->wrap($c));
 
+        // 反调试 / 防 hook eval：置于编码壳之前（最内层），被 vm/eval/gz 裹入密文，
+        // 攻击者须先破壳才能看到、更无从"整段删除代码块"让保护蒸发。
         if ($this->config->get('anti_debug')) {
             $adOpts = [
                 'probes'    => (string) $this->config->get('ad_probes'),
                 'intensity' => (int) $this->config->get('ad_intensity'),
             ];
             $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts));
+        }
+        if ($this->config->get('anti_hook')) {
+            $ahOpts = ['strict' => (bool) $this->config->get('ah_strict')];
+            $current = $this->shell($current, '防hook eval守卫', fn ($c) => (new AntiHookEval($this->salt, $this->logger))->wrap($c, $ahOpts)['code']);
         }
         if ($this->config->get('vm')) {
             // 新方案：统一走自定义指令集 VM（VmRuntimeGenerator），替代旧版 XOR+eval 壳。
@@ -146,12 +152,8 @@ final class Obfuscator
         // 否则运行期 __FILE__ 含头注释而基线不含，会误报"被篡改"。
         $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
 
-        // 防 hook eval：eval 完整性探针 + 可劫持 eval 的扩展检测；置于版权后、自校验前，
-        // 使其守卫行也在防篡改的分段覆盖范围内。
-        if ($this->config->get('anti_hook')) {
-            $ahOpts = ['strict' => (bool) $this->config->get('ah_strict')];
-            $current = $this->shell($current, '防hook eval守卫', fn ($c) => (new AntiHookEval($this->salt, $this->logger))->wrap($c, $ahOpts)['code']);
-        }
+        // 防 hook eval 守卫已在编码壳之前（最内层）注入，此处不再单独处理；
+        // 其行被 vm/eval/gz 裹入密文，自校验防篡改的分段哈希覆盖的是该密文区段。
 
         // 自校验防篡改置于最外层：掩码自校验 + 分段哈希 + shutdown 二次校验（逻辑全部编码）
         if ($this->config->get('anti_tamper')) {
@@ -203,30 +205,42 @@ final class Obfuscator
     }
 
     /**
-     * shell 层顺序规整：自校验防篡改（shell:anti_tamper）与授权绑定（shell:license）
-     * 必须位于所有编码壳（shell:gz / shell:eval / shell:vm）之外——
-     *  - anti_tamper 的守卫行以明文锚点（$x=__FILE__;）定位自身，若被 gz/eval 壳
-     *    吞进 base64 密文，运行期 strpos 找不到锚点会误报"被篡改"；
-     *  - license 的解密同样要求自身字节可见。
-     * 二者按用户给定的相对顺序稳定后移（与旧管线的固定次序语义一致），
-     * 其余 shell 层保持用户排序不变。
+     * shell 层顺序规整（防"外壳可被整体剥离"）：
+     *  - 反调试（shell:anti_debug）/ 防 hook eval（shell:anti_hook）无明文锚点依赖，
+     *    移到最内层（数组最前、最先应用），让 gz / eval / vm 等编码壳把它们裹进密文——
+     *    攻击者必须先破壳才能看到，更无从"整段删除代码块"让保护蒸发；
+     *  - 自校验防篡改（shell:anti_tamper）与授权绑定（shell:license）必须位于所有编码壳
+     *    之外（数组最后、最后应用）：anti_tamper 守卫行以明文锚点（$x=__FILE__;）定位自身，
+     *    若被编码壳吞进密文，运行期 strpos 找不到锚点会误报"被篡改"并终止，故明文锚点须可见。
+     *
+     * 已知约束：anti_tamper 因上述设计无法内埋，是相对薄弱的一环；如需彻底藏匿，
+     * 须重构其自定位机制（如改为校验内存中已解码区段，而非读 __FILE__ 明文锚点）。
+     *
+     * 数组越靠后 = 越外层（每层把整段 $code 再包一层），故 head 最内、tail 最外。
      *
      * @param array<int,array{name:string,params:array,inject:array}> $layers
      * @return array<int,array{name:string,params:array,inject:array}>
      */
     private function orderShellLayers(array $layers): array
     {
+        // 最内层（最先应用，被后续编码壳包裹藏入密文）
+        $innermost = ['shell:anti_debug' => true, 'shell:anti_hook' => true];
+        // 最外层（最后应用，明文锚点须可见）
         $outermost = ['shell:anti_tamper' => true, 'shell:license' => true];
+        $head = [];
         $keep = [];
-        $move = [];
+        $tail = [];
         foreach ($layers as $layer) {
-            if (isset($outermost[$layer['name'] ?? ''])) {
-                $move[] = $layer;
+            $name = $layer['name'] ?? '';
+            if (isset($innermost[$name])) {
+                $head[] = $layer;
+            } elseif (isset($outermost[$name])) {
+                $tail[] = $layer;
             } else {
                 $keep[] = $layer;
             }
         }
-        return array_merge($keep, $move);
+        return array_merge($head, $keep, $tail);
     }
 
     /**
@@ -326,6 +340,9 @@ final class Obfuscator
             case 'dead':
                 $tokens = (new DeadCodeInjector($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
+            case 'semantic':
+                $tokens = (new SemanticRewriter($this->salt, $this->logger))->process($tokens, $cfg);
+                break;
             case 'token':
                 $tokens = (new TokenObfuscator($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
@@ -381,6 +398,10 @@ final class Obfuscator
             case 'dead':
                 $map['insert_dead']  = true;
                 $map['dead_density'] = (int) ($params['density'] ?? 3);
+                break;
+            case 'semantic':
+                $map['semantic']          = true;
+                $map['semantic_strength'] = (int) ($params['strength'] ?? 2);
                 break;
             case 'token':
                 $map['token_obf']     = true;
@@ -586,6 +607,17 @@ final class Obfuscator
         $tokens = $comment->process($tokens, $this->config);
         $tokens = $dead->process($tokens, $this->config);
         $tokens = $stat->process($tokens, $this->config);
+        // 运行时垃圾指令（含执行缠结）：与 dead/stat 一致，由 junk_runtime flag 直接触发，
+        // 旧管线（无 layers）走此分支；分层路径由 junk_runtime 层负责，两条路径互斥。
+        if ($this->config->get('junk_runtime')) {
+            $junk = new RuntimeJunk($this->salt, $this->logger);
+            $tokens = $junk->process($tokens, $this->config);
+        }
+        // 语义等价变换层（结构化改写：算术/布尔恒等、控制流等价），置于 Token 形态混淆之前
+        if ($this->config->get('semantic')) {
+            $sem = new SemanticRewriter($this->salt, $this->logger);
+            $tokens = $sem->process($tokens, $this->config);
+        }
         // Token 形态混淆置于末端：上游所有模块（含死代码）产出的关键字一并获得形态变换
         $tok = new TokenObfuscator($this->salt, $this->logger);
         $tokens = $tok->process($tokens, $this->config);

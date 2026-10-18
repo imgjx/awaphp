@@ -57,6 +57,9 @@ final class Config
         $this->data['token_quote']   = $b($this->data['token_quote'] ?? true) ?? true;
         $this->data['token_heredoc'] = $b($this->data['token_heredoc'] ?? false) ?? false;
         $this->data['token_decoy']   = max(0, min(50, $i($this->data['token_decoy'] ?? 3)));
+        // 语义等价变换层
+        $this->data['semantic']          = $b($this->data['semantic'] ?? false) ?? false;
+        $this->data['semantic_strength'] = max(1, min(3, $i($this->data['semantic_strength'] ?? 2)));
         // 否定旗标折叠：CLI 的 --token-no-case / --token-no-literal / --token-no-quote
         // 被解析为 token_no_* 键，统一折算到对应正开关上（分层模式不经此路径）
         foreach (['case', 'literal', 'quote'] as $flag) {
@@ -98,6 +101,7 @@ final class Config
         $this->data['junk_intensity'] = max(1, min(10, $i($this->data['junk_intensity'] ?? 1)));
         $this->data['junk_fake_b64']  = $b($this->data['junk_fake_b64'] ?? true) ?? true;
         $this->data['junk_fake_echo'] = $b($this->data['junk_fake_echo'] ?? true) ?? true;
+        $this->data['junk_tangle']    = $b($this->data['junk_tangle'] ?? false) ?? false;
         $this->data['dead_density']   = max(1, min(10, $i($this->data['dead_density'] ?? 3)));
         $this->data['ad_probes']      = (string) ($this->data['ad_probes'] ?? '');
         $this->data['ad_intensity']   = max(1, min(4, $i($this->data['ad_intensity'] ?? 2)));

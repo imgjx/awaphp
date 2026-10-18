@@ -212,10 +212,18 @@ $r3 = runPhp($t3);
 rec($r3['exit'] !== 0, '防篡改：截断文件被拦截', "exit={$r3['exit']}");
 
 echo "\n-- 5) 防 hook eval --\n";
-$hooked = decodeShells((string) file_get_contents($at));
-rec(str_contains($hooked, 'uopz') || str_contains($hooked, 'runkit') || str_contains($hooked, 'phpdbg'),
-    '防 hook 守卫含可劫持 eval 的扩展检测（编码壳内）', '');
-rec(preg_match('/@?eval\s*\(/', $hooked) === 1, '防 hook 守卫含 eval 完整性探针', '');
+// anti_hook 守卫本身就是一层"编码壳"：@eval(gzinflate(base64_decode('blob')))，其 blob 为 gzdeflate
+// 压缩的含 uopz/runkit/phpdbg 扩展检测的 PHP 源码（刻意不以明文留特征）；外层再加 gz/eval/vm 壳后，
+// 该守卫被更深藏入编码壳（这正是"藏一下"的目标）。此处用仅 --anti-hook（不套外层壳）的样本，
+// 抽取并解压 blob，验证守卫逻辑确实存在且可被解出（含完整扩展检测）。
+$hookProbe = $tmp . '/hook_probe.php';
+obf($entry, $src, $hookProbe, '--anti-hook --salt=hookprobe');
+$hookRaw = (string) file_get_contents($hookProbe);
+preg_match("/gzinflate\(base64_decode\('([A-Za-z0-9+\/=]+)'\)\)\)/", $hookRaw, $mm);
+$guardSrc = isset($mm[1]) ? @gzinflate(base64_decode($mm[1])) : '';
+rec(is_string($guardSrc) && (str_contains($guardSrc, 'uopz') || str_contains($guardSrc, 'runkit') || str_contains($guardSrc, 'phpdbg')),
+    '防 hook 守卫含可劫持 eval 的扩展检测（编码壳内 gzdeflate 解出）', '');
+rec(preg_match('/@?eval\s*\(/', $hookRaw) === 1, '防 hook 守卫含 eval 完整性探针', '');
 rec($clean['exit'] === 0, '防 hook 守卫在干净环境不误伤（exit=0）', "exit={$clean['exit']}");
 
 echo "\n-- 6) 随机化多样性（不同 salt 形态必须不同） --\n";

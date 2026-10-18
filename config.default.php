@@ -36,6 +36,10 @@ return [
     // 编码
     'gz'           => false,  // GZ 压缩编码整段代码
 
+    // 语义等价变换层（表达式/布尔/控制流恒等改写，破坏静态模式匹配）
+    'semantic'          => false,  // 是否启用语义等价变换层
+    'semantic_strength' => 2,      // 变换强度 1|2|3（越高改写越激进）
+
     // 优化
     'insert_dead'  => false,  // 插入无用代码
     'no_comments'  => false,  // 移除注释
@@ -55,6 +59,13 @@ return [
     'php_version'  => '8.1',   // 目标 PHP 版本（7.4/8.0/8.1/8.2/8.3）
     'str_xor'      => false,   // 字符串运行时异或装配（替代 base64）
     'junk_funcs'   => 0,       // 诱饵函数数量（>0 生效）
+
+    // 运行时垃圾指令（RuntimeJunk）：真实执行、无副作用、由 salt 确定性复现
+    'junk_runtime'   => false, // 启用运行时垃圾指令插入（顶层 flag，旧管线直接调用）
+    'junk_intensity' => 1,     // 插入密度 1~10（越大越密）
+    'junk_fake_b64'  => true,  // 诱饵 base64（解了不用的孤立串）
+    'junk_fake_echo' => true,  // 经输出缓冲执行的伪 echo（不留痕迹）
+    'junk_tangle'    => false, // 执行缠结：垃圾值经恒等式缠结进真实整型赋值（删垃圾即出错）
 
     // ===== 第四阶段：授权绑定 =====
     'license_domain' => '',    // 授权域名（逗号分隔，空=不校验，仅 Web SAPI 生效）

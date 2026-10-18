@@ -10,13 +10,14 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '0.1.0');
+define('OBFUSCATOR_VERSION', '0.1.1');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
 $root = __DIR__;
 foreach ([
     'src/Salt.php',
+    'src/SemanticRewriter.php',
     'src/Support/Random.php',
     'src/Support/NameGenerator.php',
     'src/Support/NameStyle.php',

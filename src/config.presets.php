@@ -15,9 +15,10 @@
  * shell:* 层（shell:vm/shell:eval/shell:gz/shell:anti_debug/shell:anti_hook/
  *   shell:anti_tamper/shell:license/inject）在 token 流水线结束后按层顺序包裹源码。
  *
- * 外壳顺序约定：shell:vm → shell:eval → shell:anti_debug → shell:gz →
- *   shell:anti_hook → shell:anti_tamper → shell:license
- * （防篡改/防 hook 在最外层，不被 gzip 包裹，基线自洽）
+ * 外壳顺序约定（数组越靠后 = 越外层）：shell:anti_debug → shell:anti_hook →
+ *   shell:vm → shell:eval → shell:gz → shell:anti_tamper → shell:license
+ * （anti_debug/anti_hook 置于编码壳之前被裹入密文藏匿；anti_tamper/license 因明文锚点须留最外层，
+ *   实际顺序由 Obfuscator::orderShellLayers 强制规整）
  */
 
 return [

@@ -155,6 +155,17 @@ final class LayerDescriptor
                     'intensity' => ['label' => '强度', 'type' => self::T_INT, 'default' => 3, 'min' => 1, 'max' => 10, 'hint' => '插入密度'],
                     'fake_b64'  => ['label' => '诱饵 base64', 'type' => self::T_BOOL, 'default' => true, 'hint' => '插入永不解码的诱饵串，毒化批量解码工具'],
                     'fake_echo' => ['label' => '诱饵输出', 'type' => self::T_BOOL, 'default' => true, 'hint' => '经输出缓冲执行后立即清除，不留痕迹'],
+                    'tangle'    => ['label' => '执行缠结', 'type' => self::T_BOOL, 'default' => false, 'hint' => '垃圾变量参与真实整数赋值并恒等式抵消，删垃圾即出错'],
+                ],
+                'tags' => ['反分析'],
+            ],
+            'semantic' => [
+                'kind'  => 'token',
+                'label' => '语义等价变换',
+                'desc'  => '表达式/布尔/控制流的恒等改写（x*2→x+x、De Morgan、for→while 等），破坏静态模式匹配',
+                'params' => [
+                    'strength' => ['label' => '变换强度', 'type' => self::T_INT, 'default' => 2, 'min' => 1, 'max' => 3,
+                                   'hint' => '1=算术恒等 2=+布尔/分支 3=+控制流（for→while）'],
                 ],
                 'tags' => ['反分析'],
             ],

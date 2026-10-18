@@ -15,13 +15,14 @@ final class LayerRegistry
     /** token 级层：作用于同一 token 流，按序累积 */
     private const TOKEN = [
         'var', 'func', 'class', 'controlflow', 'number',
-        'string', 'comment', 'stat', 'ws', 'dead', 'junk_runtime', 'token',
+        'string', 'comment', 'stat', 'ws', 'dead', 'junk_runtime', 'token', 'semantic',
     ];
 
-    /** 源码头/尾包裹层（shell）：按序包裹源码字符串 */
+    /** 源码头/尾包裹层（shell）：按序包裹源码字符串；数组越靠后 = 越外层 */
     private const SHELL = [
+        'shell:anti_debug', 'shell:anti_hook',   // 最内层：被后续编码壳裹入密文藏匿
         'shell:vm', 'shell:eval', 'shell:gz',
-        'shell:anti_debug', 'shell:anti_hook', 'shell:anti_tamper', 'shell:license',
+        'shell:anti_tamper', 'shell:license',     // 最外层：明文锚点须可见
     ];
 
     /** 特殊层：仅做注入，不改变主流程逻辑 */
