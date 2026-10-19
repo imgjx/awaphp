@@ -83,6 +83,7 @@ final class Config
         $this->data['cfg']           = in_array($this->data['cfg'], ['low', 'medium', 'high'], true) ? $this->data['cfg'] : '';
         $this->data['php_version']   = in_array($this->data['php_version'], ['7.4', '8.0', '8.1', '8.2', '8.3'], true)
             ? $this->data['php_version'] : '8.1';
+        $this->data['opcache']        = $b($this->data['opcache'] ?? false) ?? false;
 
         // 分层 / VM 层相关字段
         $this->data['vm_flatten']     = $b($this->data['vm_flatten'] ?? false) ?? false;

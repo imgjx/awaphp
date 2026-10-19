@@ -57,6 +57,7 @@ return [
     'anti_hook'    => false,   // 防 hook eval（eval 完整性探针 + 劫持扩展检测）
     'anti_tamper'  => false,   // 自校验防篡改
     'php_version'  => '8.1',   // 目标 PHP 版本（7.4/8.0/8.1/8.2/8.3）
+    'opcache'      => false,   // OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如 EP 支持）
     'str_xor'      => false,   // 字符串运行时异或装配（替代 base64）
     'junk_funcs'   => 0,       // 诱饵函数数量（>0 生效）
 

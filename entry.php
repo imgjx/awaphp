@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '0.1.1');
+define('OBFUSCATOR_VERSION', '0.1.2');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -40,6 +40,7 @@ foreach ([
     'src/Optimize/Whitespace.php',
     'src/Optimize/StatHook.php',
     'src/Optimize/RuntimeJunk.php',
+    'src/Optimize/OpcacheCompiler.php',
     'src/Token/TokenObfuscator.php',
     'src/Layer/LayerRegistry.php',
     'src/Layer/LayerDescriptor.php',
@@ -177,7 +178,9 @@ function obf_help(): string
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）
       --anti-hook      防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测）
       --anti-tamper    自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验）
-      --php-version=   目标 PHP 版本：7.4|8.0|8.1|8.2|8.3
+      --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3（默认 8.1）
+      --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
+                       EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）
       --junk-funcs=    诱饵函数数量（>0 生效，拟真命名，干扰逆向）
 
 授权绑定（第四阶段）
@@ -269,6 +272,15 @@ if (is_dir($input)) {
     $builder = new ProjectBuilder($config, $salt, $logger, OBFUSCATOR_NAME, OBFUSCATOR_VERSION);
     $res = $builder->build($input, $output, $config->get('manifest') ?: null);
     $logger->info("目录混淆完成：成功 {$res['files']} 个，失败 {$res['failed']} 个（函数 {$res['funcs']}，类 {$res['classes']}）");
+    // OPcache 辅助编译（后处理：目录模式下对每个产物 .php 编译为 Zend 字节码；环境不支持时自动跳过）
+    if ($config->get('opcache')) {
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $f) {
+            if ($f->isFile() && strtolower($f->getExtension()) === 'php') {
+                OpcacheCompiler::compile($f->getPathname(), $logger);
+            }
+        }
+    }
     if ($mode === 'json') {
         echo json_encode(['ok' => true, 'files' => $res['files'], 'failed' => $res['failed'], 'funcs' => $res['funcs'], 'classes' => $res['classes']], JSON_UNESCAPED_UNICODE) . "\n";
     }
@@ -287,6 +299,10 @@ $result = $obfuscator->run($src);
 if ($output !== null && $output !== '') {
     file_put_contents($output, $result);
     $logger->info("已写入: {$output}");
+    // OPcache 辅助编译（后处理：将产物编译为 Zend 字节码；环境不支持时自动跳过，不阻断主流程）
+    if ($config->get('opcache')) {
+        OpcacheCompiler::compile($output, $logger);
+    }
 } else {
     // 无输出文件则直接打印到 stdout
     echo $result;

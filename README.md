@@ -67,7 +67,14 @@
 - **指令集精简**：41 条同构 opcode 合并为 6 个参数化 opcode（`BINOP` / `UNOP` / `CAST_OP` / `INC_OP` / `VAROP` / `ARRAY_BUILD`）+ 隐藏 sub-id 表，消除「每个 opcode 自报家门」的语义指纹。
 
 ### 加壳
-- GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`）。
+- GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`，支持 `7.4 / 8.0 / 8.1 / 8.2 / 8.3`，默认 `8.1`）。
+
+### OPcache 辅助编译（Zend 字节码）
+混淆产物写出后，可「加一道工」将其编译为 **Zend 字节码**（`--opcache`）：
+- 部分虚拟主机（如 **EP 虚拟主机**）默认启用 OPcache，部署后可直接以字节码形态运行，进一步抬高源码恢复门槛、提升运行效率；
+- 若环境安装 `phpc` 扩展，额外生成可移植的 `.phpc` 字节码文件；
+- 若仅启用 OPcache，则通过 `opcache_compile_file` 预热运行期字节码缓存（Web 主机首次请求即命中字节码）；
+- 环境不支持时**自动跳过、不阻断**主流程，等价于不开启该选项。
 
 ### 运行时垃圾与执行缠结（反删除剥离）
 - **运行时垃圾注入**（`--junk-runtime`，强度 `--junk-intensity=N`）：在真实语句间插入 `crc32` / `base64_decode` / `strrev` 等无副作用计算，稀释真实逻辑密度。
@@ -126,6 +133,7 @@ token 级（可逆、保语义）：标识符重命名 → 控制流(cfg/goto) �
         ↓
   · 反调试 / 防 hook 位于编码壳最内层，被 VM/EVAL/GZ 裹入密文藏匿（删外层代码块够不到）
   · 自校验 / 授权绑定依赖 __FILE__ 明文锚点，须留在最外层
+  · OPcache 辅助编译（`--opcache`）为独立的后处理步骤，不参与管线包裹，于产物写出后再编译为 Zend 字节码
 自校验防篡改基线 = 上述全部内容（含文件头注释），运行期读取自身文件即可校验
 ```
 
@@ -151,6 +159,9 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-p8 \
 # 语义等价变换 + 执行缠结（反静态模式匹配 / 反删除剥离）
 php entry.php --input=app.php --output=app_obf.php \
     --semantic --semantic-strength=3 --junk-runtime --junk-tangle --salt=team-salt
+
+# OPcache 辅助编译为 Zend 字节码（部分虚拟主机如 EP 默认启用 OPcache）
+php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-salt
 
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项

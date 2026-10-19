@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v0.1.0
+> 适用于「嗷呜awaのphp混淆器」v0.1.2（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
 **用法**
@@ -77,7 +77,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等） |
 | `--anti-hook` | 防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测） |
 | `--anti-tamper` | 自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验） |
-| `--php-version=` | 目标 PHP 版本：`7.4\|8.0\|8.1\|8.2\|8.3` |
+| `--php-version=` | 目标 PHP 版本（通用）：`7.4\|8.0\|8.1\|8.2\|8.3`（默认 `8.1`） |
+| `--opcache` | OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如 EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过） |
 | `--junk-funcs=` | 诱饵函数数量（>0 生效，拟真命名，干扰逆向） |
 
 ## 授权绑定
