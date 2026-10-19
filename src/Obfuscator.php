@@ -120,7 +120,9 @@ final class Obfuscator
                 'stateMachine' => (bool) $this->config->get('vm_state_machine'),
                 'chunks'       => (int) $this->config->get('vm_chunks'),
                 // P6: ModuleLinker 模块目录（命中清单的函数调用内联进同一 Program）
-                'moduleDir'    => $this->resolveModuleDir((string) $this->config->get('vm_linker')),
+                // 默认使用内置模块目录（内置 base64 等"原生函数替换"模块），
+                // 若显式指定 vm_linker 则以其为准。
+                'moduleDir'    => $this->resolveModuleDir($this->effectiveModuleDir()),
                 'junk'         => (int) $this->config->get('vm_junk'),
                 // P8: 五个架构方向（默认全关）
                 'keychain'       => (bool) $this->config->get('vm_keychain'),
@@ -472,8 +474,11 @@ final class Obfuscator
             // include 解析：基目录取主文件所在目录；未登记（库内直调）时退化为空
             'baseDir'     => $this->srcFile !== '' ? dirname($this->srcFile) : '',
             'curFile'     => $this->srcFile,
-            // P6: ModuleLinker 模块目录（分层参数键 modules；散装键 vm_linker 已折算）
-            'moduleDir'   => $this->resolveModuleDir((string) ($params['modules'] ?? $params['moduleDir'] ?? '')),
+            // P6: ModuleLinker 模块目录（分层参数键 modules；散装键 vm_linker 已折算）。
+            // 未显式指定时，若启用内置模块（vm_link_modules），回退到内置模块目录。
+            'moduleDir'   => $this->resolveModuleDir($this->effectiveModuleDir(
+                (string) ($params['modules'] ?? $params['moduleDir'] ?? '')
+            )),
             // P7/P8: 字节码垃圾 + 五个架构方向（分层参数键直通）
             'junk'         => (int) ($params['junk'] ?? 0),
             'keychain'       => (bool) ($params['keychain'] ?? false),
@@ -519,6 +524,34 @@ final class Obfuscator
             return rtrim($base, '/\\') . '/' . $dir;
         }
         return $dir;
+    }
+
+    /**
+     * P6：折算最终用于 ModuleLinker 的模块目录。
+     * 优先级：分层参数 override > 散装键 vm_linker > 内置模块目录（vm_link_modules 开启时）。
+     * 全部为空/关闭则返回 ''（不启用模块链接）。
+     */
+    private function effectiveModuleDir(string $override = ''): string
+    {
+        if (trim($override) !== '') {
+            return $this->resolveModuleDir($override);
+        }
+        $custom = (string) $this->config->get('vm_linker');
+        if (trim($custom) !== '') {
+            return $this->resolveModuleDir($custom);
+        }
+        if ((bool) $this->config->get('vm_link_modules')) {
+            return $this->defaultModuleDir();
+        }
+        return '';
+    }
+
+    /**
+     * P6：包内置模块目录（随产品发布，含 base64 等"原生函数替换"模块）。
+     */
+    private function defaultModuleDir(): string
+    {
+        return __DIR__ . '/Module/builtin';
     }
 
     /**

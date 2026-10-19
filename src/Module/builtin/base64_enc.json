@@ -1,0 +1,8 @@
+{
+  "name": "base64_enc",
+  "match": ["base64_encode"],
+  "entry": "base64_enc.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__b64_enc"
+}

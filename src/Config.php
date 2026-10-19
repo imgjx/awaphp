@@ -90,6 +90,7 @@ final class Config
         $this->data['vm_state_machine'] = $b($this->data['vm_state_machine'] ?? false) ?? false;
         $this->data['vm_chunks']      = max(1, $i($this->data['vm_chunks'] ?? 3));
         $this->data['vm_linker']      = (string) ($this->data['vm_linker'] ?? '');
+        $this->data['vm_link_modules'] = $b($this->data['vm_link_modules'] ?? true) ?? true;
         $this->data['vm_junk']         = max(0, $i($this->data['vm_junk'] ?? 0));
         // P8 架构方向（默认全关，不回退既有行为）；--vm-p8 为总开关（聚合预设，单项可覆盖）
         $p8 = $b($this->data['vm_p8'] ?? false) ?? false;

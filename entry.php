@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '0.1.2');
+define('OBFUSCATOR_VERSION', '0.1.3');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -88,6 +88,11 @@ function obf_parse_args(array $argv): array
             $out['level'] = $LEVEL_FLAGS[$a];
             continue;
         }
+        // 显式关闭默认开启的布尔开关（--no-<flag> => <flag>=false）
+        if ($a === '--no-vm-link-modules') {
+            $out['vm_link_modules'] = false;
+            continue;
+        }
         if (str_starts_with($a, '--')) {
             $body = substr($a, 2);
             if (str_contains($body, '=')) {
@@ -157,8 +162,10 @@ function obf_help(): string
       --goto=         GOTO 混淆嵌套层数（>0 生效）
       --goto-cpx=      GOTO 每分发器最大语句数（>0 生效）
       --vm             VM 虚拟机壳（自定义指令集 + 解释器）
+      --vm-link-modules 启用内置模块（默认开）：自动加载包内置模块目录，将 base64_encode/
+                       base64_decode 等原生函数替换为内置自定义实现并内联进字节码
       --vm-linker=     ModuleLinker 模块目录（JSON 清单）：命中清单的函数调用
-                       内联进同一 Program，产物中无模块路径、无 include 指令
+                       内联进同一 Program，产物中无模块路径、无 include 指令（覆盖内置目录）
       --vm-junk=       VM 字节码级真实垃圾指令：在字节码中注入 N 段"真实执行但
                        无副作用"的废 opcode（栈平衡、无输出、无变量写入），抗静态分析
       --vm-keychain    VM 分片密钥哈希链：k0=master，ki=sha256(k[i-1]‖i)，运行期顺序

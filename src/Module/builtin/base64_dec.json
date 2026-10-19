@@ -1,0 +1,8 @@
+{
+  "name": "base64_dec",
+  "match": ["base64_decode"],
+  "entry": "base64_dec.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__b64_dec"
+}
