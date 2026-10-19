@@ -1,8 +1,0 @@
-{
-  "name": "targetmod",
-  "match": ["tm_call"],
-  "target": "tm_impl",
-  "entry": "targetmod.php",
-  "replace": true,
-  "priority": 1
-}

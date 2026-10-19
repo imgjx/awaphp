@@ -1,8 +1,0 @@
-{
-  "name": "mathx",
-  "match": ["mathx_double"],
-  "entry": "mathx.php",
-  "deps": ["mathx_helper.php"],
-  "replace": true,
-  "priority": 5
-}

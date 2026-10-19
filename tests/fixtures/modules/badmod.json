@@ -1,7 +1,0 @@
-{
-  "name": "badmod",
-  "match": ["bad_call"],
-  "entry": "badmod.php",
-  "replace": true,
-  "priority": 1
-}

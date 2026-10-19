@@ -1,7 +1,0 @@
-{
-  "name": "crossmod",
-  "match": ["cross_run"],
-  "entry": "crossmod.php",
-  "replace": true,
-  "priority": 1
-}

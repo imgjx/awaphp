@@ -1,7 +1,0 @@
-{
-  "name": "toplevelmod",
-  "match": ["tl_add"],
-  "entry": "toplevelmod.php",
-  "replace": true,
-  "priority": 1
-}
