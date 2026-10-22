@@ -1002,6 +1002,12 @@ function __VMRUN__($__P)
                 case $EVAL_STMT:
                     // 语句级回退：源码串弹栈，帧变量导出为真实局部变量 → 快照 →
                     // eval → 差分写回（与 INCLUDE_RT 桥接同构）。
+                    // 导出为【引用绑定】（$$name = &帧槽）而非值拷贝：eval 内对
+                    // 局部变量的写直接穿透帧槽，闭包 use(&$n) 捕获的引用链也直达
+                    // 帧槽——PHP 原生语义即如此（执行到一半的写在异常时同样生效）。
+                    // diff 只处理 eval 新建的变量（帧槽原本不存在）：帧槽绑定到
+                    // 该局部变量的引用（后续 POP_V 赋值沿引用写穿）；已导出帧槽
+                    // 的写已穿透，diff 若再写回反而会掐断引用链，故跳过。
                     $__es = array_pop($__stack);
                     $__eobj = (isset($__vars['$this']) && is_object($__vars['$this'])) ? $__vars['$this'] : null;
                     if ($__eobj !== null) {
@@ -1011,44 +1017,36 @@ function __VMRUN__($__P)
                         // 继承——用 Closure::bind 把桥接逻辑绑定到当前对象后
                         // 执行（VM 类运行期为 stdClass，内部类不可作 bind 的
                         // 作用域参数，故用两参形式；作用域仅影响 private 访问，
-                        // VM 类属性均为动态公有属性，不受影响）。帧变量表经
-                        // 调用参数传入闭包（不用 use 捕获——生成运行期同名变量
-                        // 未必已定义），闭包返回差分由外层写回帧（引用不穿透，
-                        // 与无 $this 路径一致）。
-                        $__ediff = Closure::bind(function ($__varsIn) use ($__es) {
-                            foreach ($__varsIn as $__ikey => $__ival) {
+                        // VM 类属性均为动态公有属性，不受影响）。帧变量表以
+                        // use 引用捕获（闭包内导出/写回直达外层帧表）。
+                        Closure::bind(function () use ($__es, &$__vars) {
+                            foreach ($__vars as $__ikey => $__ival) {
                                 if ($__ikey === '$GLOBALS' || $__ikey === '$this') { continue; }
                                 $__inm = substr($__ikey, 1);
-                                $$__inm = $__ival;
+                                $$__inm = &$__vars[$__ikey];
                             }
                             $__isnap = get_defined_vars();
                             eval($__es);
-                            $__d = [];
                             foreach (get_defined_vars() as $__ikey => $__ival) {
-                                // this 由绑定继承；其余为本次桥接引入的内部名
-                                if ($__ikey === 'this' || $__ikey === '__es' || $__ikey === '__varsIn'
-                                    || $__ikey === '__ikey' || $__ikey === '__ival' || $__ikey === '__inm'
-                                    || $__ikey === '__isnap' || $__ikey === '__d') { continue; }
-                                if (!array_key_exists($__ikey, $__isnap) || $__isnap[$__ikey] !== $__ival) {
-                                    $__d['$' . $__ikey] = $__ival;
-                                }
+                                // this 由绑定继承；es/isnap 为桥接内部名
+                                if ($__ikey === 'this' || $__ikey === '__es' || $__ikey === '__isnap') { continue; }
+                                if (array_key_exists($__ikey, $__isnap)) { continue; } // 已穿透
+                                $__vars['$' . $__ikey] = &$$__ikey;
                             }
-                            return $__d;
-                        }, $__eobj)($__vars);
-                        foreach ($__ediff as $__ek => $__ev) { $__vars[$__ek] = $__ev; }
+                        }, $__eobj)();
                         break;
                     }
                     foreach ($__vars as $__ikey => $__ival) {
                         if ($__ikey === '$GLOBALS' || $__ikey === '$this') { continue; }
                         $__inm = substr($__ikey, 1);
-                        $$__inm = $__ival;
+                        $$__inm = &$__vars[$__ikey];
                     }
                     $__isnap = get_defined_vars();
                     eval($__es);
                     foreach (get_defined_vars() as $__ikey => $__ival) {
-                        if ($__ikey === 'this' || !array_key_exists($__ikey, $__isnap) || $__isnap[$__ikey] !== $__ival) {
-                            $__vars['$' . $__ikey] = $__ival;
-                        }
+                        if ($__ikey === 'this' || $__ikey === '__es' || $__ikey === '__isnap') { continue; }
+                        if (array_key_exists($__ikey, $__isnap)) { continue; } // 已穿透
+                        $__vars['$' . $__ikey] = &$$__ikey;
                     }
                     break;
                 case $CALL_NATIVE:

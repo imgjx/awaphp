@@ -871,6 +871,63 @@ final class VmRuntimeGenerator
             '___INSTOF___'   => $nm['instOf'],
             '___CCO___'      => $nm['cco'],
             '___MO___'       => $nm['mo'],
+            // —— handler 内部临时变量占位符（Task：裸名消歧）——
+            // 背景：EVAL_STMT/INCLUDE_RT 桥接会把用户变量以【引用】导出到运行期
+            // 函数作用域（$$name = &帧槽）。若 handler 内部使用裸名临时变量
+            // （$a/$b/$v/$k/...），其赋值会沿引用链【穿透覆写用户帧变量】——
+            // 例如 BINOP 的 $b=array_pop(...) 会把用户 $b 改成栈顶值。
+            // 全部 handler 临时量统一改为 ___T?___ 占位符，经本表替换为随机
+            // 中文变量名（用户程序不可能声明同名变量，杜绝覆写穿透）。
+            // 注意：过滤名单中的字符串字面量（'___ES___' 等）也随占位符一同
+            // 替换，替换后与变量名精确匹配——EVAL_STMT diff 靠它跳过桥接内部量。
+            '___TA___'   => $this->genName('t-a'),
+            '___TB___'   => $this->genName('t-b'),
+            '___TV___'   => $this->genName('t-v'),
+            '___TK___'   => $this->genName('t-k'),
+            '___TC___'   => $this->genName('t-c'),
+            '___TO___'   => $this->genName('t-o'),
+            '___TOLD___' => $this->genName('t-old'),
+            '___TARR___' => $this->genName('t-arr'),
+            '___TI___'   => $this->genName('t-i'),
+            '___TRN___'  => $this->genName('t-rn'),
+            '___TPAIRS___' => $this->genName('t-pairs'),
+            '___TP___'   => $this->genName('t-p'),
+            '___TFN___'  => $this->genName('t-fn'),
+            '___TM___'   => $this->genName('t-m'),
+            '___TOBJ___' => $this->genName('t-obj'),
+            '___TCLS___' => $this->genName('t-cls'),
+            '___TMO___'  => $this->genName('t-mo'),
+            '___TSP___'  => $this->genName('t-sp'),
+            '___TREFS___' => $this->genName('t-refs'),
+            '___TR___'   => $this->genName('t-r'),
+            '___TMM___'  => $this->genName('t-mm'),
+            '___TPR___'  => $this->genName('t-pr'),
+            '___TCO___'  => $this->genName('t-co'),
+            '___TCS___'  => $this->genName('t-cs'),
+            '___TRP___'  => $this->genName('t-rp'),
+            '___TPS___'  => $this->genName('t-ps'),
+            '___TPN___'  => $this->genName('t-pn'),
+            '___TNK___'  => $this->genName('t-nk'),
+            '___TKEYS___' => $this->genName('t-keys'),
+            '___TFOUND___' => $this->genName('t-found'),
+            '___TREF___' => $this->genName('t-ref'),
+            '___TOK___'  => $this->genName('t-ok'),
+            '___TLK___'  => $this->genName('t-lk'),
+            '___TARGC___' => $this->genName('t-argc'),
+            '___TARGS___' => $this->genName('t-args'),
+            '___TG___'   => $this->genName('t-g'),
+            '___TDN___'  => $this->genName('t-dn'),
+            '___TSN___'  => $this->genName('t-sn'),
+            '___TBN___'  => $this->genName('t-bn'),
+            '___TAK___'  => $this->genName('t-ak'),
+            '___TRM___'  => $this->genName('t-rm'),
+            '___TCODE2___' => $this->genName('t-code2'),
+            '___TE___'   => $this->genName('t-e'),
+            '___TFL___'  => $this->genName('t-fl'),
+            '___TCAND___' => $this->genName('t-cand'),
+            '___TN___'   => $this->genName('t-n'),
+            '___ES___'   => $this->genName('t-es'),
+            '___EOBJ___' => $this->genName('t-eobj'),
         ];
     }
 
@@ -935,12 +992,12 @@ TPL;
     private function caseBody(int $logical): string
     {
         $bin = [
-            VmOp::ADD => '($a+$b)', VmOp::SUB => '($a-$b)', VmOp::MUL => '($a*$b)',
-            VmOp::DIV => '($___DIV___($a,$b))', VmOp::MOD => '($___MOD___($a,$b))', VmOp::POW => '($a**$b)',
-            VmOp::CONCAT => '($___TOSTR___($a).$___TOSTR___($b))', VmOp::BW_AND => '($a&$b)', VmOp::BW_OR => '($a|$b)', VmOp::BW_XOR => '($a^$b)',
-            VmOp::BW_SHL => '($a<<$b)', VmOp::BW_SHR => '($a>>$b)', VmOp::EQ => '($a==$b)', VmOp::NE => '($a!=$b)',
-            VmOp::LT => '($a<$b)', VmOp::GT => '($a>$b)', VmOp::LE => '($a<=$b)', VmOp::GE => '($a>=$b)',
-            VmOp::IDENT => '($a===$b)', VmOp::NIDENT => '($a!==$b)', VmOp::SPACESHIP => '($a<=>$b)', VmOp::BOOL_AND => '($a&&$b)', VmOp::BOOL_OR => '($a||$b)', VmOp::BOOL_XOR => '(((bool)$a)!==((bool)$b))',
+            VmOp::ADD => '($___TA___+$___TB___)', VmOp::SUB => '($___TA___-$___TB___)', VmOp::MUL => '($___TA___*$___TB___)',
+            VmOp::DIV => '($___DIV___($___TA___,$___TB___))', VmOp::MOD => '($___MOD___($___TA___,$___TB___))', VmOp::POW => '($___TA___**$___TB___)',
+            VmOp::CONCAT => '($___TOSTR___($___TA___).$___TOSTR___($___TB___))', VmOp::BW_AND => '($___TA___&$___TB___)', VmOp::BW_OR => '($___TA___|$___TB___)', VmOp::BW_XOR => '($___TA___^$___TB___)',
+            VmOp::BW_SHL => '($___TA___<<$___TB___)', VmOp::BW_SHR => '($___TA___>>$___TB___)', VmOp::EQ => '($___TA___==$___TB___)', VmOp::NE => '($___TA___!=$___TB___)',
+            VmOp::LT => '($___TA___<$___TB___)', VmOp::GT => '($___TA___>$___TB___)', VmOp::LE => '($___TA___<=$___TB___)', VmOp::GE => '($___TA___>=$___TB___)',
+            VmOp::IDENT => '($___TA___===$___TB___)', VmOp::NIDENT => '($___TA___!==$___TB___)', VmOp::SPACESHIP => '($___TA___<=>$___TB___)', VmOp::BOOL_AND => '($___TA___&&$___TB___)', VmOp::BOOL_OR => '($___TA___||$___TB___)', VmOp::BOOL_XOR => '(((bool)$___TA___)!==((bool)$___TB___))',
         ];
         switch ($logical) {
             case VmOp::PUSH_C:   return $this->cpool ? '$___STACK___[]=$___CPOOL___[$___INS___[1]];' : '$___STACK___[]=$___INS___[1];';
@@ -956,67 +1013,67 @@ TPL;
             case VmOp::BW_NOT:   return '$___STACK___[]=~array_pop($___STACK___);';
             case VmOp::BOOL_NOT: return '$___STACK___[]=!array_pop($___STACK___);';
             case VmOp::JMP:      return '$___PC___+=$___INS___[1];';
-            case VmOp::JZ:       return '$v=array_pop($___STACK___);if(!$v){$___PC___+=$___INS___[1];}';
-            case VmOp::JNZ:      return '$v=array_pop($___STACK___);if($v){$___PC___+=$___INS___[1];}';
-            case VmOp::CALL:     return '$argc=$___INS___[2];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$___STACK___[]=$___CALLFUNC___($___INS___[1],$args,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}';
-            case VmOp::CALL_VAR: return '$argc=$___INS___[1];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$fn=array_pop($___STACK___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$___STACK___[]=(!is_string($fn)&&is_callable($fn))?([$args,]=$___BINDARGS___($args,null,$___VARS___),call_user_func_array($fn,$args)):$___CALLFUNC___((string)$fn,$args,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}';
-            case VmOp::MECALL:   return '$argc=$___INS___[1];$args=[];$m=array_pop($___STACK___);for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$obj=array_pop($___STACK___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$___STACK___[]=$___CALLMETHOD___($obj,(string)$m,$args,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}';
-            case VmOp::NEW:      return '$argc=$___INS___[2];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$cls=$___INS___[1];if($cls===\'__VAR__\'){$cls=array_pop($___STACK___);}$___STACK___[]=$___NEWOBJ___((string)$cls,$args);';
-            case VmOp::PROPGET:  return '$o=array_pop($___STACK___);$___STACK___[]=$___PROPGET___($o,$___INS___[1]);';
-            case VmOp::PROPSET:  return '$v=array_pop($___STACK___);$o=array_pop($___STACK___);$___PROPSET___($o,$___INS___[1],$v);';
+            case VmOp::JZ:       return '$___TV___=array_pop($___STACK___);if(!$___TV___){$___PC___+=$___INS___[1];}';
+            case VmOp::JNZ:      return '$___TV___=array_pop($___STACK___);if($___TV___){$___PC___+=$___INS___[1];}';
+            case VmOp::CALL:     return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___STACK___[]=$___CALLFUNC___($___INS___[1],$___TARGS___,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}';
+            case VmOp::CALL_VAR: return '$___TARGC___=$___INS___[1];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TFN___=array_pop($___STACK___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___STACK___[]=(!is_string($___TFN___)&&is_callable($___TFN___))?([$___TARGS___,]=$___BINDARGS___($___TARGS___,null,$___VARS___),call_user_func_array($___TFN___,$___TARGS___)):$___CALLFUNC___((string)$___TFN___,$___TARGS___,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}';
+            case VmOp::MECALL:   return '$___TARGC___=$___INS___[1];$___TARGS___=[];$___TM___=array_pop($___STACK___);for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TOBJ___=array_pop($___STACK___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___STACK___[]=$___CALLMETHOD___($___TOBJ___,(string)$___TM___,$___TARGS___,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}';
+            case VmOp::NEW:      return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];if($___TCLS___===\'__VAR__\'){$___TCLS___=array_pop($___STACK___);}$___STACK___[]=$___NEWOBJ___((string)$___TCLS___,$___TARGS___);';
+            case VmOp::PROPGET:  return '$___TO___=array_pop($___STACK___);$___STACK___[]=$___PROPGET___($___TO___,$___INS___[1]);';
+            case VmOp::PROPSET:  return '$___TV___=array_pop($___STACK___);$___TO___=array_pop($___STACK___);$___PROPSET___($___TO___,$___INS___[1],$___TV___);';
             case VmOp::RET:      return '$___RET___=array_pop($___STACK___);$___RETSET___=true;break 2;';
             case VmOp::RET_VOID: return '$___RET___=null;$___RETSET___=true;break 2;';
-            case VmOp::ECHO:     return '$v=array_pop($___STACK___);echo $___TOSTR___($v);';
-            case VmOp::PRINT_:   return '$v=array_pop($___STACK___);echo $___TOSTR___($v);$___STACK___[]=1;';
+            case VmOp::ECHO:     return '$___TV___=array_pop($___STACK___);echo $___TOSTR___($___TV___);';
+            case VmOp::PRINT_:   return '$___TV___=array_pop($___STACK___);echo $___TOSTR___($___TV___);$___STACK___[]=1;';
             case VmOp::HALT:     return '$___RETSET___=true;$___RET___=null;break 2;';
-            case VmOp::ARRAY_MAKE: return '$c=$___INS___[1];$arr=[];for($i=0;$i<$c;$i++){$arr[]=array_pop($___STACK___);}$arr=array_reverse($arr);foreach($arr as $i=>$v){if(is_array($v)&&($v[0]??\'\')===\'__vmrefel__\'){$rn=(string)$v[1];if(!array_key_exists($rn,$___VARS___)){$___VARS___[$rn]=null;}$arr[$i]=&$___VARS___[$rn];}}$___STACK___[]=$arr;';
-            case VmOp::ARRAY_KV: return '$c=$___INS___[1];$arr=[];$pairs=[];for($i=0;$i<$c;$i++){$k=array_pop($___STACK___);$v=array_pop($___STACK___);$pairs[]=[$k,$v];}$pairs=array_reverse($pairs);foreach($pairs as $p){if(is_array($p[1])&&($p[1][0]??\'\')===\'__vmrefel__\'){$rn=(string)$p[1][1];if(!array_key_exists($rn,$___VARS___)){$___VARS___[$rn]=null;}$arr[$p[0]]=&$___VARS___[$rn];}else{$arr[$p[0]]=$p[1];}}$___STACK___[]=$arr;';
-            case VmOp::INDEX_GET: return '$k=array_pop($___STACK___);$arr=array_pop($___STACK___);$___STACK___[]=$___IDXGET___($arr,$k);';
-            case VmOp::INDEX_SET: return '$v=array_pop($___STACK___);$k=array_pop($___STACK___);$arr=array_pop($___STACK___);if(!is_array($arr)&&!is_object($arr)){$arr=[];}if(is_array($arr)){$arr[$k]=$v;}else{$arr->$k=$v;}$___STACK___[]=$arr;';
-            case VmOp::COUNT:    return '$arr=array_pop($___STACK___);$___STACK___[]=is_countable($arr)?count($arr):0;';
-            case VmOp::ARRAY_PUSH:return '$v=array_pop($___STACK___);$arr=array_pop($___STACK___);if(is_array($arr)){$arr[]=$v;}$___STACK___[]=$arr;';
-            case VmOp::PRE_INC:  return '$c=$___INC___($___VARS___[$___INS___[1]]??null,1);$___VARS___[$___INS___[1]]=$c;$___STACK___[]=$c;';
-            case VmOp::PRE_DEC:  return '$c=$___INC___($___VARS___[$___INS___[1]]??null,-1);$___VARS___[$___INS___[1]]=$c;$___STACK___[]=$c;';
-            case VmOp::POST_INC: return '$c=$___VARS___[$___INS___[1]]??null;$___VARS___[$___INS___[1]]=$___INC___($c,1);$___STACK___[]=$c;';
-            case VmOp::POST_DEC: return '$c=$___VARS___[$___INS___[1]]??null;$___VARS___[$___INS___[1]]=$___INC___($c,-1);$___STACK___[]=$c;';
-            case VmOp::SCALL:    return '$argc=$___INS___[3];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$cls=$___INS___[1];$m=$___INS___[2];$mo=$___MO___($cls,$m);if($mo!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$sp=$___P___[\'classParams\'][$mo][$m]??[];[$args,$refs]=$___BINDARGS___($args,$sp,$___VARS___);$args=$___PAD___($sp,$args);$___EMPTYV___=[];$r=$___RUN___($___P___[\'classes\'][$mo][\'methods\'][$m],$___EMPTYV___,null,$args);foreach($refs as $i=>$mm){if(array_key_exists($mm[1],$___EMPTYV___)){$___VARS___[$mm[0]]=$___EMPTYV___[$mm[1]];}}$___STACK___[]=$r;if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}}elseif(is_string($cls)&&class_exists($cls)&&method_exists($cls,$m)){[$args,]=$___BINDARGS___($args,null,$___VARS___);$___STACK___[]=call_user_func_array([$cls,$m],$args);}else{$___STACK___[]=null;}';
-            case VmOp::SCALL_VAR: return '$argc=$___INS___[2];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$cls=$___INS___[1];$m=array_pop($___STACK___);$mo=is_string($m)?$___MO___($cls,$m):null;if($mo!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$sp=$___P___[\'classParams\'][$mo][$m]??[];[$args,$refs]=$___BINDARGS___($args,$sp,$___VARS___);$args=$___PAD___($sp,$args);$___EMPTYV___=[];$r=$___RUN___($___P___[\'classes\'][$mo][\'methods\'][$m],$___EMPTYV___,null,$args);foreach($refs as $i=>$mm){if(array_key_exists($mm[1],$___EMPTYV___)){$___VARS___[$mm[0]]=$___EMPTYV___[$mm[1]];}}$___STACK___[]=$r;if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}}elseif(is_string($cls)&&is_string($m)&&class_exists($cls)&&method_exists($cls,$m)){[$args,]=$___BINDARGS___($args,null,$___VARS___);$___STACK___[]=call_user_func_array([$cls,$m],$args);}else{$___STACK___[]=null;}';
-            case VmOp::INSTANCEOF: return '$v=array_pop($___STACK___);$___STACK___[]=$___INSTOF___($v,$___INS___[1]);';
-            case VmOp::SPROP:    return '$cls=$___INS___[1];$pr=$___INS___[2];$co=$___CCO___($cls,$pr);if($co!==null){$cs=$___P___[\'classes\'][$co][\'consts\'][$pr];$___EMPTYV___=[];$___STACK___[]=($cs===null)?null:$___RUN___($cs,$___EMPTYV___,null,[]);}elseif(defined($cls.\'::\'.$pr)){$___STACK___[]=constant($cls.\'::\'.$pr);}elseif(is_string($cls)&&class_exists($cls)){$rp=new \ReflectionClass($cls);$ps=$rp->getStaticProperties();$pn=ltrim((string)$pr,\'$\');$___STACK___[]=array_key_exists($pn,$ps)?$ps[$pn]:null;}else{$___STACK___[]=null;}';
-            case VmOp::ISSET_:    return '$nk=$___INS___[2];$keys=[];for($i=0;$i<$nk;$i++){$keys[]=array_pop($___STACK___);}$keys=array_reverse($keys);$found=false;$v=$___PATHGET___($___VARS___,$___INS___[1],$keys,$found);$___STACK___[]=$found&&$v!==null;';
-            case VmOp::EMPTY_:    return '$nk=$___INS___[2];$keys=[];for($i=0;$i<$nk;$i++){$keys[]=array_pop($___STACK___);}$keys=array_reverse($keys);$found=false;$v=$___PATHGET___($___VARS___,$___INS___[1],$keys,$found);$___STACK___[]=(!$found)||$v==false;';
-            case VmOp::UNSET_:    return '$nk=$___INS___[2];$keys=[];for($i=0;$i<$nk;$i++){$keys[]=array_pop($___STACK___);}$keys=array_reverse($keys);if($___INS___[1]===\'$GLOBALS\'){if($nk===1){unset($GLOBALS[$keys[0]]);}}elseif($nk===0){unset($___VARS___[$___INS___[1]]);}else{$ref=&$___VARS___[$___INS___[1]];$ok=true;for($i=0;$i<$nk-1;$i++){$k=$keys[$i];if(is_array($ref)&&isset($ref[$k])){$ref=&$ref[$k];}elseif(is_object($ref)){$ref=&$ref->$k;}else{$ok=false;break;}}if($ok){$lk=$keys[$nk-1];if(is_array($ref)){unset($ref[$lk]);}elseif(is_object($ref)){unset($ref->$lk);}}}';
-            case VmOp::EXIT_:     return '$v=array_pop($___STACK___);if(is_int($v)){exit($v);}if(is_string($v)){echo $v;}exit(0);';
+            case VmOp::ARRAY_MAKE: return '$___TC___=$___INS___[1];$___TARR___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TARR___[]=array_pop($___STACK___);}$___TARR___=array_reverse($___TARR___);foreach($___TARR___ as $___TI___=>$___TV___){if(is_array($___TV___)&&($___TV___[0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TV___[1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TI___]=&$___VARS___[$___TRN___];}}$___STACK___[]=$___TARR___;';
+            case VmOp::ARRAY_KV: return '$___TC___=$___INS___[1];$___TARR___=[];$___TPAIRS___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TK___=array_pop($___STACK___);$___TV___=array_pop($___STACK___);$___TPAIRS___[]=[$___TK___,$___TV___];}$___TPAIRS___=array_reverse($___TPAIRS___);foreach($___TPAIRS___ as $___TP___){if(is_array($___TP___[1])&&($___TP___[1][0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TP___[1][1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TP___[0]]=&$___VARS___[$___TRN___];}else{$___TARR___[$___TP___[0]]=$___TP___[1];}}$___STACK___[]=$___TARR___;';
+            case VmOp::INDEX_GET: return '$___TK___=array_pop($___STACK___);$___TARR___=array_pop($___STACK___);$___STACK___[]=$___IDXGET___($___TARR___,$___TK___);';
+            case VmOp::INDEX_SET: return '$___TV___=array_pop($___STACK___);$___TK___=array_pop($___STACK___);$___TARR___=array_pop($___STACK___);if(!is_array($___TARR___)&&!is_object($___TARR___)){$___TARR___=[];}if(is_array($___TARR___)){$___TARR___[$___TK___]=$___TV___;}else{$___TARR___->$___TK___=$___TV___;}$___STACK___[]=$___TARR___;';
+            case VmOp::COUNT:    return '$___TARR___=array_pop($___STACK___);$___STACK___[]=is_countable($___TARR___)?count($___TARR___):0;';
+            case VmOp::ARRAY_PUSH:return '$___TV___=array_pop($___STACK___);$___TARR___=array_pop($___STACK___);if(is_array($___TARR___)){$___TARR___[]=$___TV___;}$___STACK___[]=$___TARR___;';
+            case VmOp::PRE_INC:  return '$___TC___=$___INC___($___VARS___[$___INS___[1]]??null,1);$___VARS___[$___INS___[1]]=$___TC___;$___STACK___[]=$___TC___;';
+            case VmOp::PRE_DEC:  return '$___TC___=$___INC___($___VARS___[$___INS___[1]]??null,-1);$___VARS___[$___INS___[1]]=$___TC___;$___STACK___[]=$___TC___;';
+            case VmOp::POST_INC: return '$___TC___=$___VARS___[$___INS___[1]]??null;$___VARS___[$___INS___[1]]=$___INC___($___TC___,1);$___STACK___[]=$___TC___;';
+            case VmOp::POST_DEC: return '$___TC___=$___VARS___[$___INS___[1]]??null;$___VARS___[$___INS___[1]]=$___INC___($___TC___,-1);$___STACK___[]=$___TC___;';
+            case VmOp::SCALL:    return '$___TARGC___=$___INS___[3];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=$___INS___[2];$___TMO___=$___MO___($___TCLS___,$___TM___);if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=[];$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,null,$___TARGS___);foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___STACK___[]=$___TR___;if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){[$___TARGS___,]=$___BINDARGS___($___TARGS___,null,$___VARS___);$___STACK___[]=call_user_func_array([$___TCLS___,$___TM___],$___TARGS___);}else{$___STACK___[]=null;}';
+            case VmOp::SCALL_VAR: return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=array_pop($___STACK___);$___TMO___=is_string($___TM___)?$___MO___($___TCLS___,$___TM___):null;if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=[];$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,null,$___TARGS___);foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___STACK___[]=$___TR___;if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&is_string($___TM___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){[$___TARGS___,]=$___BINDARGS___($___TARGS___,null,$___VARS___);$___STACK___[]=call_user_func_array([$___TCLS___,$___TM___],$___TARGS___);}else{$___STACK___[]=null;}';
+            case VmOp::INSTANCEOF: return '$___TV___=array_pop($___STACK___);$___STACK___[]=$___INSTOF___($___TV___,$___INS___[1]);';
+            case VmOp::SPROP:    return '$___TCLS___=$___INS___[1];$___TPR___=$___INS___[2];$___TCO___=$___CCO___($___TCLS___,$___TPR___);if($___TCO___!==null){$___TCS___=$___P___[\'classes\'][$___TCO___][\'consts\'][$___TPR___];$___EMPTYV___=[];$___STACK___[]=($___TCS___===null)?null:$___RUN___($___TCS___,$___EMPTYV___,null,[]);}elseif(defined($___TCLS___.\'::\'.$___TPR___)){$___STACK___[]=constant($___TCLS___.\'::\'.$___TPR___);}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)){$___TRP___=new \ReflectionClass($___TCLS___);$___TPS___=$___TRP___->getStaticProperties();$___TPN___=ltrim((string)$___TPR___,\'$\');$___STACK___[]=array_key_exists($___TPN___,$___TPS___)?$___TPS___[$___TPN___]:null;}else{$___STACK___[]=null;}';
+            case VmOp::ISSET_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=array_pop($___STACK___);}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[1],$___TKEYS___,$___TFOUND___);$___STACK___[]=$___TFOUND___&&$___TV___!==null;';
+            case VmOp::EMPTY_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=array_pop($___STACK___);}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[1],$___TKEYS___,$___TFOUND___);$___STACK___[]=(!$___TFOUND___)||$___TV___==false;';
+            case VmOp::UNSET_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=array_pop($___STACK___);}$___TKEYS___=array_reverse($___TKEYS___);if($___INS___[1]===\'$GLOBALS\'){if($___TNK___===1){unset($GLOBALS[$___TKEYS___[0]]);}}elseif($___TNK___===0){unset($___VARS___[$___INS___[1]]);}else{$___TREF___=&$___VARS___[$___INS___[1]];$___TOK___=true;for($___TI___=0;$___TI___<$___TNK___-1;$___TI___++){$___TK___=$___TKEYS___[$___TI___];if(is_array($___TREF___)&&isset($___TREF___[$___TK___])){$___TREF___=&$___TREF___[$___TK___];}elseif(is_object($___TREF___)){$___TREF___=&$___TREF___->$___TK___;}else{$___TOK___=false;break;}}if($___TOK___){$___TLK___=$___TKEYS___[$___TNK___-1];if(is_array($___TREF___)){unset($___TREF___[$___TLK___]);}elseif(is_object($___TREF___)){unset($___TREF___->$___TLK___);}}}';
+            case VmOp::EXIT_:     return '$___TV___=array_pop($___STACK___);if(is_int($___TV___)){exit($___TV___);}if(is_string($___TV___)){echo $___TV___;}exit(0);';
             case VmOp::EXIT_VOID: return 'exit(0);';
-            case VmOp::PHPRUN:    return '$argc=$___INS___[1];$code2=null;for($i=0;$i<$argc;$i++){$code2=array_pop($___STACK___);}if(is_array($___VARS___)){extract($___VARS___);}eval($code2);';
+            case VmOp::PHPRUN:    return '$___TARGC___=$___INS___[1];$___TCODE2___=null;for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TCODE2___=array_pop($___STACK___);}if(is_array($___VARS___)){extract($___VARS___);}eval($___TCODE2___);';
             // include（构建期内嵌）：嵌入段与当前帧【共享变量表】（PHP 包含作用域语义：
             // 被包含文件能看到 includer 的变量，其新变量在返回后也对 includer 可见）。
             // once=1 且同一 embed 已执行过 → 直接压 true 跳过。
-            case VmOp::INCLUDE_EMBED: return '$e=$___INS___[1];if($___INS___[2]&&isset($___INCTRACK___[$e])){$___STACK___[]=true;}else{$___INCTRACK___[$e]=true;$___STACK___[]=$___RUN___($___P___[\'embeds\'][$e]??[],$___VARS___,$___THIS___,[],$___ISG___,$___P___[\'embedET\'][$e] ?? null);}';
+            case VmOp::INCLUDE_EMBED: return '$___TE___=$___INS___[1];if($___INS___[2]&&isset($___INCTRACK___[$___TE___])){$___STACK___[]=true;}else{$___INCTRACK___[$___TE___]=true;$___STACK___[]=$___RUN___($___P___[\'embeds\'][$___TE___]??[],$___VARS___,$___THIS___,[],$___ISG___,$___P___[\'embedET\'][$___TE___] ?? null);}';
             // include（运行期真实包含）：路径弹栈；flags bit0=once bit1=require。
             // 经"帧变量表 ⇄ 真实局部变量"双向桥接保住作用域：先把帧变量导出为
             // 真实局部变量（被包含文件可见），快照后真实 include/require，再把
             // 新增/被修改的变量差分捕获回帧表（get_defined_vars 键名无 $ 前缀）。
-            case VmOp::INCLUDE_RT: return '$fl=$___INS___[1];$___IPTH___=(string)array_pop($___STACK___);$rp=realpath($___IPTH___);if($rp===false&&!empty($___P___[\'srcBase\'])){$cand=rtrim((string)$___P___[\'srcBase\'],\'/\\\\\').\'/\'.$___IPTH___;if(is_file($cand)){$___IPTH___=$cand;$rp=realpath($cand);}}$k=\'r\'.($rp!==false?$rp:$___IPTH___);if(($fl&1)&&isset($___INCTRACK___[$k])){$___STACK___[]=true;}else{$___INCTRACK___[$k]=true;foreach($___VARS___ as $___IKEY___=>$___IVAL___){if($___IKEY___===\'$GLOBALS\'||$___IKEY___===\'$this\'){continue;}$___INM___=substr($___IKEY___,1);$$___INM___=$___IVAL___;}$___ISNAP___=get_defined_vars();$___IRETV___=($fl&2)?@require $___IPTH___:(($fl&4)?@include $___IPTH___:include $___IPTH___);foreach(get_defined_vars() as $___IKEY___=>$___IVAL___){if($___IKEY___===\'this\'||!array_key_exists($___IKEY___,$___ISNAP___)||$___ISNAP___[$___IKEY___]!==$___IVAL___){$___VARS___[\'$\'.$___IKEY___]=$___IVAL___;}}$___STACK___[]=$___IRETV___;}';
+            case VmOp::INCLUDE_RT: return '$___TFl___=$___INS___[1];$___IPTH___=(string)array_pop($___STACK___);$___TRP___=realpath($___IPTH___);if($___TRP___===false&&!empty($___P___[\'srcBase\'])){$___TCAND___=rtrim((string)$___P___[\'srcBase\'],\'/\\\\\').\'/\'.$___IPTH___;if(is_file($___TCAND___)){$___IPTH___=$___TCAND___;$___TRP___=realpath($___TCAND___);}}$___TK___=\'r\'.($___TRP___!==false?$___TRP___:$___IPTH___);if(($___TFl___&1)&&isset($___INCTRACK___[$___TK___])){$___STACK___[]=true;}else{$___INCTRACK___[$___TK___]=true;foreach($___VARS___ as $___IKEY___=>$___IVAL___){if($___IKEY___===\'$GLOBALS\'||$___IKEY___===\'$this\'){continue;}$___INM___=substr($___IKEY___,1);$$___INM___=$___IVAL___;}$___ISNAP___=get_defined_vars();$___IRETV___=($___TFl___&2)?@require $___IPTH___:(($___TFl___&4)?@include $___IPTH___:include $___IPTH___);foreach(get_defined_vars() as $___IKEY___=>$___IVAL___){if($___IKEY___===\'this\'||!array_key_exists($___IKEY___,$___ISNAP___)||$___ISNAP___[$___IKEY___]!==$___IVAL___){$___VARS___[\'$\'.$___IKEY___]=$___IVAL___;}}$___STACK___[]=$___IRETV___;}';
             // 语句级回退：源码串弹栈，帧变量导出为真实局部变量 → 快照 → eval →
             // 差分写回（与 INCLUDE_RT 桥接同构）。eval 内的函数/类声明进入真实
             // 符号表（PHP 语义：动态编译的声明对后续调用可见）。
-            case VmOp::EVAL_STMT: return '$es=array_pop($___STACK___);$eobj=(isset($___VARS___[\'$this\'])&&is_object($___VARS___[\'$this\']))?$___VARS___[\'$this\']:null;if($eobj!==null){$ediff=Closure::bind(function($vars)use($es){foreach($vars as $ikey=>$ival){if($ikey===\'$GLOBALS\'||$ikey===\'$this\'){continue;}$inm=substr($ikey,1);$$inm=$ival;}$isnap=get_defined_vars();eval($es);$d=[];foreach(get_defined_vars() as $ikey=>$ival){if($ikey===\'this\'||$ikey===\'es\'||$ikey===\'vars\'||$ikey===\'ikey\'||$ikey===\'ival\'||$ikey===\'inm\'||$ikey===\'isnap\'||$ikey===\'d\'){continue;}if(!array_key_exists($ikey,$isnap)||$isnap[$ikey]!==$ival){$d[\'$\'.$ikey]=$ival;}}return $d;},$eobj)($___VARS___);foreach($ediff as $ek=>$ev){$___VARS___[$ek]=$ev;}}else{foreach($___VARS___ as $___IKEY___=>$___IVAL___){if($___IKEY___===\'$GLOBALS\'||$___IKEY___===\'$this\'){continue;}$___INM___=substr($___IKEY___,1);$$___INM___=$___IVAL___;}$___ISNAP___=get_defined_vars();eval($es);foreach(get_defined_vars() as $___IKEY___=>$___IVAL___){if($___IKEY___===\'this\'||!array_key_exists($___IKEY___,$___ISNAP___)||$___ISNAP___[$___IKEY___]!==$___IVAL___){$___VARS___[\'$\'.$___IKEY___]=$___IVAL___;}}}';
+            case VmOp::EVAL_STMT: return '$___ES___=array_pop($___STACK___);$___EOBJ___=(isset($___VARS___[\'$this\'])&&is_object($___VARS___[\'$this\']))?$___VARS___[\'$this\']:null;if($___EOBJ___!==null){Closure::bind(function()use($___ES___,&$___VARS___){foreach($___VARS___ as $___IKEY___=>$___IVAL___){if($___IKEY___===\'$GLOBALS\'||$___IKEY___===\'$this\'){continue;}$___INM___=substr($___IKEY___,1);$$___INM___=&$___VARS___[$___IKEY___];}$___ISNAP___=get_defined_vars();eval($___ES___);foreach(get_defined_vars() as $___IKEY___=>$___IVAL___){if($___IKEY___===\'this\'||$___IKEY___===\'___ES___\'||$___IKEY___===\'___ISNAP___\'){continue;}if(array_key_exists($___IKEY___,$___ISNAP___)){continue;}$___VARS___[\'$\'.$___IKEY___]=&$$___IKEY___;}},$___EOBJ___)();}else{foreach($___VARS___ as $___IKEY___=>$___IVAL___){if($___IKEY___===\'$GLOBALS\'||$___IKEY___===\'$this\'){continue;}$___INM___=substr($___IKEY___,1);$$___INM___=&$___VARS___[$___IKEY___];}$___ISNAP___=get_defined_vars();eval($___ES___);foreach(get_defined_vars() as $___IKEY___=>$___IVAL___){if($___IKEY___===\'this\'||$___IKEY___===\'___ES___\'||$___IKEY___===\'___ISNAP___\'){continue;}if(array_key_exists($___IKEY___,$___ISNAP___)){continue;}$___VARS___[\'$\'.$___IKEY___]=&$$___IKEY___;}}';
             // 原生函数间接调用：nativeIdx 索引 natTbl（构建期生成的函数名表），
             // 经 $___CALLFN___ 分发（保留高阶函数回调包装语义）。
             // refMask（第 3 操作数）标记 by-ref 参数位：对应实参是 PUSH_REF 压入的
             // 引用句柄，运行期绑定为帧变量真实引用后传入（sort/usort/array_push 等）。
-            case VmOp::CALL_NATIVE: return '$argc=$___INS___[2];$args=[];for($i=0;$i<$argc;$i++){$args[]=array_pop($___STACK___);}$args=array_reverse($args);$rm=$___INS___[3]??0;$args=$___BINDNATIVE___($args,$rm,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___VARS___)){$___GFRAME___[$k]=$___VARS___[$k];}}}$___STACK___[]=$___CALLFN___((int)$___INS___[1],$args);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $g){$k=\'$\'.$g;if(array_key_exists($k,$___GFRAME___)){$___VARS___[$k]=$___GFRAME___[$k];}}}';
-            case VmOp::CAST_INT:    return '$v=array_pop($___STACK___);$___STACK___[]=(int)$v;';
-            case VmOp::CAST_FLOAT:  return '$v=array_pop($___STACK___);$___STACK___[]=(float)$v;';
-            case VmOp::CAST_STRING: return '$v=array_pop($___STACK___);$___STACK___[]=$___TOSTR___($v);';
-            case VmOp::CAST_BOOL:   return '$v=array_pop($___STACK___);$___STACK___[]=(bool)$v;';
-            case VmOp::CAST_ARRAY:  return '$v=array_pop($___STACK___);$___STACK___[]=(array)$v;';
-            case VmOp::CAST_OBJECT: return '$v=array_pop($___STACK___);$___STACK___[]=(object)$v;';
+            case VmOp::CALL_NATIVE: return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=array_pop($___STACK___);}$___TARGS___=array_reverse($___TARGS___);$___TRM___=$___INS___[3]??0;$___TARGS___=$___BINDNATIVE___($___TARGS___,$___TRM___,$___VARS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___STACK___[]=$___CALLFN___((int)$___INS___[1],$___TARGS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}';
+            case VmOp::CAST_INT:    return '$___TV___=array_pop($___STACK___);$___STACK___[]=(int)$___TV___;';
+            case VmOp::CAST_FLOAT:  return '$___TV___=array_pop($___STACK___);$___STACK___[]=(float)$___TV___;';
+            case VmOp::CAST_STRING: return '$___TV___=array_pop($___STACK___);$___STACK___[]=$___TOSTR___($___TV___);';
+            case VmOp::CAST_BOOL:   return '$___TV___=array_pop($___STACK___);$___STACK___[]=(bool)$___TV___;';
+            case VmOp::CAST_ARRAY:  return '$___TV___=array_pop($___STACK___);$___STACK___[]=(array)$___TV___;';
+            case VmOp::CAST_OBJECT: return '$___TV___=array_pop($___STACK___);$___STACK___[]=(object)$___TV___;';
             case VmOp::PUSH_GLOBALS: return '$___STACK___[]=$GLOBALS;';
-            case VmOp::GLOBALS_SET:  return '$v=array_pop($___STACK___);$k=array_pop($___STACK___);$GLOBALS[$k]=$v;array_pop($___STACK___);';
-            case VmOp::GLOBAL_REF:  return '$n=$___INS___[1];if(!array_key_exists($n,$___GFRAME___)){$___GFRAME___[$n]=null;}$___VARS___[$n]=&$___GFRAME___[$n];';
-            case VmOp::DEFINE:      return '$v=array_pop($___STACK___);define($___INS___[1],$v);';
+            case VmOp::GLOBALS_SET:  return '$___TV___=array_pop($___STACK___);$___TK___=array_pop($___STACK___);$GLOBALS[$___TK___]=$___TV___;array_pop($___STACK___);';
+            case VmOp::GLOBAL_REF:  return '$___TN___=$___INS___[1];if(!array_key_exists($___TN___,$___GFRAME___)){$___GFRAME___[$___TN___]=null;}$___VARS___[$___TN___]=&$___GFRAME___[$___TN___];';
+            case VmOp::DEFINE:      return '$___TV___=array_pop($___STACK___);define($___INS___[1],$___TV___);';
             case VmOp::CONST_FETCH: return '$___STACK___[]=defined($___INS___[1])?constant($___INS___[1]):null;';
             // —— 异常处理（try/catch/finally 真编译）—— 与 runtime.php 参考运行期同语义 ——
             case VmOp::THROW:         return '$___XTH___=array_pop($___STACK___);throw $___XTH___;';
@@ -1024,10 +1081,10 @@ TPL;
             case VmOp::ARG_SPREAD:   return '$___SPD___=array_pop($___STACK___);$___STACK___[]=[\'__vmspread__\',is_array($___SPD___)?$___SPD___:(is_object($___SPD___)?get_object_vars($___SPD___):(array)$___SPD___)];';
             case VmOp::ARG_NAMED:   return '$___NV___=array_pop($___STACK___);$___STACK___[]=[\'__vmnamed__\',$___INS___[1],$___NV___];';
             // —— 引用赋值（=& 别名族）—— 与 runtime.php 参考运行期逐行同语义 ——
-            case VmOp::MAKE_REF:     return '$dn=$___INS___[1];$sn=$___INS___[2];if(!array_key_exists($sn,$___VARS___)){$___VARS___[$sn]=null;}$___VARS___[$dn]=&$___VARS___[$sn];';
-            case VmOp::MAKE_REF_EL:  return '$dn=$___INS___[1];$bn=$___INS___[2];$k=array_pop($___STACK___);if(!array_key_exists($bn,$___VARS___)||!is_array($___VARS___[$bn])){$___VARS___[$bn]=[];}if(!array_key_exists($k,$___VARS___[$bn])){$___VARS___[$bn][$k]=null;}$___VARS___[$dn]=&$___VARS___[$bn][$k];';
-            case VmOp::MAKE_REF_PROP:return '$dn=$___INS___[1];$pn=$___INS___[2];$o=array_pop($___STACK___);if(!is_object($o)){break;}if(!isset($o->$pn)){$o->$pn=null;}$___VARS___[$dn]=&$o->$pn;';
-            case VmOp::MAKE_REF_APPEND:return '$dn=$___INS___[1];$bn=$___INS___[2];if(!array_key_exists($bn,$___VARS___)||!is_array($___VARS___[$bn])){$___VARS___[$bn]=[];}$___VARS___[$bn][]=null;end($___VARS___[$bn]);$ak=key($___VARS___[$bn]);$___VARS___[$dn]=&$___VARS___[$bn][$ak];';
+            case VmOp::MAKE_REF:     return '$___TDN___=$___INS___[1];$___TSN___=$___INS___[2];if(!array_key_exists($___TSN___,$___VARS___)){$___VARS___[$___TSN___]=null;}$___VARS___[$___TDN___]=&$___VARS___[$___TSN___];';
+            case VmOp::MAKE_REF_EL:  return '$___TDN___=$___INS___[1];$___TBN___=$___INS___[2];$___TK___=array_pop($___STACK___);if(!array_key_exists($___TBN___,$___VARS___)||!is_array($___VARS___[$___TBN___])){$___VARS___[$___TBN___]=[];}if(!array_key_exists($___TK___,$___VARS___[$___TBN___])){$___VARS___[$___TBN___][$___TK___]=null;}$___VARS___[$___TDN___]=&$___VARS___[$___TBN___][$___TK___];';
+            case VmOp::MAKE_REF_PROP:return '$___TDN___=$___INS___[1];$___TPN___=$___INS___[2];$___TO___=array_pop($___STACK___);if(!is_object($___TO___)){break;}if(!isset($___TO___->$___TPN___)){$___TO___->$___TPN___=null;}$___VARS___[$___TDN___]=&$___TO___->$___TPN___;';
+            case VmOp::MAKE_REF_APPEND:return '$___TDN___=$___INS___[1];$___TBN___=$___INS___[2];if(!array_key_exists($___TBN___,$___VARS___)||!is_array($___VARS___[$___TBN___])){$___VARS___[$___TBN___]=[];}$___VARS___[$___TBN___][]=null;end($___VARS___[$___TBN___]);$___TAK___=key($___VARS___[$___TBN___]);$___VARS___[$___TDN___]=&$___VARS___[$___TBN___][$___TAK___];';
             case VmOp::EX_FINALLY_ENTER: return '$___INFINALLY___=true;';
             case VmOp::EX_FINALLY_END:
                 // finally 收尾：按 pending（待重抛）与 ctl（延后返回）收束；无则顺序落下。
@@ -1045,51 +1102,51 @@ TPL;
                     if (!isset($bin[$op])) { continue; }
                     $arms[] = "case $i:\$___STACK___[]={$bin[$op]};break;";
                 }
-                return '$b=array_pop($___STACK___);$a=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
+                return '$___TB___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
             case VmOp::UNOP:
                 $un = [VmOp::NEG => '-', VmOp::BW_NOT => '~', VmOp::BOOL_NOT => '!'];
                 $arms = [];
                 foreach (VmIsa::UN as $i => $op) {
-                    $arms[] = "case $i:\$___STACK___[]={$un[$op]}\$v;break;";
+                    $arms[] = "case $i:\$___STACK___[]={$un[$op]}\$___TV___;break;";
                 }
-                return '$v=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
+                return '$___TV___=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
             case VmOp::CAST_OP:
                 $cast = [VmOp::CAST_INT => '(int)', VmOp::CAST_FLOAT => '(float)', VmOp::CAST_STRING => '(string)', VmOp::CAST_BOOL => '(bool)', VmOp::CAST_ARRAY => '(array)', VmOp::CAST_OBJECT => '(object)'];
                 $arms = [];
                 foreach (VmIsa::CAST as $i => $op) {
-                    $arms[] = "case $i:\$___STACK___[]={$cast[$op]}\$v;break;";
+                    $arms[] = "case $i:\$___STACK___[]={$cast[$op]}\$___TV___;break;";
                 }
-                return '$v=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
+                return '$___TV___=array_pop($___STACK___);switch($___INS___[1]){' . implode('', $arms) . '}';
             case VmOp::INC_OP:
                 return 'switch($___INS___[1]){'
-                    . 'case 0:$c=$___INC___($___VARS___[$___INS___[2]]??null,1);$___VARS___[$___INS___[2]]=$c;$___STACK___[]=$c;break;'
-                    . 'case 1:$c=$___INC___($___VARS___[$___INS___[2]]??null,-1);$___VARS___[$___INS___[2]]=$c;$___STACK___[]=$c;break;'
-                    . 'case 2:$c=$___VARS___[$___INS___[2]]??null;$___VARS___[$___INS___[2]]=$___INC___($c,1);$___STACK___[]=$c;break;'
-                    . 'case 3:$c=$___VARS___[$___INS___[2]]??null;$___VARS___[$___INS___[2]]=$___INC___($c,-1);$___STACK___[]=$c;break;'
-                    . 'case 4:$old=array_pop($___STACK___);$o=array_pop($___STACK___);$___PROPSET___($o,$___INS___[2],$___INC___($old,1));$___STACK___[]=$old;break;'
-                    . 'case 5:$old=array_pop($___STACK___);$o=array_pop($___STACK___);$___PROPSET___($o,$___INS___[2],$___INC___($old,-1));$___STACK___[]=$old;break;'
-                    . 'case 6:$old=array_pop($___STACK___);$o=array_pop($___STACK___);$c=$___INC___($old,1);$___PROPSET___($o,$___INS___[2],$c);$___STACK___[]=$c;break;'
-                    . 'case 7:$old=array_pop($___STACK___);$o=array_pop($___STACK___);$c=$___INC___($old,-1);$___PROPSET___($o,$___INS___[2],$c);$___STACK___[]=$c;break;'
-                    . 'case 8:$k=array_pop($___STACK___);$a=array_pop($___STACK___);if(is_array($a)){$old=$___IDXGET___($a,$k);$c=$___INC___($old,1);$a[$k]=$c;}elseif(is_object($a)){$old=$___PROPGET___($a,$k);$c=$___INC___($old,1);$___PROPSET___($a,$k,$c);}else{$old=null;$c=$___INC___(null,1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$a;}$___STACK___[]=$old;break;'
-                    . 'case 9:$k=array_pop($___STACK___);$a=array_pop($___STACK___);if(is_array($a)){$old=$___IDXGET___($a,$k);$c=$___INC___($old,-1);$a[$k]=$c;}elseif(is_object($a)){$old=$___PROPGET___($a,$k);$c=$___INC___($old,-1);$___PROPSET___($a,$k,$c);}else{$old=null;$c=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$a;}$___STACK___[]=$old;break;'
-                    . 'case 10:$k=array_pop($___STACK___);$a=array_pop($___STACK___);if(is_array($a)){$old=$___IDXGET___($a,$k);$c=$___INC___($old,1);$a[$k]=$c;}elseif(is_object($a)){$old=$___PROPGET___($a,$k);$c=$___INC___($old,1);$___PROPSET___($a,$k,$c);}else{$old=null;$c=$___INC___(null,1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$a;}$___STACK___[]=$c;break;'
-                    . 'case 11:$k=array_pop($___STACK___);$a=array_pop($___STACK___);if(is_array($a)){$old=$___IDXGET___($a,$k);$c=$___INC___($old,-1);$a[$k]=$c;}elseif(is_object($a)){$old=$___PROPGET___($a,$k);$c=$___INC___($old,-1);$___PROPSET___($a,$k,$c);}else{$old=null;$c=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$a;}$___STACK___[]=$c;break;'
+                    . 'case 0:$___TC___=$___INC___($___VARS___[$___INS___[2]]??null,1);$___VARS___[$___INS___[2]]=$___TC___;$___STACK___[]=$___TC___;break;'
+                    . 'case 1:$___TC___=$___INC___($___VARS___[$___INS___[2]]??null,-1);$___VARS___[$___INS___[2]]=$___TC___;$___STACK___[]=$___TC___;break;'
+                    . 'case 2:$___TC___=$___VARS___[$___INS___[2]]??null;$___VARS___[$___INS___[2]]=$___INC___($___TC___,1);$___STACK___[]=$___TC___;break;'
+                    . 'case 3:$___TC___=$___VARS___[$___INS___[2]]??null;$___VARS___[$___INS___[2]]=$___INC___($___TC___,-1);$___STACK___[]=$___TC___;break;'
+                    . 'case 4:$___TOLD___=array_pop($___STACK___);$___TO___=array_pop($___STACK___);$___PROPSET___($___TO___,$___INS___[2],$___INC___($___TOLD___,1));$___STACK___[]=$___TOLD___;break;'
+                    . 'case 5:$___TOLD___=array_pop($___STACK___);$___TO___=array_pop($___STACK___);$___PROPSET___($___TO___,$___INS___[2],$___INC___($___TOLD___,-1));$___STACK___[]=$___TOLD___;break;'
+                    . 'case 6:$___TOLD___=array_pop($___STACK___);$___TO___=array_pop($___STACK___);$___TC___=$___INC___($___TOLD___,1);$___PROPSET___($___TO___,$___INS___[2],$___TC___);$___STACK___[]=$___TC___;break;'
+                    . 'case 7:$___TOLD___=array_pop($___STACK___);$___TO___=array_pop($___STACK___);$___TC___=$___INC___($___TOLD___,-1);$___PROPSET___($___TO___,$___INS___[2],$___TC___);$___STACK___[]=$___TC___;break;'
+                    . 'case 8:$___TK___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___STACK___[]=$___TOLD___;break;'
+                    . 'case 9:$___TK___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___STACK___[]=$___TOLD___;break;'
+                    . 'case 10:$___TK___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___STACK___[]=$___TC___;break;'
+                    . 'case 11:$___TK___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___STACK___[]=$___TC___;break;'
                     . '}';
             case VmOp::VAROP:
                 return 'switch($___INS___[1]){'
-                    . 'case 0:$nk=$___INS___[3];$keys=[];for($i=0;$i<$nk;$i++){$keys[]=array_pop($___STACK___);}$keys=array_reverse($keys);$found=false;$v=$___PATHGET___($___VARS___,$___INS___[2],$keys,$found);$___STACK___[]=$found&&$v!==null;break;'
-                    . 'case 1:$nk=$___INS___[3];$keys=[];for($i=0;$i<$nk;$i++){$keys[]=array_pop($___STACK___);}$keys=array_reverse($keys);$found=false;$v=$___PATHGET___($___VARS___,$___INS___[2],$keys,$found);$___STACK___[]=(!$found)||$v==false;break;'
-                    . "case 2:\$nk=\$___INS___[3];\$keys=[];for(\$i=0;\$i<\$nk;\$i++){\$keys[]=array_pop(\$___STACK___);}\$keys=array_reverse(\$keys);if(\$___INS___[2]==='\$GLOBALS'){if(\$nk===1){unset(\$GLOBALS[\$keys[0]]);}}elseif(\$nk===0){unset(\$___VARS___[\$___INS___[2]]);}else{\$ref=&\$___VARS___[\$___INS___[2]];\$ok=true;for(\$i=0;\$i<\$nk-1;\$i++){\$k=\$keys[\$i];if(is_array(\$ref)&&isset(\$ref[\$k])){\$ref=&\$ref[\$k];}elseif(is_object(\$ref)){\$ref=&\$ref->\$k;}else{\$ok=false;break;}}if(\$ok){\$lk=\$keys[\$nk-1];if(is_array(\$ref)){unset(\$ref[\$lk]);}elseif(is_object(\$ref)){unset(\$ref->\$lk);}}}break;"
+                    . 'case 0:$___TNK___=$___INS___[3];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=array_pop($___STACK___);}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[2],$___TKEYS___,$___TFOUND___);$___STACK___[]=$___TFOUND___&&$___TV___!==null;break;'
+                    . 'case 1:$___TNK___=$___INS___[3];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=array_pop($___STACK___);}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[2],$___TKEYS___,$___TFOUND___);$___STACK___[]=(!$___TFOUND___)||$___TV___==false;break;'
+                    . "case 2:\$___TNK___=\$___INS___[3];\$___TKEYS___=[];for(\$___TI___=0;\$___TI___<\$___TNK___;\$___TI___++){\$___TKEYS___[]=array_pop(\$___STACK___);}\$___TKEYS___=array_reverse(\$___TKEYS___);if(\$___INS___[2]==='\$GLOBALS'){if(\$___TNK___===1){unset(\$GLOBALS[\$___TKEYS___[0]]);}}elseif(\$___TNK___===0){unset(\$___VARS___[\$___INS___[2]]);}else{\$___TREF___=&\$___VARS___[\$___INS___[2]];\$___TOK___=true;for(\$___TI___=0;\$___TI___<\$___TNK___-1;\$___TI___++){\$___TK___=\$___TKEYS___[\$___TI___];if(is_array(\$___TREF___)&&isset(\$___TREF___[\$___TK___])){\$___TREF___=&\$___TREF___[\$___TK___];}elseif(is_object(\$___TREF___)){\$___TREF___=&\$___TREF___->\$___TK___;}else{\$___TOK___=false;break;}}if(\$___TOK___){\$___TLK___=\$___TKEYS___[\$___TNK___-1];if(is_array(\$___TREF___)){unset(\$___TREF___[\$___TLK___]);}elseif(is_object(\$___TREF___)){unset(\$___TREF___->\$___TLK___);}}}break;"
                     . '}';
             case VmOp::ARRAY_BUILD:
                 return 'switch($___INS___[1]){'
-                    . 'case 0:$c=$___INS___[2];$arr=[];for($i=0;$i<$c;$i++){$arr[]=array_pop($___STACK___);}$arr=array_reverse($arr);foreach($arr as $i=>$v){if(is_array($v)&&($v[0]??\'\')===\'__vmrefel__\'){$rn=(string)$v[1];if(!array_key_exists($rn,$___VARS___)){$___VARS___[$rn]=null;}$arr[$i]=&$___VARS___[$rn];}}$___STACK___[]=$arr;break;'
-                    . 'case 1:$c=$___INS___[2];$arr=[];$pairs=[];for($i=0;$i<$c;$i++){$k=array_pop($___STACK___);$v=array_pop($___STACK___);$pairs[]=[$k,$v];}$pairs=array_reverse($pairs);foreach($pairs as $p){if(is_array($p[1])&&($p[1][0]??\'\')===\'__vmrefel__\'){$rn=(string)$p[1][1];if(!array_key_exists($rn,$___VARS___)){$___VARS___[$rn]=null;}$arr[$p[0]]=&$___VARS___[$rn];}else{$arr[$p[0]]=$p[1];}}$___STACK___[]=$arr;break;'
+                    . 'case 0:$___TC___=$___INS___[2];$___TARR___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TARR___[]=array_pop($___STACK___);}$___TARR___=array_reverse($___TARR___);foreach($___TARR___ as $___TI___=>$___TV___){if(is_array($___TV___)&&($___TV___[0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TV___[1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TI___]=&$___VARS___[$___TRN___];}}$___STACK___[]=$___TARR___;break;'
+                    . 'case 1:$___TC___=$___INS___[2];$___TARR___=[];$___TPAIRS___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TK___=array_pop($___STACK___);$___TV___=array_pop($___STACK___);$___TPAIRS___[]=[$___TK___,$___TV___];}$___TPAIRS___=array_reverse($___TPAIRS___);foreach($___TPAIRS___ as $___TP___){if(is_array($___TP___[1])&&($___TP___[1][0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TP___[1][1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TP___[0]]=&$___VARS___[$___TRN___];}else{$___TARR___[$___TP___[0]]=$___TP___[1];}}$___STACK___[]=$___TARR___;break;'
                     . '}';
         }
         if (isset($bin[$logical])) {
             $expr = $bin[$logical];
-            return '$b=array_pop($___STACK___);$a=array_pop($___STACK___);$___STACK___[]=' . $expr . ';';
+            return '$___TB___=array_pop($___STACK___);$___TA___=array_pop($___STACK___);$___STACK___[]=' . $expr . ';';
         }
         return '';
     }
