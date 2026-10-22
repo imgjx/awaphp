@@ -38,7 +38,7 @@ function __VMRUN__($__P)
     $CAST_INT=100;$CAST_FLOAT=101;$CAST_STRING=102;$CAST_BOOL=103;$CAST_ARRAY=104;$CAST_OBJECT=105;
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
     $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
-    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;
+    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;
 
     $__META = "\x01__cls";
 
@@ -581,7 +581,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$__callFn,&$__GFRAME,&$__INCTRACK
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$__callFn,&$__GFRAME,&$__INCTRACK
     ){
         $__stack = $__init;
         $__pc = 0;
@@ -600,6 +600,7 @@ function __VMRUN__($__P)
                 case $PUSH_C:   $__stack[] = $__ins[1]; break;
                 case $PUSH_V:   $__stack[] = $__vars[$__ins[1]] ?? null; break;
                 case $PUSH_REF: $__stack[] = ['__vmref__', $__ins[1], $__vars[$__ins[1]] ?? null]; break;
+                case $PUSH_REF_EL: $__stack[] = ['__vmrefel__', $__ins[1]]; break;
                 case $POP_V:    $__vars[$__ins[1]] = array_pop($__stack); break;
                 case $DUP:      $__stack[] = end($__stack); break;
                 case $DROP:     array_pop($__stack); break;
@@ -836,6 +837,45 @@ function __VMRUN__($__P)
                     $__nv = array_pop($__stack);
                     $__stack[] = ['__vmnamed__', $__ins[1], $__nv];
                     break;
+                case $MAKE_REF:
+                    // 引用赋值（整变量）：$b = &$a —— 帧槽位别名。
+                    // PHP 原生引用语义：此后对任一槽位的读写/自增/复合赋值互相穿透。
+                    $__dn = $__ins[1]; $__sn = $__ins[2];
+                    if (!array_key_exists($__sn, $__vars)) { $__vars[$__sn] = null; }
+                    $__vars[$__dn] = &$__vars[$__sn];
+                    break;
+                case $MAKE_REF_EL:
+                    // 引用赋值（数组元素）：$b = &$a[$k] —— 键弹栈，别名到元素。
+                    // 链式形态（$b = &$a[0][0]）由编译期拆为多级：先别名为临时槽，
+                    // 再别名为临时槽的元素（PHP 引用传递保证最终指向真实元素）。
+                    $__dn = $__ins[1]; $__bn = $__ins[2];
+                    $__k = array_pop($__stack);
+                    if (!array_key_exists($__bn, $__vars) || !is_array($__vars[$__bn])) {
+                        $__vars[$__bn] = []; // PHP 自动补全数组（访问 null 上的偏移量）
+                    }
+                    if (!array_key_exists($__k, $__vars[$__bn])) { $__vars[$__bn][$__k] = null; }
+                    $__vars[$__dn] = &$__vars[$__bn][$__k];
+                    break;
+                case $MAKE_REF_PROP:
+                    // 引用赋值（对象属性）：$b = &$this->p —— 对象弹栈，别名到属性。
+                    $__dn = $__ins[1]; $__pn = $__ins[2];
+                    $__o = array_pop($__stack);
+                    if (!is_object($__o)) { break; }
+                    if (!isset($__o->$__pn)) { $__o->$__pn = null; }
+                    $__vars[$__dn] = &$__o->$__pn;
+                    break;
+                case $MAKE_REF_APPEND:
+                    // 引用赋值（追加元素）：$b = &$a[] —— 追加一个 null 元素并别名到它
+                    // （PHP 语义：追加键为下一整数键，写入 $b 即写穿数组）。
+                    $__dn = $__ins[1]; $__bn = $__ins[2];
+                    if (!array_key_exists($__bn, $__vars) || !is_array($__vars[$__bn])) {
+                        $__vars[$__bn] = [];
+                    }
+                    $__vars[$__bn][] = null;
+                    end($__vars[$__bn]);
+                    $__ak = key($__vars[$__bn]);
+                    $__vars[$__dn] = &$__vars[$__bn][$__ak];
+                    break;
                 case $EX_FINALLY_ENTER:
                     // finally 块起始：置位标志，使块内再抛出的异常不再被本帧异常表捕获
                     $__inFinally = true;
@@ -963,6 +1003,41 @@ function __VMRUN__($__P)
                     // 语句级回退：源码串弹栈，帧变量导出为真实局部变量 → 快照 →
                     // eval → 差分写回（与 INCLUDE_RT 桥接同构）。
                     $__es = array_pop($__stack);
+                    $__eobj = (isset($__vars['$this']) && is_object($__vars['$this'])) ? $__vars['$this'] : null;
+                    if ($__eobj !== null) {
+                        // 类方法内的回退：eval 必须继承对象上下文（裸 eval 报
+                        // "Using $this when not in object context"）。PHP 禁止
+                        // eval 内重写 $this，但闭包绑定的对象上下文可被 eval
+                        // 继承——用 Closure::bind 把桥接逻辑绑定到当前对象后
+                        // 执行（VM 类运行期为 stdClass，内部类不可作 bind 的
+                        // 作用域参数，故用两参形式；作用域仅影响 private 访问，
+                        // VM 类属性均为动态公有属性，不受影响）。帧变量表经
+                        // 调用参数传入闭包（不用 use 捕获——生成运行期同名变量
+                        // 未必已定义），闭包返回差分由外层写回帧（引用不穿透，
+                        // 与无 $this 路径一致）。
+                        $__ediff = Closure::bind(function ($__varsIn) use ($__es) {
+                            foreach ($__varsIn as $__ikey => $__ival) {
+                                if ($__ikey === '$GLOBALS' || $__ikey === '$this') { continue; }
+                                $__inm = substr($__ikey, 1);
+                                $$__inm = $__ival;
+                            }
+                            $__isnap = get_defined_vars();
+                            eval($__es);
+                            $__d = [];
+                            foreach (get_defined_vars() as $__ikey => $__ival) {
+                                // this 由绑定继承；其余为本次桥接引入的内部名
+                                if ($__ikey === 'this' || $__ikey === '__es' || $__ikey === '__varsIn'
+                                    || $__ikey === '__ikey' || $__ikey === '__ival' || $__ikey === '__inm'
+                                    || $__ikey === '__isnap' || $__ikey === '__d') { continue; }
+                                if (!array_key_exists($__ikey, $__isnap) || $__isnap[$__ikey] !== $__ival) {
+                                    $__d['$' . $__ikey] = $__ival;
+                                }
+                            }
+                            return $__d;
+                        }, $__eobj)($__vars);
+                        foreach ($__ediff as $__ek => $__ev) { $__vars[$__ek] = $__ev; }
+                        break;
+                    }
                     foreach ($__vars as $__ikey => $__ival) {
                         if ($__ikey === '$GLOBALS' || $__ikey === '$this') { continue; }
                         $__inm = substr($__ikey, 1);
@@ -991,6 +1066,14 @@ function __VMRUN__($__P)
                     $__c = $__ins[1]; $__a = [];
                     for ($i=0;$i<$__c;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
+                    // 引用元素句柄（[&$x]）：构造为真实数组元素引用，写穿目标存储
+                    foreach ($__a as $i => $__v) {
+                        if (is_array($__v) && ($__v[0] ?? '') === '__vmrefel__') {
+                            $__rn = (string) $__v[1];
+                            if (!array_key_exists($__rn, $__vars)) { $__vars[$__rn] = null; }
+                            $__a[$i] = &$__vars[$__rn];
+                        }
+                    }
                     $__stack[] = $__a;
                     break;
                 case $ARRAY_KV:
@@ -1004,7 +1087,16 @@ function __VMRUN__($__P)
                         $__pairs[] = [$__k, $__v];
                     }
                     $__pairs = array_reverse($__pairs);
-                    foreach ($__pairs as $__p) { $__a[$__p[0]] = $__p[1]; }
+                    foreach ($__pairs as $__p) {
+                        // 引用元素句柄（"k"=>&$x）：构造为真实数组元素引用
+                        if (is_array($__p[1]) && ($__p[1][0] ?? '') === '__vmrefel__') {
+                            $__rn = (string) $__p[1][1];
+                            if (!array_key_exists($__rn, $__vars)) { $__vars[$__rn] = null; }
+                            $__a[$__p[0]] = &$__vars[$__rn];
+                        } else {
+                            $__a[$__p[0]] = $__p[1];
+                        }
+                    }
                     $__stack[] = $__a;
                     break;
                 case $INDEX_GET:
@@ -1051,6 +1143,45 @@ function __VMRUN__($__P)
                 case $POST_DEC:
                     $__old = $__vars[$__ins[1]] ?? null;
                     $__vars[$__ins[1]] = $__inc($__old, -1); $__stack[] = $__old;
+                    break;
+                // —— 属性/数组元素的自增自减（$o->p++ / ++$a[$k] 等）——
+                case $PROP_POST_INC: case $PROP_POST_DEC:
+                    // 栈 [obj, old]（PROPGET 刚执行）→ 弹 [old, obj]，原地写穿属性，压回旧值
+                    $__d = ($__op === $PROP_POST_DEC) ? -1 : 1;
+                    $__old = array_pop($__stack); $__o = array_pop($__stack);
+                    $__propSet($__o, $__ins[1], $__inc($__old, $__d));
+                    $__stack[] = $__old;
+                    break;
+                case $PROP_PRE_INC: case $PROP_PRE_DEC:
+                    // 栈 [obj, old] → 弹 [old, obj]，原地写穿属性，压回新值
+                    $__d = ($__op === $PROP_PRE_DEC) ? -1 : 1;
+                    $__old = array_pop($__stack); $__o = array_pop($__stack);
+                    $__new = $__inc($__old, $__d);
+                    $__propSet($__o, $__ins[1], $__new);
+                    $__stack[] = $__new;
+                    break;
+                case $IDX_POST_INC: case $IDX_POST_DEC: case $IDX_PRE_INC: case $IDX_PRE_DEC:
+                    // 栈 [arr, key]（索引表达式刚求值）→ 弹 [key, arr]，自取旧值、
+                    // 原地更新 arr[key]。操作数（可选）为基变量帧槽名：非空时把
+                    // 更新后的容器写回帧变量（PHP 间接修改语义：$a[$k]++ 改变 $a
+                    // 本身）。压结果值：POST 压旧值、PRE 压新值。
+                    $__d = ($__op === $IDX_POST_DEC || $__op === $IDX_PRE_DEC) ? -1 : 1;
+                    $__k = array_pop($__stack); $__a = array_pop($__stack);
+                    if (is_array($__a)) {
+                        $__old = $__idxGet($__a, $__k);
+                        $__new = $__inc($__old, $__d);
+                        $__a[$__k] = $__new;
+                    } elseif (is_object($__a)) {
+                        $__old = $__propGet($__a, $__k);
+                        $__new = $__inc($__old, $__d);
+                        $__propSet($__a, $__k, $__new);
+                    } else {
+                        $__old = null;
+                        $__new = $__inc(null, $__d);
+                    }
+                    $__fn = $__ins[1] ?? '';
+                    if ($__fn !== '') { $__vars[$__fn] = $__a; }
+                    $__stack[] = ($__op === $IDX_POST_INC || $__op === $IDX_POST_DEC) ? $__old : $__new;
                     break;
                 default:
                     break 2; // 未知 opcode：终止

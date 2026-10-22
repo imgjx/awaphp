@@ -186,6 +186,42 @@ final class VmOp
     //   即使 receiver 类型编译期不可知（$obj->m(b:1)）也能正确解析。
     public const ARG_NAMED = 123; // 操作数: name -> 栈顶值包装为命名标记
 
+    // ---- 引用赋值（=&，PHP 引用别名语义）----
+    // 帧变量表 $__vars 是普通 PHP 数组，天然支持引用别名：
+    //   $b = &$a        ≡ $__vars['$b'] = &$__vars['$a']
+    //   $b = &$a[$k]    ≡ $__vars['$b'] = &$__vars['$a'][$k]
+    //   $b = &$this->p  ≡ $__vars['$b'] = &$this->p
+    // 别名建立后，PUSH_V/POP_V/自增/复合赋值等全部经 PHP 原生引用语义穿透，
+    // 与 PHP 的「两个变量名同一存储」完全一致。foreach ($a as &$v) 亦复用
+    // 本族指令：先把源数组槽位别名为临时槽，再逐迭代把值变量别名为元素。
+    public const MAKE_REF     = 124; // 操作数: dst, src -> $__vars[dst] = &$__vars[src]
+    public const MAKE_REF_EL  = 125; // 操作数: dst, base -> 键弹栈，$__vars[dst] = &$__vars[base][key]
+    public const MAKE_REF_PROP = 126; // 操作数: dst, prop -> 对象弹栈，$__vars[dst] = &$obj->prop
+    public const MAKE_REF_APPEND = 127; // 操作数: dst, base -> $b = &$a[] 追加引用（等价引用下一整数键）
+
+    // ---- 数组字面量引用元素（[&$a, "k"=>&$b]）----
+    // PUSH_REF_EL：把帧槽位名压为【引用元素句柄】['__vmrefel__', 槽名]。
+    //   句柄仅允许紧随 ARRAY_MAKE/ARRAY_KV 消费：运行期据此把对应元素构造为
+    //   真实 PHP 数组元素引用（$arr[$i] = &$__vars[slot]），写穿目标存储。
+    public const PUSH_REF_EL = 128; // 操作数: name -> 压引用元素句柄（数组 & 元素专用）
+
+    // ---- 属性/数组元素的自增自减（INC_OP 族 sub 4-11，见 VmIsa::INC）----
+    // 属性版（操作数 name=属性名）：PROPGET 已把 [obj, old] 留在栈上，
+    //   PROP_POST_* 弹 [old, obj] 原地写穿属性，压回旧值（表达式结果=旧值）；
+    //   PROP_PRE_*  压回新值（结果=新值）。
+    // 下标版（无操作数）：INDEX_GET 已把 [arr, key, old] 留在栈上，
+    //   IDX_POST_* 原地更新 arr[key]，压 [旧值, 更新后的容器]（容器在顶，
+    //   语句级由调用方 POP_V 写回帧变量，表达式级 DROP 丢弃）；
+    //   IDX_PRE_*  压 [新值, 更新后的容器]。
+    public const PROP_POST_INC = 129;
+    public const PROP_POST_DEC = 130;
+    public const PROP_PRE_INC  = 131;
+    public const PROP_PRE_DEC  = 132;
+    public const IDX_POST_INC  = 133;
+    public const IDX_POST_DEC  = 134;
+    public const IDX_PRE_INC   = 135;
+    public const IDX_PRE_DEC   = 136;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -266,6 +302,19 @@ final class VmOp
         self::EX_FINALLY_END => [],
         self::ARG_SPREAD => [],
         self::ARG_NAMED  => ['n'],
+        self::MAKE_REF     => ['n', 'n'],
+        self::MAKE_REF_EL  => ['n', 'n'],
+        self::MAKE_REF_PROP => ['n', 's'],
+        self::MAKE_REF_APPEND => ['n', 'n'],
+        self::PUSH_REF_EL => ['n'],
+        self::PROP_POST_INC => ['n'],
+        self::PROP_POST_DEC => ['n'],
+        self::PROP_PRE_INC  => ['n'],
+        self::PROP_PRE_DEC  => ['n'],
+        self::IDX_POST_INC  => ['n'],
+        self::IDX_POST_DEC  => ['n'],
+        self::IDX_PRE_INC   => ['n'],
+        self::IDX_PRE_DEC   => ['n'],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -362,6 +411,19 @@ final class VmOp
         self::EX_FINALLY_END => 'EX_FINALLY_END',
         self::ARG_SPREAD => 'ARG_SPREAD',
         self::ARG_NAMED  => 'ARG_NAMED',
+        self::MAKE_REF     => 'MAKE_REF',
+        self::MAKE_REF_EL  => 'MAKE_REF_EL',
+        self::MAKE_REF_PROP => 'MAKE_REF_PROP',
+        self::MAKE_REF_APPEND => 'MAKE_REF_APPEND',
+        self::PUSH_REF_EL => 'PUSH_REF_EL',
+        self::PROP_POST_INC => 'PROP_POST_INC',
+        self::PROP_POST_DEC => 'PROP_POST_DEC',
+        self::PROP_PRE_INC  => 'PROP_PRE_INC',
+        self::PROP_PRE_DEC  => 'PROP_PRE_DEC',
+        self::IDX_POST_INC  => 'IDX_POST_INC',
+        self::IDX_POST_DEC  => 'IDX_POST_DEC',
+        self::IDX_PRE_INC   => 'IDX_PRE_INC',
+        self::IDX_PRE_DEC   => 'IDX_PRE_DEC',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

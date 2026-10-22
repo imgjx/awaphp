@@ -981,13 +981,43 @@ trait VmStmtTrait
         $firstVal = $valTokens[0] ?? null;
         $isList = (is_array($firstVal) && $firstVal[0] === T_LIST)
                || (is_string($firstVal) && $firstVal === '[');
+        // 值位引用遍历：foreach($a as &$v) / foreach($a as $k => &$v)。
+        // （list 内引用 PHP 本身非法，与 $isList 互斥。）
+        $refByRef = false;
+        if (!$isList) {
+            $vt = $this->trimWs($valTokens);
+            if ($vt !== [] && $this->isAmpFollowedByVar($vt[0])) {
+                $vn = $vt[1] ?? null;
+                if (!(is_array($vn) && $vn[0] === T_VARIABLE)) {
+                    throw new VmUnsupported('VM 引用 foreach 值位必须是简单变量（已回退）');
+                }
+                $vvar = trim($vn[1], '$');
+                $refByRef = true;
+            }
+        }
+        if ($refByRef) {
+            // 引用遍历要求源是简单变量（帧槽位别名；$this->arr / $a[0] / f() 等
+            // 非简单源回退原生执行，保写穿正确）。
+            $srcT = $this->trimWs($src);
+            if (!(count($srcT) === 1 && is_array($srcT[0]) && $srcT[0][0] === T_VARIABLE
+                && $srcT[0][1] !== '$GLOBALS')) {
+                throw new VmUnsupported('VM 引用 foreach 源必须是简单变量（已回退）');
+            }
+        }
         $ta = '__fe' . ($this->tempSeq++);
         $tk = '__fe' . ($this->tempSeq++);
         $ti = '__fe' . ($this->tempSeq++);
 
-        // $ta = src; $tk = array_keys($ta); $ti = 0;
-        $this->compileExpr($src, $code);
-        $code[] = [VmOp::POP_V, '$' . $ta];
+        if ($refByRef) {
+            // $ta 与源变量别名（引用同一数组）：迭代内经 MAKE_REF_EL 把 $v 别名为
+            // 当前元素，获得与 PHP 完全一致的即时写穿语义。
+            $code[] = [VmOp::MAKE_REF, '$' . $ta, $this->varName($srcT[0][1])];
+        } else {
+            // $ta = src（值拷贝）
+            $this->compileExpr($src, $code);
+            $code[] = [VmOp::POP_V, '$' . $ta];
+        }
+        // $tk = array_keys($ta); $ti = 0;
         $code[] = [VmOp::PUSH_V, '$' . $ta];
         $code[] = [VmOp::CALL, 'array_keys', 1];
         $code[] = [VmOp::POP_V, '$' . $tk];
@@ -1016,10 +1046,16 @@ trait VmStmtTrait
         }
         // $v = $ta[ 当前键 ]（注意 $ta 是关联数组，必须用真实键而非整数下标 $ti）
         $valueTmp = $isList ? ('__fe' . ($this->tempSeq++)) : $vvar;
-        $code[] = [VmOp::PUSH_V, '$' . $ta];
-        $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
-        $code[] = [VmOp::INDEX_GET];
-        $code[] = [VmOp::POP_V, '$' . $valueTmp];
+        if ($refByRef) {
+            // 引用遍历：$v = &$ta[当前键]（每次迭代重新别名；写穿源数组）。
+            $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
+            $code[] = [VmOp::MAKE_REF_EL, '$' . $vvar, '$' . $ta];
+        } else {
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
+            $code[] = [VmOp::INDEX_GET];
+            $code[] = [VmOp::POP_V, '$' . $valueTmp];
+        }
         if ($isList) {
             // list/数组解构：把 $valueTmp 逐元素分发到目标变量（支持位置/带键/嵌套）
             $this->emitListDestruct(new Cursor($valTokens), '$' . $valueTmp, $code);

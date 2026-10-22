@@ -40,19 +40,37 @@ trait VmExprTrait
         $valueTokens = $m['value'];
 
         if ($compound !== null) {
-            // 复合赋值：支持简单变量 $x op= v 与 VM 类静态属性 C::$p op= v
-            // （数组/属性的复合赋值回退到原生执行）
+            // 复合赋值：支持简单变量 $x op= v、实例属性 $o->p op= v（含 $this->p）、
+            // 数组元素 $a[$k] op= v 与 VM 类静态属性 C::$p op= v。
+            // 栈形态：LVRead 对属性/下标目标会压「两份容器(+键)」，第一份留在旧值
+            // 之下，存储指令（PROPSET / INDEX_SET+POP_V）的弹序正好匹配。
             $t0 = $target[0] ?? null;
             $isSimpleVar = is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1;
-            if (!$isSimpleVar && $this->staticPropLvalueInfo($target) === null) {
+            $isProp = is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 3
+                && $this->tokType($target[1]) === T_OBJECT_OPERATOR
+                && is_array($target[2] ?? null) && $target[2][0] === T_STRING;
+            $isIdx = is_array($t0) && $t0[0] === T_VARIABLE && count($target) >= 3 && $target[1] === '[';
+            if (!$isSimpleVar && !$isProp && !$isIdx && $this->staticPropLvalueInfo($target) === null) {
                 throw new VmUnsupported('VM 暂不支持数组/属性的复合赋值（已回退）');
             }
             $this->compileLVRead($target, $code);
             $this->compileExpr($valueTokens, $code);
             $code[] = [$compound];
-            // 静态属性带下标时，compileLVRead 已在栈上留下「容器+键」（值之下），
-            // INDEX_SET 弹出序 [value, key, container] 恰好匹配，无需补发。
             $this->compileLVStore($target, $code);
+            return;
+        }
+
+        // 引用赋值：$b = &$a / $b = &$a[0][0] / $b = &$this->p / $b = &$a[]
+        // （目标限简单变量；链式后缀由 compileRefAssignRHS 多级桥接。
+        //  数组元素/属性/静态属性作引用目标时回退原生执行，保正确。）
+        $refToks = $this->matchRefAmpPrefix($valueTokens);
+        if ($refToks !== null) {
+            $t0 = $target[0] ?? null;
+            if (!(is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1)
+                || $t0[1] === '$GLOBALS') {
+                throw new VmUnsupported('VM 引用赋值目标必须是简单变量（已回退）');
+            }
+            $this->compileRefAssignRHS(new Cursor($refToks), $this->varName($t0[1]), $code);
             return;
         }
 
@@ -356,7 +374,9 @@ trait VmExprTrait
         $c->next(); // 消费 '=' 或复合赋值运算符
         $target = $m['span'];
         if ($compound !== null) {
-            // 复合赋值仅支持简单变量与 VM 类静态属性（数组/属性形态回退原生执行）
+            // 复合赋值（表达式上下文）仅支持简单变量与 VM 类静态属性：
+            // 属性/下标目标在此上下文需「补压容器 + DUP 留值」，弹序会多残留
+            // [容器, 旧值] 两层垃圾（DROP 只弹一层），故回退原生执行保正确。
             $t0 = $target[0] ?? null;
             if (!(is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1)
                 && $this->staticPropLvalueInfo($target) === null) {
@@ -367,6 +387,23 @@ trait VmExprTrait
             $code[] = [$compound];
             // 静态属性带下标：compileLVRead 已留下「容器+键」（值之下），无需补发
         } else {
+            // 引用赋值（表达式上下文）：$b = &$a —— & 必为 '=' 后首个有效 token
+            // （按位与 $x = $y & $z 的 & 前有 $y，不会进入本分支）。
+            $c->skipWs();
+            $amp = $c->peek();
+            if ($amp !== null && $this->isAmpFollowedByVar($amp)) {
+                $t0 = $target[0] ?? null;
+                if (!(is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1)
+                    || $t0[1] === '$GLOBALS') {
+                    throw new VmUnsupported('VM 引用赋值目标必须是简单变量（已回退）');
+                }
+                $dst = $this->varName($t0[1]);
+                $c->next(); // 消费 '&'
+                $this->compileRefAssignRHS($c, $dst, $code);
+                // 表达式语义：引用赋值表达式的结果为左值当前值，留一份供上层消费
+                $code[] = [VmOp::PUSH_V, $dst];
+                return true;
+            }
             $this->compileLVResolve($target, $code);
             $this->parseTernary($c, $code);
         }
@@ -438,20 +475,29 @@ trait VmExprTrait
             return;
         }
         if (is_array($t) && $t[0] === T_VARIABLE && count($target) >= 3 && $target[1] === '[') {
-            $this->compileExpr([$t], $code);
+            // $var[key] 读旧值（复合赋值 op= 的读取阶段）：先压一份「容器+键」留在值
+            // 之下（INDEX_SET 弹出序为 [value, key, container]），再压第二份供 INDEX_GET
+            // 读旧值（出栈即消费）。
             $key = array_slice($target, 2);
             if ($key !== [] && $key[count($key) - 1] === ']') {
                 array_pop($key);
             }
+            $this->compileExpr([$t], $code);
+            $this->compileExpr($key, $code);
+            $this->compileExpr([$t], $code);
             $this->compileExpr($key, $code);
             $code[] = [VmOp::INDEX_GET];
             return;
         }
-        if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === '$this'
-            && count($target) >= 3 && $this->tokType($target[1]) === T_OBJECT_OPERATOR) {
-            $this->compileExpr([$t], $code);
+        if (is_array($t) && $t[0] === T_VARIABLE && count($target) >= 3
+            && $this->tokType($target[1]) === T_OBJECT_OPERATOR
+            && is_array($target[2] ?? null) && $target[2][0] === T_STRING) {
+            // $var->prop 读旧值（含 $this->prop）：压两份容器，第二份经 PROPGET
+            // 读旧值（出栈即消费），第一份留在值之下供 PROPSET 存储。
             $prop = $target[2];
             $pname = is_array($prop) ? $prop[1] : (string) $prop;
+            $this->compileExpr([$t], $code);
+            $this->compileExpr([$t], $code);
             $code[] = [VmOp::PROPGET, $pname];
             return;
         }
@@ -565,6 +611,87 @@ trait VmExprTrait
             return;
         }
         throw new VmUnsupported('VM 不支持的赋值左值形式（已回退）');
+    }
+
+    /**
+     * 检测 token 序列是否以「引用 & 前缀」开头（$b = &$a / $b = &$a[0][0] / $b = &$this->p）。
+     * PHP 8.1+：T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG；8.0-：字符串 '&'。
+     * 命中时返回 & 之后的引用目标链 token（紧凑）；否则 null。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>|null
+     */
+    private function matchRefAmpPrefix(array $tokens): ?array
+    {
+        $t = $this->trimWs($tokens);
+        if ($t === []) {
+            return null;
+        }
+        if (!$this->isAmpFollowedByVar($t[0])) {
+            return null;
+        }
+        return $this->trimWs(array_slice($t, 1));
+    }
+
+    /**
+     * 编译引用赋值右值（=& 之后的引用目标链）：
+     *     $a | $a[$k] | $a[] | $a->p | $a[0][0] | $a->p[0] | $a[0]->p ...
+     * 目标限「简单变量 + 下标/属性后缀链」。链式形态拆为多级桥接：
+     * 每一级先别名为临时槽（PHP 引用传递保证最终指向真实存储），
+     * 最后一级把左值 dst 别名为当前槽——此后对 dst 的读写即写穿目标。
+     *
+     * 流式解析（光标推进到链尾即停），语句级与表达式级（tryCompileAssign）共用。
+     *
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function compileRefAssignRHS(Cursor $c, string $dst, array &$code): void
+    {
+        $c->skipWs();
+        $first = $c->peek();
+        if (!(is_array($first) && $first[0] === T_VARIABLE)) {
+            throw new VmUnsupported('VM 引用赋值目标必须是简单变量（已回退）');
+        }
+        $c->next();
+        $curSlot = $this->varName($first[1]);
+        while (true) {
+            $c->skipWs();
+            $t = $c->peek();
+            if ($t === null) {
+                break;
+            }
+            if (is_string($t) && $t === '[') {
+                // 下标段：$curSlot[key]（key 为空表示追加 $a[]）
+                $c->next();
+                $keyToks = $c->collectUntilTop(']');
+                $c->expect(']');
+                $next = '$__rf' . ($this->tempSeq++);
+                if ($this->trimWs($keyToks) === []) {
+                    $code[] = [VmOp::MAKE_REF_APPEND, $next, $curSlot];
+                } else {
+                    $this->compileExpr($this->trimWs($keyToks), $code);
+                    $code[] = [VmOp::MAKE_REF_EL, $next, $curSlot];
+                }
+                $curSlot = $next;
+                continue;
+            }
+            if (is_array($t) && $t[0] === T_OBJECT_OPERATOR) {
+                // 属性段：$curSlot->prop（仅限字面属性名，动态属性名回退）
+                $c->next();
+                $c->skipWs();
+                $p = $c->peek();
+                if (!(is_array($p) && $p[0] === T_STRING)) {
+                    throw new VmUnsupported('VM 引用赋值不支持动态属性名（已回退）');
+                }
+                $c->next();
+                $next = '$__rf' . ($this->tempSeq++);
+                $code[] = [VmOp::PUSH_V, $curSlot];
+                $code[] = [VmOp::MAKE_REF_PROP, $next, $p[1]];
+                $curSlot = $next;
+                continue;
+            }
+            break;
+        }
+        $code[] = [VmOp::MAKE_REF, $dst, $curSlot];
     }
 
     // ========================================================================
@@ -1070,6 +1197,48 @@ trait VmExprTrait
                 return;
             }
             $v = $c->expectText(T_VARIABLE);
+            $c->skipWs();
+            $nx = $c->peek();
+            if ($nx !== null && $this->tokType($nx) === T_OBJECT_OPERATOR) {
+                // ++$o->p：DUP 留 obj，PROPGET 压旧值，PROP_PRE_INC/DEC 弹
+                // [old,obj] 原地写穿属性压新值（表达式结果=新值）。
+                $this->emitPushVar($v, $code);
+                $c->next();
+                $name = $c->expectText(T_STRING);
+                $code[] = [VmOp::DUP];
+                $code[] = [VmOp::PROPGET, $name];
+                $code[] = [$dec ? VmOp::PROP_PRE_DEC : VmOp::PROP_PRE_INC, $name];
+                return;
+            }
+            if (is_string($nx) && $nx === '[') {
+                // ++$a[$k]：IDX_PRE_INC/DEC 弹 [key, arr] 自取旧值、原地更新，
+                // 写回基变量帧槽，只压新值作表达式结果。
+                $this->emitPushVar($v, $code);
+                $c->next();
+                $key = [];
+                $bdepth = 1;
+                while (!$c->eof()) {
+                    $tk = $c->peek();
+                    if (is_string($tk)) {
+                        if ($tk === '[') {
+                            $bdepth++;
+                        } elseif ($tk === ']') {
+                            $bdepth--;
+                            if ($bdepth === 0) {
+                                break;
+                            }
+                        }
+                    }
+                    $key[] = $c->next();
+                }
+                $c->expect(']');
+                if ($key !== [] && $key[count($key) - 1] === ';') {
+                    array_pop($key);
+                }
+                $this->parseExpr($key, $code);
+                $code[] = [$dec ? VmOp::IDX_PRE_DEC : VmOp::IDX_PRE_INC, $this->varName($v)];
+                return;
+            }
             $code[] = [$dec ? VmOp::PRE_DEC : VmOp::PRE_INC, $this->varName($v)];
             return;
         }
@@ -1112,6 +1281,19 @@ trait VmExprTrait
                     $code[] = [VmOp::PUSH_C, $name]; // 方法名（MECALL 期望：对象, 参数..., 方法名）
                     $code[] = [VmOp::MECALL, $argc];
                 } else {
+                    // $o->prop 后缀 ++/--：PROPGET 弹 obj 压旧值，故先 DUP 留一份
+                    // 对象在旧值之下；PROP_POST_INC/DEC 弹 [old, obj] 原地写穿属性
+                    // 并把旧值压回（表达式结果=旧值）。对象句柄原地写穿，语句级
+                    // 无需写回帧变量。
+                    $c->skipWs();
+                    $nx = $c->peek();
+                    if (is_array($nx) && ($nx[0] === T_INC || $nx[0] === T_DEC)) {
+                        $c->next();
+                        $code[] = [VmOp::DUP];
+                        $code[] = [VmOp::PROPGET, $name];
+                        $code[] = [$nx[0] === T_INC ? VmOp::PROP_POST_INC : VmOp::PROP_POST_DEC, $name];
+                        continue;
+                    }
                     $code[] = [VmOp::PROPGET, $name];
                 }
             } elseif ($c->is(T_DOUBLE_COLON)) {
@@ -1139,6 +1321,25 @@ trait VmExprTrait
                 $c->expect(']');
                 if ($key !== [] && $key[count($key) - 1] === ';') {
                     array_pop($key);
+                }
+                // $a[$k]++ / $a[$k]-- 后缀（表达式上下文）：IDX_POST_INC/DEC
+                // 弹 [key, arr] 自取旧值并原地更新，把更新后的容器写回基变量帧槽
+                // （PHP 间接修改语义），只压旧值作表达式结果（语句级由外层 DROP
+                // 丢弃；多维/属性基回退保正确）。
+                $c->skipWs();
+                $nx = $c->peek();
+                if (is_array($nx) && ($nx[0] === T_INC || $nx[0] === T_DEC)) {
+                    $c->next();
+                    // 基必须是简单变量（末尾恰为 PUSH_V）：多维下标/属性基的自增
+                    // 需逐级写回，超出当前 opcode 能力，回退保正确。
+                    $last = end($code);
+                    if (!($last !== false && isset($last[0]) && $last[0] === VmOp::PUSH_V)) {
+                        throw new VmUnsupported('VM 暂不支持复合左值的下标 ++/--（已回退）');
+                    }
+                    $frame = $last[1];
+                    $this->parseExpr($key, $code);
+                    $code[] = [$nx[0] === T_INC ? VmOp::IDX_POST_INC : VmOp::IDX_POST_DEC, $frame];
+                    continue;
                 }
                 $this->parseExpr($key, $code);
                 $code[] = [VmOp::INDEX_GET];

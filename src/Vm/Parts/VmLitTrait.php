@@ -420,12 +420,12 @@ trait VmLitTrait
         }
         if (!$hasKey) {
             foreach ($elems as $e) {
-                $this->parseExpr($e['val'], $code);
+                $this->emitArrayVal($e['val'], $code);
             }
             $code[] = [VmOp::ARRAY_MAKE, count($elems)];
         } else {
             foreach ($elems as $e) {
-                $this->parseExpr($e['val'], $code);
+                $this->emitArrayVal($e['val'], $code);
                 if ($e['key'] !== null) {
                     $this->parseExpr($e['key'], $code);
                 } else {
@@ -434,6 +434,26 @@ trait VmLitTrait
             }
             $code[] = [VmOp::ARRAY_KV, count($elems)];
         }
+    }
+
+    /**
+     * 发射数组单个元素的「值」压栈。支持引用元素 [&$x] / ["k"=>&$x[0]]：
+     * 先把引用目标链别名为临时槽（复用引用赋值链式桥接），再压引用元素句柄
+     * （运行期 ARRAY_MAKE/ARRAY_KV 将其构造为真实数组元素引用）。
+     *
+     * @param array<int,mixed> $val
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function emitArrayVal(array $val, array &$code): void
+    {
+        $vt = $this->trimWs($val);
+        if ($vt !== [] && $this->isAmpFollowedByVar($vt[0])) {
+            $rf = '$__rf' . ($this->tempSeq++);
+            $this->compileRefAssignRHS(new Cursor($this->trimWs(array_slice($vt, 1))), $rf, $code);
+            $code[] = [VmOp::PUSH_REF_EL, $rf];
+            return;
+        }
+        $this->parseExpr($val, $code);
     }
 
     // ========================================================================
