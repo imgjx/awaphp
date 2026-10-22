@@ -115,7 +115,8 @@ final class GotoObfuscator
                 if ($pdepth === 1) {
                     // 参数列表结束，跳过返回类型声明（: type / ?type / type|type / type&type）
                     // 再找函数体起始 '{'；其余（如 abstract 的 ;）视为放弃。
-                    // 注：PHP tokenizer 中 ':'/'\'/'|'/'&' 均为裸字符，无对应 T_ 常量，故单独允许。
+                    // 注：':'/'?'/'|' 为裸字符；'&' 在 PHP 8.1+ 词法为
+                    // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG 数组 token。
                     for ($k = $j + 1; $k < $n; $k++) {
                         $tk = $tokens[$k];
                         if ($tk === '{') {
@@ -126,12 +127,15 @@ final class GotoObfuscator
                                 T_WHITESPACE, T_COMMENT, T_DOC_COMMENT,
                                 T_STRING, T_NS_SEPARATOR,
                             ];
+                            if (defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')) {
+                                $allowed[] = T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG;
+                            }
                             if (!in_array($tk[0], $allowed, true)) {
                                 return -1; // 非返回类型成分，放弃
                             }
                         } else {
-                            // 裸字符：仅允许 ':'（返回类型）、'?'（可空）、'|'（联合）、'&'（交集）
-                            if ($tk !== ':' && $tk !== '?' && $tk !== '|' && $tk !== '&') {
+                            // 裸字符：仅允许 ':'（返回类型）、'?'（可空）、'|'（联合）
+                            if ($tk !== ':' && $tk !== '?' && $tk !== '|') {
                                 return -1;
                             }
                         }

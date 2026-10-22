@@ -60,6 +60,7 @@ final class VmOp
     public const BOOL_AND = 40;    // &&
     public const BOOL_OR  = 41;    // ||
     public const BOOL_NOT = 42;    // !
+    public const BOOL_XOR = 43;    // xor（非短路，两侧均求值）
 
     // ---- 控制流 ----
     public const JMP  = 50;        // 操作数: offset（相对当前 pc 的有符号偏移）
@@ -149,6 +150,46 @@ final class VmOp
     //   真实引用后传给原生函数，从而支持 sort()/usort()/array_push() 等
     //   第一参 by-ref 的原生函数对 VM 帧变量的原地修改。
     public const PUSH_REF    = 115;  // 操作数: name -> 压入变量 name 的引用句柄
+    // SCALL_VAR：动态方法名的静态调用 C::$m() / self::$m()。操作数: class, argc。
+    //   栈形态：[方法名(字符串), 实参...]——方法名先压栈，实参按左→右。
+    //   运行期弹出方法名后按 SCALL 同款逻辑分发（VM 方法表优先，原生类反射兜底）。
+    public const SCALL_VAR   = 117;
+    // INSTANCEOF：instanceof 类型判定。操作数: class(字符串常量)。
+    //   运行期经 $__instanceof 分发：VM 类/接口走 META 属性 + classParents/
+    //   classImpl 链遍历；原生类走真实 instanceof。动态类名（$x instanceof $c）
+    //   暂不支持，由编译期抛 VmUnsupported 回退。
+    public const INSTANCEOF  = 118;  // 操作数: class -> 弹栈顶对象，压入 bool
+
+    // ---- 异常处理（try / catch / finally 真编译）----
+    // THROW：弹栈顶对象并按原样抛出（throw $e 语义）。运行期由 __exec 的外层
+    //   try/catch 包装接管：查找覆盖当前 pc 的异常表条目决定路由到 catch 或 finally。
+    public const THROW          = 119; // 操作数: 无（异常对象弹栈）
+    // EX_FINALLY_ENTER：finally 块起始哨兵——置位 $__inFinally 标志，使 finally
+    //   内部再抛出的异常不再被本帧异常表捕获（直接穿透到外层/调用方）。
+    public const EX_FINALLY_ENTER = 120; // 操作数: 无
+    // EX_FINALLY_END：finally 块终止哨兵——根据 $__pending（待重抛异常）与 $__ctl
+    //   （延后控制转移：1=带值返回 / 2=void 返回 / 3=break / 4=continue）决定收尾：
+    //   有 pending 则重抛；否则按 ctl 执行返回/跳出/继续，无 ctl 则顺序落下。
+    public const EX_FINALLY_END  = 121; // 操作数: 无
+
+    // ---- 可变参数调用（解包实参 ...$arr，PHP 5.6+）----
+    // ARG_SPREAD：弹栈顶数组并压入【解包标记】['__vmspread__', 数组]，由随后的
+    //   CALL / MECALL / SCALL / CALL_NATIVE 在真正调用前展平为位置实参
+    //   （整数键→位置实参；字符串键→命名实参，等价 PHP 语义）。
+    //   这样可绕开 CALL 的 argc 为编译期常量、无法表达「实参个数运行期才确定」的限制。
+    public const ARG_SPREAD = 122; // 操作数: 无（数组弹栈）
+
+    // ---- 命名实参（name: expr，PHP 8.0+）----
+    // ARG_NAMED：弹栈顶值并压入【命名标记】['__vmnamed__', 形参名, 值]，由随后的
+    //   CALL / MECALL / SCALL 在真正调用前按被调方参数规格重排为位置实参。
+    //   重排推迟到运行期：被调方签名（funcParams / classParams）运行期必然已知，
+    //   即使 receiver 类型编译期不可知（$obj->m(b:1)）也能正确解析。
+    public const ARG_NAMED = 123; // 操作数: name -> 栈顶值包装为命名标记
+
+    // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
+    // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
+    // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
+    // 且天然获得「同一 __VMRUN__ 内跨调用保持」的静态属性语义（见 VmExprTrait）。
 
     // ---- 参数化指令（ISA 精简：合并同构族，sub-id 指明具体子操作；见 src/Vm/VmIsa.php）----
     // 旧 opcode 常量全部保留为「内部 sub-id」，此处仅新增 6 个能覆盖 41 条旧码的顶层码。
@@ -187,7 +228,7 @@ final class VmOp
         self::EQ        => [], self::NE    => [], self::LT    => [], self::GT  => [],
         self::LE        => [], self::GE    => [], self::IDENT => [], self::NIDENT => [],
         self::SPACESHIP => [],
-        self::BOOL_AND  => [], self::BOOL_OR => [], self::BOOL_NOT => [],
+        self::BOOL_AND  => [], self::BOOL_OR => [], self::BOOL_NOT => [], self::BOOL_XOR => [],
         self::JMP       => ['i'], self::JZ  => ['i'], self::JNZ => ['i'],
         self::CALL      => ['n', 'i'],
         self::MECALL    => ['i'],
@@ -218,6 +259,13 @@ final class VmOp
         self::EVAL_STMT     => [],
         self::CALL_NATIVE   => ['i', 'i', 'i'],
         self::PUSH_REF      => ['n'],
+        self::SCALL_VAR     => ['n', 'i'],
+        self::INSTANCEOF    => ['n'],
+        self::THROW         => [],
+        self::EX_FINALLY_ENTER => [],
+        self::EX_FINALLY_END => [],
+        self::ARG_SPREAD => [],
+        self::ARG_NAMED  => ['n'],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -255,6 +303,7 @@ final class VmOp
         self::BOOL_AND  => 'BOOL_AND',
         self::BOOL_OR   => 'BOOL_OR',
         self::BOOL_NOT  => 'BOOL_NOT',
+        self::BOOL_XOR  => 'BOOL_XOR',
         self::JMP       => 'JMP',
         self::JZ        => 'JZ',
         self::JNZ       => 'JNZ',
@@ -306,6 +355,13 @@ final class VmOp
         self::EVAL_STMT     => 'EVAL_STMT',
         self::CALL_NATIVE   => 'CALL_NATIVE',
         self::PUSH_REF      => 'PUSH_REF',
+        self::SCALL_VAR     => 'SCALL_VAR',
+        self::INSTANCEOF    => 'INSTANCEOF',
+        self::THROW         => 'THROW',
+        self::EX_FINALLY_ENTER => 'EX_FINALLY_ENTER',
+        self::EX_FINALLY_END => 'EX_FINALLY_END',
+        self::ARG_SPREAD => 'ARG_SPREAD',
+        self::ARG_NAMED  => 'ARG_NAMED',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',
@@ -319,6 +375,7 @@ final class VmOp
         self::RET => true, self::RET_VOID => true, self::HALT => true,
         self::JMP => true, self::JMP_B => true, self::DISPATCH => true,
         self::EXIT_ => true, self::EXIT_VOID => true,
+        self::EX_FINALLY_END => true,
     ];
 
     /** 条件跳转指令（有 fall-through 与 taken 两个出口） */

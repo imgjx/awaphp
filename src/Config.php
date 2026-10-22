@@ -70,6 +70,8 @@ final class Config
 
         // 第三阶段开关
         $this->data['vm']            = $b($this->data['vm']) ?? false;
+        // VM 常量池加密（默认开）：PUSH_C 字面量抽入独立加密常量池；--no-vm-cpool 关
+        $this->data['vm_cpool']      = $b($this->data['vm_cpool'] ?? true) ?? true;
         $this->data['eval']          = $b($this->data['eval']) ?? false;
         $this->data['anti_debug']    = $b($this->data['anti_debug']) ?? false;
         $this->data['anti_hook']     = $b($this->data['anti_hook']) ?? false;
@@ -165,12 +167,61 @@ final class Config
         return new self($json);
     }
 
-    /** 校验必填项，返回错误信息数组 */
+    /**
+     * 校验必填项与选项依赖关系，返回错误信息数组（空数组 = 通过）。
+     *
+     * 除必填的 --input 外，重点拦截"配了却不生效/配错了静默降级"的组合：
+     *  - --config 指向的文件必须存在（缺失时不能静默退化成散装 CLI 模式）
+     *  - --vm 必须配 --salt：空盐时 VM 密钥由公开公式派生，等同无密钥
+     *  - VM 层专属选项（--vm-p8 / --vm-keychain / ...）未开 --vm 时不生效
+     *  - --vm-linker 指向的模块目录必须存在
+     *  - --license-expire 必须可被 strtotime 解析
+     */
     public function validate(): array
     {
         $errors = [];
-        if (empty($this->data['input'])) {
+        $input = (string) ($this->data['input'] ?? '');
+        if ($input === '') {
             $errors[] = '缺少必填参数 --input';
+        } elseif (!file_exists($input)) {
+            $errors[] = '输入路径不存在: ' . $input;
+        }
+        // --config 指向的文件必须存在：缺失时不能静默按散装参数构建
+        if (!empty($this->data['config']) && !is_file((string) $this->data['config'])) {
+            $errors[] = '配置文件不存在: ' . $this->data['config'];
+        }
+        // --vm 必须配 --salt：空盐下 VM 密钥 = sha256("|vm-key|…")，可被离线推导
+        if (!empty($this->data['vm']) && trim((string) $this->data['salt']) === '') {
+            $errors[] = '启用 --vm 时必须同时指定 --salt（空盐时 VM 密钥按公开公式派生，保护强度等同于无密钥）';
+        }
+        // VM 层专属选项未开 --vm 时静默不生效，容易误判为已加固
+        if (empty($this->data['vm'])) {
+            $stray = [];
+            foreach (['vm_p8', 'vm_keychain', 'vm_builtin_replace', 'vm_morph', 'vm_flatten', 'vm_state_machine'] as $k) {
+                if (!empty($this->data[$k])) {
+                    $stray[] = '--' . str_replace('_', '-', $k);
+                }
+            }
+            foreach (['vm_junk', 'vm_fake_fog', 'vm_probe'] as $k) {
+                if ((int) ($this->data[$k] ?? 0) > 0) {
+                    $stray[] = '--' . str_replace('_', '-', $k);
+                }
+            }
+            if ((string) ($this->data['vm_linker'] ?? '') !== '') {
+                $stray[] = '--vm-linker';
+            }
+            if ($stray !== []) {
+                $errors[] = '以下选项依赖 --vm，未开启 --vm 时不会生效: ' . implode('、', $stray);
+            }
+        }
+        // --vm-linker 指向的模块目录必须存在
+        if (!empty($this->data['vm_linker']) && !is_dir((string) $this->data['vm_linker'])) {
+            $errors[] = '--vm-linker 目录不存在: ' . $this->data['vm_linker'];
+        }
+        // --license-expire 必须可解析（解析失败时授权守卫会静默跳过有效期校验）
+        if (!empty($this->data['license_expire'])
+            && strtotime((string) $this->data['license_expire']) === false) {
+            $errors[] = '--license-expire 时间无法解析: ' . $this->data['license_expire'];
         }
         return $errors;
     }

@@ -36,6 +36,7 @@ final class StatementSplitter
         $bdepth = 0;  // 方括号深度
         $eDepth = 0;  // 表达式内花括号深度（闭包体/match 体/匿名类体，非语句边界）
         $iDepth = 0;  // 插值串深度（"{$expr}" / "${expr}" 的成对花括号，不计为语句块边界）
+        $altDepth = 0; // 替代语法冒号体深度（if():...endif; / while():...endwhile; 等）
         $n = count($tokens);
 
         for ($i = 0; $i < $n; $i++) {
@@ -89,11 +90,20 @@ final class StatementSplitter
                     }
                 }
             } elseif ($char === ';') {
-                if ($depth === 0 && $pdepth === 0 && $bdepth === 0) {
+                // 冒号体（替代语法）内的 ; 不是语句边界——整个 if():...endif;
+                // 必须保持为一条语句，交给 VM 编译侧规范化（: -> { / end* -> }）。
+                if ($depth === 0 && $pdepth === 0 && $bdepth === 0 && $altDepth === 0) {
                     self::flush($out, $cur);
                 }
+            } elseif ($char === ':' && $depth === 0 && $pdepth === 0 && $bdepth === 0
+                && $eDepth === 0 && $iDepth === 0 && self::isAltSyntaxColon($tokens, $i)) {
+                // 控制结构冒号体开头（if/elseif/else/while/for/foreach/switch (...) :）
+                $altDepth++;
             } elseif ($type !== null && in_array($type, [T_ENDIF, T_ENDFOR, T_ENDWHILE, T_ENDFOREACH, T_ENDSWITCH], true)) {
-                if ($depth === 0 && $pdepth === 0 && $bdepth === 0) {
+                if ($altDepth > 0) {
+                    $altDepth--;
+                }
+                if ($depth === 0 && $pdepth === 0 && $bdepth === 0 && $altDepth === 0) {
                     self::flush($out, $cur);
                 }
             }
@@ -103,6 +113,71 @@ final class StatementSplitter
             self::flush($out, $cur);
         }
         return $out;
+    }
+
+    /**
+     * 判断 $i 处的 ':' 是否为【控制结构冒号体开头】（替代语法）。
+     * 只有新开块结构的 ':' 计入深度：`if (cond):` / `while (cond):` /
+     * `for(...):` / `foreach(...):` / `switch(...):` —— ':' 前是 ')'，且该 ')'
+     * 的匹配 '(' 之前是上述关键字。
+     * elseif / else 的 ':' 不计深度：它们与 if 共享同一个 endif，处于父
+     * 冒号体内部（其 ; 已由父深度挡住，无需重复计数）。
+     * 排除：函数/闭包/箭头函数返回类型（`function f():` 的 '(' 前是函数名）、
+     * 三元 `?:`（'?' 与 ':' 之间一般不是控制头）、case/default 标签
+     * （前是表达式/T_DEFAULT）、goto 标签（前是 T_STRING）。
+     * @param array<int,mixed> $tokens
+     */
+    private static function isAltSyntaxColon(array $tokens, int $i): bool
+    {
+        $prev = self::prevSig($tokens, $i);
+        if ($prev < 0) {
+            return false;
+        }
+        if (!is_string($tokens[$prev]) || $tokens[$prev] !== ')') {
+            return false;
+        }
+        // 向前找与 ':' 前 ')' 匹配的 '('（字符串 token 内的括号是字面文本，不计深度）
+        $pd = 1;
+        $open = -1;
+        for ($j = $prev - 1; $j >= 0; $j--) {
+            $t = $tokens[$j];
+            if (is_string($t)) {
+                if ($t === ')') {
+                    $pd++;
+                } elseif ($t === '(') {
+                    $pd--;
+                    if ($pd === 0) {
+                        $open = $j;
+                        break;
+                    }
+                }
+            }
+        }
+        if ($open < 0) {
+            return false;
+        }
+        $k = self::prevSig($tokens, $open);
+        if ($k >= 0 && is_array($tokens[$k])
+            && in_array($tokens[$k][0], [T_IF, T_WHILE, T_FOR, T_FOREACH, T_SWITCH], true)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 取 $i 之前最近的一个有效 token 下标（跳过空白/注释），无则 -1。
+     * @param array<int,mixed> $tokens
+     */
+    private static function prevSig(array $tokens, int $i): int
+    {
+        for ($j = $i - 1; $j >= 0; $j--) {
+            $t = $tokens[$j];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            return $j;
+        }
+        return -1;
     }
 
     /**

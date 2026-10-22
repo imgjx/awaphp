@@ -30,12 +30,15 @@ final class Salt
     {
         $len = max(4, min(32, (int) $len));
         $hash = md5($origin . $this->salt);
-        $base = '_' . substr($hash, 0, $len - 1);
-        // 保证首字符为字母/下划线，避免与仅含数字的情形冲突
-        if (ctype_digit((string) ($base[1] ?? ''))) {
-            $base = '_v' . substr($hash, 0, $len - 2);
+        $id = substr($hash, 0, $len - 1);
+        // PHP 标识符不能以数字开头：把首字符中的数字位按 0-9 -> g-p 的
+        // 确定映射换成字母。这样首字符仍是 16 个等概率符号之一，md5 的
+        // 全部 4 bit 熵都被保留；旧实现会退化成 "_v" + 少一位 hash，
+        // len=4/5 时可用熵从 (len-1)*4 bit 掉到 (len-2)*4 bit，碰撞率明显上升。
+        if (ctype_digit($id[0])) {
+            $id[0] = substr('ghijklmnop', (int) $id[0], 1);
         }
-        return $base;
+        return '_' . $id;
     }
 
     public function getSalt(): string

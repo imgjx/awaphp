@@ -29,7 +29,7 @@ function __VMRUN__($__P)
     $ADD=10;$SUB=11;$MUL=12;$DIV=13;$MOD=14;$POW=15;$CONCAT=16;$NEG=17;$BW_NOT=18;
     $BW_AND=20;$BW_OR=21;$BW_XOR=22;$BW_SHL=23;$BW_SHR=24;
     $EQ=30;$NE=31;$LT=32;$GT=33;$LE=34;$GE=35;$IDENT=36;$NIDENT=37;$SPACESHIP=38;
-    $BOOL_AND=40;$BOOL_OR=41;$BOOL_NOT=42;
+    $BOOL_AND=40;$BOOL_OR=41;$BOOL_NOT=42;$BOOL_XOR=43;
     $JMP=50;$JZ=51;$JNZ=52;$CALL=53;$MECALL=54;$NEW=55;$PROPGET=56;$PROPSET=57;$RET=58;$RET_VOID=59;$ECHO=60;$HALT=61;
     $ARRAY_MAKE=70;$ARRAY_KV=71;$INDEX_GET=72;$INDEX_SET=73;$COUNT=74;$ARRAY_PUSH=75;
     $PRE_INC=80;$PRE_DEC=81;$POST_INC=82;$POST_DEC=83;$CALL_VAR=90;
@@ -37,7 +37,8 @@ function __VMRUN__($__P)
     $SCALL=91;$SPROP=92;$ISSET_=93;$EMPTY_=94;$UNSET_=95;$EXIT_=96;$EXIT_VOID=97;$PRINT_=98;$PHPRUN=99;
     $CAST_INT=100;$CAST_FLOAT=101;$CAST_STRING=102;$CAST_BOOL=103;$CAST_ARRAY=104;$CAST_OBJECT=105;
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
-    $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;
+    $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
+    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;
 
     $__META = "\x01__cls";
 
@@ -80,15 +81,27 @@ function __VMRUN__($__P)
     };
 
     // 内置二元运算
-    $__bin = function($op,$a,$b) use (&$__bin){
+    $__bin = function($op,$a,$b) use (&$__bin,&$__toStr){
         switch($op){
             case 10:return $a+$b;
             case 11:return $a-$b;
             case 12:return $a*$b;
-            case 13:return (int)$b===0?0:($a/$b);
-            case 14:return (int)$b===0?0:($a%$b);
+            // 除零/模零：PHP 8 抛 DivisionByZeroError（旧实现静默返回 0，
+            // 与原生语义不符——try/catch 结构下的行为会静默分叉）。
+            // 数值型操作数（int/float/bool/null/数值串）判零；其它类型交还原生
+            // 运算抛 TypeError，与 PHP 一致。
+            case 13:
+                if ($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))) {
+                    if ($b==0) { throw new \DivisionByZeroError('Division by zero'); }
+                }
+                return $a/$b;
+            case 14:
+                if ($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))) {
+                    if ((int)$b===0) { throw new \DivisionByZeroError('Modulo by zero'); }
+                }
+                return $a%$b;
             case 15:return $a**$b;
-            case 16:return (string)$a.(string)$b;
+            case 16:return $__toStr($a).$__toStr($b);
             case 20:return $a&$b;
             case 21:return $a|$b;
             case 22:return $a^$b;
@@ -109,6 +122,55 @@ function __VMRUN__($__P)
         return null;
     };
 
+    // 自增/自减（PHP 语义，实测 PHP 8.3 校准）：
+    //   int/float          ±1
+    //   null               ++ → 1；-- 无效果
+    //   bool               无效果
+    //   array              TypeError（Cannot increment/decrement array）
+    //   数值串             按 int/float 转换后 ±1（"9"→10、"9.5"→10.5、"1e3"→1001.0）
+    //   非数值串           ++ 走 Perl 式字母进位（"Az"→"Ba"、"Zz"→"AAa"、""→"1"）；
+    //                     -- 无效果
+    // 旧实现直接 $v+1，遇字符串即 TypeError，且语义与原生不符。
+    $__inc = function($v,$d){
+        if (is_int($v) || is_float($v)) { return $v + $d; }
+        if (is_null($v)) { return $d > 0 ? 1 : $v; }
+        if (is_bool($v)) { return $v; }
+        if (is_array($v)) {
+            throw new \TypeError($d > 0 ? 'Cannot increment array' : 'Cannot decrement array');
+        }
+        if (is_string($v)) {
+            if (is_numeric($v)) {
+                return (strpbrk($v, '.eE') !== false) ? (float)$v + $d : (int)$v + $d;
+            }
+            if ($v === '') { return $d > 0 ? '1' : $v; }
+            if ($d < 0) { return $v; } // 非数值串递减无效果
+            // Perl 式字母递增：从右向左，'z'→'a'/'Z'→'A'/'9'→'0' 进位，
+            // 其它字符（含高位字节）终止且不进位。
+            $s = $v;
+            $carry = true;
+            for ($i = strlen($s) - 1; $i >= 0; $i--) {
+                $ch = $s[$i];
+                if ($ch >= 'a' && $ch < 'z') { $s[$i] = chr(ord($ch) + 1); $carry = false; break; }
+                if ($ch === 'z') { $s[$i] = 'a'; continue; }
+                if ($ch >= 'A' && $ch < 'Z') { $s[$i] = chr(ord($ch) + 1); $carry = false; break; }
+                if ($ch === 'Z') { $s[$i] = 'A'; continue; }
+                if ($ch >= '0' && $ch < '9') { $s[$i] = chr(ord($ch) + 1); $carry = false; break; }
+                if ($ch === '9') { $s[$i] = '0'; continue; }
+                $carry = false;
+                break;
+            }
+            if ($carry) {
+                // 整串缠绕：按【原串首字符】类别前置 'a'/'A'/'1'
+                // （"Zz"→"AAa"、"z9"→"aa0"、"9z"→"10a"，均经实测校准）
+                $f = $v[0];
+                $pre = ($f === 'Z') ? 'A' : (($f === 'z') ? 'a' : '1');
+                $s = $pre . $s;
+            }
+            return $s;
+        }
+        return $v + $d; // 其它类型：交还原生语义
+    };
+
     // 取属性
     $__propGet = function($obj,$p) use ($__META){
         if (is_object($obj)) { return $obj->$p ?? null; }
@@ -125,18 +187,169 @@ function __VMRUN__($__P)
     // PHP 的默认值是惰性求值，故默认值以迷你指令段存储，在此按需执行。
     // 注意：$__exec 以引用接收帧变量表，PHP 8 禁止数组字面量按引用传递，
     // 故各调用点统一先赋临时变量（$__ev）再传参。
+    // 键空洞：命名实参重排（$__reorder）会在中段留下空洞——如 f("x", c:"z") 跳过
+    // $b 时得 [0=>"x", 2=>"z"]。此时 count() 少算、$args[]= 追加到最高键之后，
+    // 均致实参错位；故补齐须按 array_key_exists 逐位判定，填充后 ksort 复位键序
+    // （下游 POP_V 序言按栈位置消费，array_slice 亦按位置切片）。
     $__pad = function($spec, $args) use (&$__exec, &$__code) {
         $n = count($spec);
-        for ($i = count($args); $i < $n; $i++) {
+        // 可变参数（...$x）：末位形参吸收【所有】剩余实参为一个数组（PHP 语义）。
+        // 固定参数仍按位对齐，缺失的由默认值段补齐。
+        if ($n > 0 && (($spec[$n - 1][2] ?? 0) & 2)) {
+            $fixed = $n - 1;
+            $filled = false;
+            for ($i = 0; $i < $fixed; $i++) {
+                if (array_key_exists($i, $args)) { continue; }
+                $d = $spec[$i][1];
+                $__ev = [];
+                $args[$i] = ($d === null) ? null : $__exec($__code($d), $__ev, null, [], null);
+                $filled = true;
+            }
+            if ($filled) { ksort($args); }
+            $rest = array_slice($args, $fixed);
+            $args = array_slice($args, 0, $fixed);
+            // 若调用点用了 ...$arr 解包，实参已被展平为多个元素，直接吸收即可
+            $args[] = array_values($rest);
+            return $args;
+        }
+        $filled = false;
+        for ($i = 0; $i < $n; $i++) {
+            if (array_key_exists($i, $args)) { continue; }
             $d = $spec[$i][1];
             $__ev = [];
-            $args[] = ($d === null) ? null : $__exec($__code($d), $__ev, null, [], null);
+            $args[$i] = ($d === null) ? null : $__exec($__code($d), $__ev, null, [], null);
+            $filled = true;
+        }
+        if ($filled) { ksort($args); }
+        return $args;
+    };
+
+    // 类常量继承链查找：返回真正声明该常量的 VM 类/接口名（含自身），
+    // 未命中返回 null。优先级：自身 → implements 接口 → extends 父类
+    // （PHP 继承语义：子类/实现类可访问父类/接口常量）。
+    $__constOwner = function($cls,$name) use ($__P){
+        $c = $cls; $guard = 0;
+        while (is_string($c) && $c !== '' && $guard++ < 64 && isset($__P['classes'][$c])) {
+            if (array_key_exists($name, $__P['classes'][$c]['consts'] ?? [])) { return $c; }
+            foreach (array_keys($__P['classImpl'][$c] ?? []) as $if) {
+                if (isset($__P['classes'][$if]) && array_key_exists($name, $__P['classes'][$if]['consts'] ?? [])) { return $if; }
+            }
+            $c = $__P['classParents'][$c] ?? null;
+        }
+        return null;
+    };
+
+    // 方法继承链查找：返回真正实现该方法的 VM 类名（含自身），未命中返回 null。
+    // 覆盖父类方法（abstract 基类 + 子类实现的经典形态）与 trait 复制进来的方法
+    // （trait 方法在 use 时已复制进类表，无需在此处理）。
+    $__methodOwner = function($cls,$m) use ($__P){
+        $c = $cls; $guard = 0;
+        while (is_string($c) && $c !== '' && $guard++ < 64 && isset($__P['classes'][$c])) {
+            if (isset($__P['classes'][$c]['methods'][$m])) { return $c; }
+            $c = $__P['classParents'][$c] ?? null;
+        }
+        return null;
+    };
+
+    // 解包实参展平：ARG_SPREAD 压入的 ['__vmspread__', 数组] 标记展开为多个实参。
+    // 整数键 → 位置实参；字符串键 → 命名实参（['__vmnamed__', 键, 值]），
+    // 与 PHP 的 f(...$a) 语义一致（字符串键数组等价于命名实参）。
+    $__flatten = function($args){
+        foreach ($args as $__x) {
+            if (is_array($__x) && ($__x[0] ?? '') === '__vmspread__') {
+                $__flat = [];
+                foreach ($args as $__y) {
+                    if (is_array($__y) && ($__y[0] ?? '') === '__vmspread__') {
+                        foreach ((array) ($__y[1] ?? []) as $__k => $__e) {
+                            $__flat[] = is_int($__k) ? $__e : ['__vmnamed__', $__k, $__e];
+                        }
+                    } else { $__flat[] = $__y; }
+                }
+                return $__flat;
+            }
+        }
+        return $args;
+    };
+
+    // 命名实参重排：把 ['__vmnamed__', 形参名, 值] 标记按被调方参数规格
+    // （[参数名, 默认值段, flags]）还原为位置实参；未知形参名抛 Error
+    // （与 PHP 的 "Unknown named parameter" 一致）。无标记时零开销返回。
+    $__reorder = function($args,$spec){
+        $__has = false;
+        foreach ($args as $__x) {
+            if (is_array($__x) && ($__x[0] ?? '') === '__vmnamed__') { $__has = true; break; }
+        }
+        if (!$__has) { return $args; }
+        $__out = []; $__named = [];
+        foreach ($args as $__x) {
+            if (is_array($__x) && ($__x[0] ?? '') === '__vmnamed__') {
+                $__named[(string) $__x[1]] = $__x[2];
+            } else { $__out[] = $__x; }
+        }
+        if ($spec !== null) {
+            foreach ($spec as $__i => $__sp) {
+                $__pn = ltrim((string) $__sp[0], '$');
+                if (array_key_exists($__pn, $__named)) {
+                    $__out[$__i] = $__named[$__pn];
+                    unset($__named[$__pn]);
+                }
+            }
+        }
+        if ($__named !== []) {
+            throw new \Error('Unknown named parameter $' . array_key_first($__named));
+        }
+        return $__out;
+    };
+
+    // 实参绑定：把栈上实参（可含引用句柄 / 命名标记 / 解包标记）按被调方规格
+    // 规整为「位置值 + by-ref 回写映射」——CALL/MECALL/SCALL/CALL_NATIVE 共用。
+    //   1) 展平解包标记；2) 重排命名实参；3) 引用句柄按 spec flags 分流：
+    //      by-ref 位 copy-in（换调用方当前值 + 记录回写），非引用位取快照值。
+    // $__cv：调用方帧变量表（按引用）；返回 [规整后实参, 回写映射]。
+    $__bindArgs = function($args,$spec,&$__cv=null) use ($__flatten,$__reorder){
+        $args = $__flatten($args);
+        $args = $__reorder($args,$spec);
+        $refs = [];
+        if ($spec !== null) {
+            foreach ($args as $i => $a) {
+                if (!is_array($a) || ($a[0] ?? '') !== '__vmref__') { continue; }
+                $cvar = (string) $a[1];
+                if (((int) ($spec[$i][2] ?? 0)) & 1) {
+                    $refs[$i] = [$cvar, (string) $spec[$i][0]];
+                    $args[$i] = ($__cv !== null && array_key_exists($cvar, $__cv)) ? $__cv[$cvar] : null;
+                } else {
+                    $args[$i] = $a[2] ?? null; // 非引用位：取压栈时的值快照
+                }
+            }
+        } else {
+            foreach ($args as $i => $a) {
+                if (is_array($a) && ($a[0] ?? '') === '__vmref__') { $args[$i] = $a[2] ?? null; }
+            }
+        }
+        return [$args,$refs];
+    };
+
+    // 原生函数实参绑定（CALL_NATIVE）：展平 + 命名重排（无 spec，遇命名实参抛错）
+    // + 引用句柄分流：refMask 位绑定为调用方帧变量的【真实引用】（sort/usort 等
+    // 原地修改语义），非 mask 位取压栈时的值快照。
+    $__bindNative = function($args,$rm,&$__cv=null) use ($__flatten,$__reorder){
+        $args = $__flatten($args);
+        $args = $__reorder($args,null);
+        foreach ($args as $i => $a) {
+            if (!is_array($a) || ($a[0] ?? '') !== '__vmref__') { continue; }
+            if ((($rm >> $i) & 1) && $__cv !== null) {
+                $n = (string) $a[1];
+                if (!array_key_exists($n, $__cv)) { $__cv[$n] = null; }
+                $args[$i] = &$__cv[$n];
+            } else {
+                $args[$i] = $a[2] ?? null;
+            }
         }
         return $args;
     };
 
     // 构造对象
-    $__newObj = function($cls,$args) use (&$__exec,$__P,$__META,&$__callMethod,&$__code){
+    $__newObj = function($cls,$args) use (&$__exec,$__P,$__META,&$__callMethod,&$__code,$__methodOwner,$__bindArgs){
         if (isset($__P['classes'][$cls])) {
             $o = new \stdClass();
             $o->$__META = $cls;
@@ -144,12 +357,16 @@ function __VMRUN__($__P)
                 $__ev = [];
                 $o->$pn = ($def===null) ? null : $__exec($__code($def), $__ev, null, [], null);
             }
-            if (isset($__P['classes'][$cls]['methods']['__construct'])) {
+            // 构造函数同样沿继承链查找（子类未定义 __construct 时调父类的）
+            if ($__methodOwner($cls,'__construct') !== null) {
                 $__callMethod($o,'__construct',$args);
             }
             return $o;
         }
-        // 原生类
+        // 原生类：实参里的引用句柄先解包为值（原生构造器无 VM 参数规格）。
+        // 注意：by-ref 形参不可传字面量 null，须经局部变量中转。
+        $__ncv = null;
+        [$args,] = $__bindArgs($args, null, $__ncv);
         $rc = new \ReflectionClass($cls);
         return $rc->newInstanceArgs($args);
     };
@@ -160,7 +377,8 @@ function __VMRUN__($__P)
         if (is_string($cb) && isset($__P['funcs'][$cb])) {
             $seg = $__P['funcs'][$cb];
             $sp = $__P['funcParams'][$cb] ?? [];
-            return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null); };
+            $fet = $__P['funcET'][$cb] ?? null;
+            return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$fet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$fet); };
         }
         if (is_array($cb) && count($cb)===2) {
             $o = $cb[0]; $m = $cb[1];
@@ -170,7 +388,8 @@ function __VMRUN__($__P)
             if (is_string($o) && isset($__P['classes'][$o]['methods'][$m])) {
                 $seg = $__P['classes'][$o]['methods'][$m];
                 $sp = $__P['classParams'][$o][$m] ?? [];
-                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null); };
+                $cet = $__P['classET'][$o][$m] ?? null;
+                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); };
             }
         }
         if (is_string($cb) && strpos($cb,'::')!==false) {
@@ -178,18 +397,37 @@ function __VMRUN__($__P)
             if (isset($__P['classes'][$p[0]]['methods'][$p[1]])) {
                 $seg = $__P['classes'][$p[0]]['methods'][$p[1]];
                 $sp = $__P['classParams'][$p[0]][$p[1]] ?? [];
-                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null); };
+                $cet = $__P['classET'][$p[0]][$p[1]] ?? null;
+                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); };
             }
         }
         return $cb;
     };
 
+
     // 调用函数（用户定义或内置）
-    $__callFunc = function($name,$args) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad){
+    // $__cv：调用方帧变量表（按引用传入）——by-ref 实参需在此做 copy-in / copy-out。
+    // VM 帧是值语义（POP_V 从栈拷贝），故引用参数按「传入当前值 → 被调方执行 →
+    // 回写参数最终值」实现，等价于 PHP 的引用传递语义。
+    $__callFunc = function($name,$args,&$__cv=null) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad,$__bindArgs){
         if (isset($__P['funcs'][$name])) {
-            $args = $__pad($__P['funcParams'][$name] ?? [],$args);
+            $spec = $__P['funcParams'][$name] ?? [];
+            [$args,$refs] = $__bindArgs($args,$spec,$__cv);
+            $args = $__pad($spec,$args);
             $__ev = [];
-            return $__exec($__P['funcs'][$name],$__ev,null,$args,null);
+            $__r = $__exec($__P['funcs'][$name],$__ev,null,$args,null,false,$__P['funcET'][$name] ?? null);
+            // copy-out：被调方引用参数的最终值写回调用方变量（PHP: f($a) 里 $a 被改写）
+            foreach ($refs as $i => $m) {
+                if ($__cv !== null && array_key_exists($m[1], $__ev)) {
+                    $__cv[$m[0]] = $__ev[$m[1]];
+                }
+            }
+            return $__r;
+        }
+        // 命名/解包标记对原生函数无意义（CALL_NATIVE 路径另行处理 refMask）：
+        // 走到这里说明编译期已放行，仅可能残留引用句柄——统一解包为值。
+        foreach ($args as $i => $a) {
+            if (is_array($a) && ($a[0] ?? '') === '__vmref__') { $args[$i] = $a[2] ?? null; }
         }
         // 原生高阶函数（回调在 args[0]）：把 VM 回调包装后交还原生函数，保留原生语义
         if (($name==='call_user_func'||$name==='call_user_func_array'||$name==='forward_static_call'
@@ -229,16 +467,72 @@ function __VMRUN__($__P)
     };
 
     // 调用方法
-    $__callMethod = function($obj,$m,$args) use (&$__exec,$__P,$__META,&$__code,&$__pad){
-        if (is_object($obj) && isset($obj->$__META) && isset($__P['classes'][$obj->$__META]['methods'][$m])) {
-            $args = $__pad($__P['classParams'][$obj->$__META][$m] ?? [],$args);
-            $__ev = ['$this'=>$obj];
-            return $__exec($__P['classes'][$obj->$__META]['methods'][$m],$__ev,$obj,$args,null);
+    // $__cv：调用方帧变量表（按引用传入）——by-ref 实参的 copy-in / copy-out。
+    $__callMethod = function($obj,$m,$args,&$__cv=null) use (&$__exec,$__P,$__META,&$__code,&$__pad,$__methodOwner,$__bindArgs){
+        if (is_object($obj) && isset($obj->$__META) && is_string($obj->$__META)) {
+            // 沿继承链查找方法实现（PHP 继承语义：子类对象调用父类方法）
+            $__mo = $__methodOwner($obj->$__META, $m);
+            if ($__mo !== null) {
+                $spec = $__P['classParams'][$__mo][$m] ?? [];
+                [$args,$refs] = $__bindArgs($args,$spec,$__cv);
+                $args = $__pad($spec,$args);
+                $__ev = ['$this'=>$obj];
+                $__r = $__exec($__P['classes'][$__mo]['methods'][$m],$__ev,$obj,$args,null,false,$__P['classET'][$__mo][$m] ?? null);
+                // copy-out：被调方引用参数的最终值写回调用方变量
+                foreach ($refs as $i => $mm) {
+                    if ($__cv !== null && array_key_exists($mm[1], $__ev)) {
+                        $__cv[$mm[0]] = $__ev[$mm[1]];
+                    }
+                }
+                return $__r;
+            }
         }
         if (is_object($obj) && method_exists($obj,$m)) {
+            // 原生对象方法：同样展平/去标记（同 $__callFunc 原生路径）。
+            // by-ref 形参不可传字面量 null，须经局部变量中转。
+            $__ncv = null;
+            [$args,] = $__bindArgs($args, null, $__ncv);
             return call_user_func_array([$obj,$m],$args);
         }
         return null;
+    };
+
+    // instanceof 判定：VM 类/接口运行期是 stdClass + META 属性（无真实继承
+    // 关系），沿 classParents / classImpl 链遍历；原生对象/类名交还原生
+    // instanceof（VM 对象对原生类名判 false，与 PHP 语义一致）。
+    $__instanceof = function($v,$cls) use ($__P,$__META){
+        if (is_object($v)) {
+            if (isset($v->$__META) && is_string($v->$__META)) {
+                $c = $v->$__META;
+                $guard = 0;
+                while (is_string($c) && $c !== '' && $guard++ < 64) {
+                    if ($c === $cls) { return true; }
+                    if (isset($__P['classImpl'][$c][$cls])) { return true; }
+                    $c = $__P['classParents'][$c] ?? null;
+                }
+                return false;
+            }
+        }
+        return $v instanceof $cls;
+    };
+
+    // 值 → 字符串：命中 __toString 的 VM 类走方法调用（stdClass 直接转型会
+    // 致命）；数组按 PHP 语义得 "Array"；其余交还原生转型（原生对象无
+    // __toString 时 fatal 与 PHP 一致）。__toString 返回非字符串按 PHP 8
+    // 抛 TypeError（实测：Return value must be of type string）。
+    $__toStr = function($v) use (&$__toStr,$__P,$__META,&$__callMethod){
+        if (is_object($v)) {
+            if (isset($v->$__META) && is_string($v->$__META)
+                && isset($__P['classes'][$v->$__META]['methods']['__toString'])) {
+                $r = $__callMethod($v,'__toString',[]);
+                if (!is_string($r)) {
+                    throw new \TypeError('__toString() must return a string value');
+                }
+                return $r;
+            }
+        }
+        if (is_array($v)) { return 'Array'; }
+        return (string)$v;
     };
 
     // 索引读取
@@ -272,8 +566,9 @@ function __VMRUN__($__P)
     //（PHP 包含作用域语义：被包含文件能看到 includer 的变量，其新变量返回后也对
     // includer 可见），对象/数组在帧内为引用传递，与 PHP 变量语义一致。
     // $__seg：当前段附带的跳转表 / 调度表（控制流平坦化、指令重排用），明文模式为 null
-    $__exec = function($__codeArr,&$__vars,$__this,$__init,$__seg=null,$__isG=false) use (
-        &$__exec,$__P,$__META,$__STN,$__bin,$__propGet,$__propSet,$__newObj,$__callFunc,$__callMethod,$__idxGet,$__pathGet,&$__pad,&$__code,
+    // $__exTab：当前段的异常表（try/catch/finally 分发依据），无则 null
+    $__exec = function($__codeArr,&$__vars,$__this,$__init,$__seg=null,$__isG=false,$__exTab=null) use (
+        &$__exec,$__P,$__META,$__STN,$__bin,$__inc,$__propGet,$__propSet,$__newObj,$__callFunc,$__callMethod,$__idxGet,$__pathGet,$__toStr,$__instanceof,$__constOwner,$__methodOwner,$__bindArgs,$__bindNative,&$__pad,&$__code,
         $PUSH_C,$PUSH_V,$POP_V,$DUP,$DROP,$LOAD_THIS,$PUSH_NULL,
         $ADD,$SUB,$MUL,$DIV,$MOD,$POW,$CONCAT,$NEG,$BW_NOT,
         $BW_AND,$BW_OR,$BW_XOR,$BW_SHL,$BW_SHR,
@@ -286,19 +581,25 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$__callFn,&$__GFRAME,&$__INCTRACK
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$__callFn,&$__GFRAME,&$__INCTRACK
     ){
         $__stack = $__init;
         $__pc = 0;
         $__n = count($__codeArr);
         $__ret = null; $__retSet = false;
-        while ($__pc < $__n) {
+        // 异常控制状态（每帧独立）：pending=待重抛异常；inFinally=正处于 finally 块；
+        // ctl/retv 由编译器写入帧变量（\x01ctl / \x01retv），EX_FINALLY_END 读回。
+        $__pending = null; $__inFinally = false; $__ctl = 0; $__retv = null;
+        $__loop = true;
+        while ($__loop) {
+         try {
+            while ($__pc < $__n) {
             $__ins = $__codeArr[$__pc++];
             $__op = $__ins[0];
             switch ($__op) {
                 case $PUSH_C:   $__stack[] = $__ins[1]; break;
                 case $PUSH_V:   $__stack[] = $__vars[$__ins[1]] ?? null; break;
-                case $PUSH_REF: $__stack[] = ['__vmref__', $__ins[1]]; break;
+                case $PUSH_REF: $__stack[] = ['__vmref__', $__ins[1], $__vars[$__ins[1]] ?? null]; break;
                 case $POP_V:    $__vars[$__ins[1]] = array_pop($__stack); break;
                 case $DUP:      $__stack[] = end($__stack); break;
                 case $DROP:     array_pop($__stack); break;
@@ -314,6 +615,11 @@ function __VMRUN__($__P)
                 case $NEG: $__stack[] = -array_pop($__stack); break;
                 case $BW_NOT: $__stack[] = ~array_pop($__stack); break;
                 case $BOOL_NOT: $__stack[] = !array_pop($__stack); break;
+                case $BOOL_XOR:
+                    // xor 非短路：两侧均求值后做布尔异或（结果恒为 bool，与 PHP 一致）
+                    $__b = array_pop($__stack); $__a = array_pop($__stack);
+                    $__stack[] = ((bool)$__a) !== ((bool)$__b);
+                    break;
                 case $JMP: $__pc += $__ins[1]; break;
                 case $JZ: $__v = array_pop($__stack); if (!$__v) { $__pc += $__ins[1]; } break;
                 case $JNZ: $__v = array_pop($__stack); if ($__v) { $__pc += $__ins[1]; } break;
@@ -334,7 +640,8 @@ function __VMRUN__($__P)
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                    $__stack[] = $__callFunc($__ins[1], $__a);
+                    // 传调用方帧变量表：by-ref 实参据此 copy-in / copy-out
+                    $__stack[] = $__callFunc($__ins[1], $__a, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $CALL_VAR:
@@ -346,9 +653,10 @@ function __VMRUN__($__P)
                     // 变量函数：值可能为非字符串可调用体（闭包/数组 callable，如
                     // EVAL_STMT 回退段写回的闭包）——直接调用，避免 (string) 化致命
                     if (!is_string($__fn) && is_callable($__fn)) {
+                        [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__stack[] = call_user_func_array($__fn, $__a);
                     } else {
-                        $__stack[] = $__callFunc((string)$__fn, $__a);
+                        $__stack[] = $__callFunc((string)$__fn, $__a, $__vars);
                     }
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
@@ -360,39 +668,90 @@ function __VMRUN__($__P)
                     $__a = array_reverse($__a);
                     $__obj = array_pop($__stack);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                    $__stack[] = $__callMethod($__obj, (string)$__m, $__a);
+                    // 传调用方帧变量表：by-ref 实参据此 copy-in / copy-out
+                    $__stack[] = $__callMethod($__obj, (string)$__m, $__a, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $SCALL:
-                    // 静态 / 类方法调用：C::m(args)
+                    // 静态 / 类方法调用：C::m(args)（方法沿继承链查找）
                     $__argc = $__ins[3]; $__a = [];
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1]; $__m = $__ins[2];
-                    if (isset($__P['classes'][$__cls]['methods'][$__m])) {
+                    $__mo = $__methodOwner($__cls, $__m);
+                    if ($__mo !== null) {
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                        $__mc = $__P['classes'][$__cls]['methods'][$__m];
+                        $__mc = $__P['classes'][$__mo]['methods'][$__m];
                         if (is_array($__mc) && isset($__mc[0]) && is_array($__mc[0])) {
                             $__mcode = $__mc;
                         } else {
-                            if (!isset($__mc['__c'])) { $__mc['__c'] = __VMSEG__($__mc)[0]; $__P['classes'][$__cls]['methods'][$__m] = $__mc; }
+                            if (!isset($__mc['__c'])) { $__mc['__c'] = __VMSEG__($__mc)[0]; $__P['classes'][$__mo]['methods'][$__m] = $__mc; }
                             $__mcode = $__mc['__c'];
                         }
+                        // 实参绑定：命名重排 + 引用 copy-in/copy-out（同 $__callFunc）
+                        $__spec = $__P['classParams'][$__mo][$__m] ?? [];
+                        [$__a,$__refs] = $__bindArgs($__a,$__spec,$__vars);
                         $__ev = [];
-                        $__stack[] = $__exec($__mcode, $__ev, null, $__pad($__P['classParams'][$__cls][$__m] ?? [], $__a), null);
+                        $__r = $__exec($__mcode, $__ev, null, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        foreach ($__refs as $__i => $__mm) {
+                            if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
+                        }
+                        $__stack[] = $__r;
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     } elseif (is_string($__cls) && class_exists($__cls) && method_exists($__cls, $__m)) {
+                        // 原生类静态方法：同样需展平/去标记（同 SCALL_VAR / CALL_VAR 原生路径）
+                        [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__stack[] = call_user_func_array([$__cls, $__m], $__a);
                     } else {
                         $__stack[] = null;
                     }
                     break;
+                case $SCALL_VAR:
+                    // 动态方法名的静态调用：C::$m() / self::$m()——方法名先压栈。
+                    // 与 SCALL 同款分发，仅方法名来自运行期变量值。
+                    $__argc = $__ins[2]; $__a = [];
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    $__a = array_reverse($__a);
+                    $__cls = $__ins[1]; $__m = array_pop($__stack);
+                    $__mo = is_string($__m) ? $__methodOwner($__cls, $__m) : null;
+                    if ($__mo !== null) {
+                        if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
+                        $__mc = $__P['classes'][$__mo]['methods'][$__m];
+                        if (is_array($__mc) && isset($__mc[0]) && is_array($__mc[0])) {
+                            $__mcode = $__mc;
+                        } else {
+                            if (!isset($__mc['__c'])) { $__mc['__c'] = __VMSEG__($__mc)[0]; $__P['classes'][$__mo]['methods'][$__m] = $__mc; }
+                            $__mcode = $__mc['__c'];
+                        }
+                        // 实参绑定：命名重排 + 引用 copy-in/copy-out（同 SCALL）
+                        $__spec = $__P['classParams'][$__mo][$__m] ?? [];
+                        [$__a,$__refs] = $__bindArgs($__a,$__spec,$__vars);
+                        $__ev = [];
+                        $__r = $__exec($__mcode, $__ev, null, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        foreach ($__refs as $__i => $__mm) {
+                            if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
+                        }
+                        $__stack[] = $__r;
+                        if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
+                    } elseif (is_string($__cls) && is_string($__m) && class_exists($__cls) && method_exists($__cls, $__m)) {
+                        [$__a,] = $__bindArgs($__a, null, $__vars);
+                        $__stack[] = call_user_func_array([$__cls, $__m], $__a);
+                    } else {
+                        $__stack[] = null;
+                    }
+                    break;
+                case $INSTANCEOF:
+                    // 类型判定：$v instanceof C（C 为编译期常量类名）
+                    $__stack[] = $__instanceof(array_pop($__stack), $__ins[1]);
+                    break;
                 case $SPROP:
                     // 类常量 / 静态属性：C::CONST 或 C::$p
                     $__cls = $__ins[1]; $__p = $__ins[2];
-                    if (isset($__P['classes'][$__cls]['consts'][$__p])) {
+                    // VM 类常量（含 implements/extends 继承链，PHP 继承语义）
+                    $__co = $__constOwner($__cls, $__p);
+                    if ($__co !== null) {
                         // VM 类的类常量：值段惰性求值
-                        $__cs = $__P['classes'][$__cls]['consts'][$__p];
+                        $__cs = $__P['classes'][$__co]['consts'][$__p];
                         $__ev = [];
                         $__stack[] = ($__cs === null) ? null : $__exec($__code($__cs), $__ev, null, [], null);
                     } elseif (defined($__cls . '::' . $__p)) {
@@ -440,6 +799,8 @@ function __VMRUN__($__P)
                 case $NEW:
                     $__argc = $__ins[2]; $__a = [];
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    // 不再于此展平：$__newObj → $__bindArgs 内部已做（且 $__flatten 不在本闭包
+                    // use 列表中，直接调用会是未定义变量）。解包标记原样传入即可。
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1];
                     if ($__cls === '__VAR__') { $__cls = array_pop($__stack); }
@@ -458,15 +819,54 @@ function __VMRUN__($__P)
                     $__ret = array_pop($__stack); $__retSet = true; break 2;
                 case $RET_VOID:
                     $__ret = null; $__retSet = true; break 2;
+                case $THROW:
+                    // 弹栈顶异常对象并抛出；交由外层 try/catch 包装做异常表分发
+                    $__th = array_pop($__stack);
+                    throw $__th;
+                case $ARG_SPREAD:
+                    // 解包实参：弹栈顶数组，压入解包标记（由随后 CALL/MECALL/SCALL 展平）
+                    $__sp = array_pop($__stack);
+                    if ($__sp instanceof \Traversable) { $__sp = iterator_to_array($__sp); }
+                    $__stack[] = ['__vmspread__', is_array($__sp) ? $__sp :
+                        (is_object($__sp) ? get_object_vars($__sp) : (array) $__sp)];
+                    break;
+                case $ARG_NAMED:
+                    // 命名实参：弹栈顶值，压入命名标记 ['__vmnamed__', 形参名, 值]
+                    // （由随后 CALL/MECALL/SCALL 按被调方参数规格重排为位置实参）
+                    $__nv = array_pop($__stack);
+                    $__stack[] = ['__vmnamed__', $__ins[1], $__nv];
+                    break;
+                case $EX_FINALLY_ENTER:
+                    // finally 块起始：置位标志，使块内再抛出的异常不再被本帧异常表捕获
+                    $__inFinally = true;
+                    break;
+                case $EX_FINALLY_END:
+                    // finally 收尾：依据 pending（待重抛）与 ctl（延后返回）收束
+                    $__inFinally = false;
+                    if ($__pending !== null) {
+                        $__pe = $__pending; $__pending = null;
+                        throw $__pe;
+                    }
+                    $__c = $__vars["\x01ctl"] ?? 0;
+                    if ($__c === 1) {
+                        // 带值延后返回
+                        $__ret = $__vars["\x01retv"] ?? null;
+                        $__retSet = true;
+                        break 2;
+                    } elseif ($__c === 2) {
+                        // void 延后返回
+                        $__ret = null; $__retSet = true;
+                        break 2;
+                    }
+                    // ctl===3/4（break/continue 延后）暂未实现，顺序落下
+                    break;
                 case $ECHO:
                     $__v = array_pop($__stack);
-                    if (is_array($__v)) { echo 'Array'; }
-                    else { echo $__v; }
+                    echo $__toStr($__v);
                     break;
                 case $PRINT_:
                     $__v = array_pop($__stack);
-                    if (is_array($__v)) { echo 'Array'; }
-                    else { echo $__v; }
+                    echo $__toStr($__v);
                     $__stack[] = 1;
                     break;
                 case $PHPRUN:
@@ -487,7 +887,7 @@ function __VMRUN__($__P)
                 case $CAST_FLOAT:
                     $__stack[] = (float)array_pop($__stack); break;
                 case $CAST_STRING:
-                    $__stack[] = (string)array_pop($__stack); break;
+                    $__stack[] = $__toStr(array_pop($__stack)); break;
                 case $CAST_BOOL:
                     $__stack[] = (bool)array_pop($__stack); break;
                 case $CAST_ARRAY:
@@ -522,7 +922,7 @@ function __VMRUN__($__P)
                         $__stack[] = true;
                     } else {
                         $__INCTRACK[$__e] = true;
-                        $__stack[] = $__exec($__P['embeds'][$__e] ?? [], $__vars, $__this, [], null, $__isG);
+                        $__stack[] = $__exec($__P['embeds'][$__e] ?? [], $__vars, $__this, [], null, $__isG, $__P['embedET'][$__e] ?? null);
                     }
                     break;
                 case $INCLUDE_RT:
@@ -581,15 +981,8 @@ function __VMRUN__($__P)
                     $__argc = $__ins[2]; $__a = [];
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
-                    // refMask：by-ref 参数位——引用句柄绑定为帧变量真实引用后传入
-                    $__rm = $__ins[3] ?? 0;
-                    for ($i=0;$i<$__argc;$i++) {
-                        if ((($__rm >> $i) & 1) && is_array($__a[$i]) && ($__a[$i][0] ?? '') === '__vmref__') {
-                            $__n = $__a[$i][1];
-                            if (!array_key_exists($__n, $__vars)) { $__vars[$__n] = null; }
-                            $__a[$i] = &$__vars[$__n];
-                        }
-                    }
+                    // 实参绑定：展平解包 + 命名重排 + refMask 位真实引用绑定
+                    $__a = $__bindNative($__a, $__ins[3] ?? 0, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     $__stack[] = $__callFn((int) $__ins[1], $__a);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
@@ -641,25 +1034,76 @@ function __VMRUN__($__P)
                     $__stack[] = $__arr; // 写回（数组为值类型，本地更新需回存）
                     break;
                 case $PRE_INC:
-                    $__cur = ($__vars[$__ins[1]] ?? 0) + 1;
+                    // PHP 语义自增（字符串字母进位 / null / bool / 数组 TypeError），
+                    // 见 $__inc 定义处注释。帧变量若经 GLOBAL_REF 绑为共享帧引用
+                    // （类静态属性），写操作自动穿透。
+                    $__cur = $__inc($__vars[$__ins[1]] ?? null, 1);
                     $__vars[$__ins[1]] = $__cur; $__stack[] = $__cur;
                     break;
                 case $PRE_DEC:
-                    $__cur = ($__vars[$__ins[1]] ?? 0) - 1;
+                    $__cur = $__inc($__vars[$__ins[1]] ?? null, -1);
                     $__vars[$__ins[1]] = $__cur; $__stack[] = $__cur;
                     break;
                 case $POST_INC:
-                    $__cur = $__vars[$__ins[1]] ?? 0;
-                    $__vars[$__ins[1]] = $__cur + 1; $__stack[] = $__cur;
+                    $__old = $__vars[$__ins[1]] ?? null;
+                    $__vars[$__ins[1]] = $__inc($__old, 1); $__stack[] = $__old;
                     break;
                 case $POST_DEC:
-                    $__cur = $__vars[$__ins[1]] ?? 0;
-                    $__vars[$__ins[1]] = $__cur - 1; $__stack[] = $__cur;
+                    $__old = $__vars[$__ins[1]] ?? null;
+                    $__vars[$__ins[1]] = $__inc($__old, -1); $__stack[] = $__old;
                     break;
                 default:
                     break 2; // 未知 opcode：终止
             }
+            }
+            $__loop = false; // 内层 while 正常结束（pc 越界）
+        } catch (\Throwable $__E) {
+            // —— 异常分发：某条 opcode 在运行期抛出（除法错 / 调用用户码 / THROW 等）——
+            // 此处捕获后，按异常表找覆盖当前 pc 的处理器：先匹配 catch（类型 instanceof），
+            // 无匹配则取最内层 finally（置 pending 后入 finally）；都没有则原样重抛给调用方。
+            if ($__inFinally) {
+                // finally 内部再抛出：不再被本帧异常表捕获，直接穿透到外层 / 调用方
+                throw $__E;
+            }
+            $__pt = $__pc - 1; // 抛出指令的下标（执行前 $__pc 已自增）
+            $__handled = false;
+            if ($__exTab !== null) {
+                // 选覆盖 $__pt 的【最内层】处理器 —— 区间越小越内层。
+                // 这与 PHP 语义精确对应：
+                //   单层 try/catch/finally：catch 区间 [tryStart,tryEnd) 比 finally 区间
+                //     [tryStart,finallyPc) 小，故 catch 先命中（PHP 输出顺序为 catch → finally）；
+                //   内层 try/finally 嵌在外层 try/catch：内层 finally 区间最小，故外层 catch
+                //     不得抢先，须先跑内层 finally，再由 EX_FINALLY_END 重抛给外层 catch。
+                // 若按顺序扫描（先 catch 后 finally）则会让外层 catch 抢先、吞掉内层 finally。
+                $__h = null; $__hs = PHP_INT_MAX;
+                foreach ($__exTab as $__e) {
+                    if ($__e[0] <= $__pt && $__pt < $__e[1]) {
+                        $__sz = $__e[1] - $__e[0];
+                        // finally 恒适用；catch 还需类型匹配（'' 表任意 Throwable）
+                        $__ok = ($__e[3] === 'finally')
+                            || ($__e[4] === '' || $__E instanceof $__e[4]);
+                        if ($__ok && $__sz < $__hs) { $__hs = $__sz; $__h = $__e; }
+                    }
+                }
+                if ($__h !== null) {
+                    if ($__h[3] === 'finally') {
+                        // 先跑 finally：pending 记下异常，finally 末尾 EX_FINALLY_END 重抛，
+                        // 由【外层】 handler（如外层 try 的 catch）接管。
+                        $__pending = $__E;
+                        $__pc = $__h[2];
+                    } else {
+                        if ($__h[5] !== '') { $__vars[$__h[5]] = $__E; }
+                        $__pc = $__h[2];
+                        $__pending = null;
+                        $__ctl = 0;
+                    }
+                    $__handled = true;
+                }
+            }
+            if ($__handled) { continue; } // 重启外层 while → 以新 $__pc 重新进入内层 while
+            throw $__E; // 本帧无处理器：重抛，由调用方的 CALL 等 opcode 承接
         }
+    }
         return $__retSet ? $__ret : (count($__stack) ? array_pop($__stack) : null);
     };
 
@@ -667,7 +1111,7 @@ function __VMRUN__($__P)
     $__mseg = is_array($__P['main']) && isset($__P['main']['jt']) ? ['jt'=>$__P['main']['jt'],'dt'=>isset($__P['main']['dt'])?$__P['main']['dt']:[]] : null;
     // 顶层帧：与产物生成路径一致（引用传帧变量表，PHP 8 禁数组字面量按引用传递，先赋临时变量）
     $__v = [];
-    return $__exec($__main, $__v, null, [], $__mseg, true);
+    return $__exec($__main, $__v, null, [], $__mseg, true, $__P['mainET'] ?? null);
 }
 
 if (!function_exists('__VMSEG__')) {

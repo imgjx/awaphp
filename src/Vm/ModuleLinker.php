@@ -245,6 +245,8 @@ final class ModuleLinker
             'classes'     => $prog['classes'],
             'funcParams'  => $prog['funcParams'],
             'classParams' => $prog['classParams'],
+            'classParents' => $prog['classParents'],
+            'classImpl'    => $prog['classImpl'],
             'globals'     => $prog['globals'],
             'natTbl'      => $child->natTbl(),
             'aliases'     => $aliases,

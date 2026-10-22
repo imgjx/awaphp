@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v0.1.2（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v0.1.4（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
 **用法**
@@ -72,6 +72,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--vm-fake-fog=` | VM 诱饵函数：注入 N 个永不调用的栈平衡假函数，淹没真实 opcode 集合、膨胀函数表（>0 生效） |
 | `--vm-probe=` | VM 反调试 / 反篡改探针矩阵：注入 N 个探针（xdebug/phpdbg/uopz 检测 + 字节码 crc 自校验），命中即静默停止（>0 生效） |
 | `--vm-p8` | P8 一键总开关：等价开启 keychain+builtin-replace+morph，fake-fog=6、probe=4（单项可再覆盖） |
+| `--no-vm-cpool` | 关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立常量池（指令改索引引用），池以独立密钥加密，静态分析看不到明文常量 |
 | `--eval` | EVAL 多层加壳 |
 | `--eval-layers=` | EVAL 加壳层数（默认 3） |
 | `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等） |

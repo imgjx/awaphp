@@ -188,10 +188,13 @@ final class IncludeResolver
             $this->embedIds[$rp] = $id;
             $this->embeds[] = [
                 'seg'         => $prog['main'],
+                'mainET'      => $prog['mainET'] ?? [],
                 'funcs'       => $prog['funcs'],
                 'classes'     => $prog['classes'],
                 'funcParams'  => $prog['funcParams'],
                 'classParams' => $prog['classParams'],
+                'classParents' => $prog['classParents'],
+                'classImpl'    => $prog['classImpl'],
                 'globals'     => $prog['globals'],
                 // 子编译器的原生函数名表（CALL_NATIVE 操作数是子表编号，
                 // 合并进主程序时由 buildArtifact 重映射到主 natTbl）

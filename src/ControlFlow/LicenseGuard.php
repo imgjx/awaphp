@@ -64,8 +64,8 @@ final class LicenseGuard
         $g = '';
         // ---- 有效期校验（全 SAPI 生效）----
         if ($ts > 0) {
-            // 时间戳以十六进制写入，避免一眼看出到期日
-            $g .= 'if(time()>' . $ts . '){exit(0);}';
+            // 时间戳以十六进制字面量（0x…）写入，避免一眼看出到期日
+            $g .= 'if(time()>0x' . dechex($ts) . '){exit(0);}';
         }
         // ---- 域名校验（仅 Web SAPI）----
         if ($list !== []) {

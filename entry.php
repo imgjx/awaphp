@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '0.1.3');
+define('OBFUSCATOR_VERSION', '0.1.4');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -91,6 +91,10 @@ function obf_parse_args(array $argv): array
         // 显式关闭默认开启的布尔开关（--no-<flag> => <flag>=false）
         if ($a === '--no-vm-link-modules') {
             $out['vm_link_modules'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-cpool') {
+            $out['vm_cpool'] = false;
             continue;
         }
         if (str_starts_with($a, '--')) {
@@ -180,6 +184,8 @@ function obf_help(): string
                        检测 + 字节码 crc 自校验），命中即静默停止（>0 生效）
       --vm-p8          P8 一键总开关：等价开启 keychain+builtin-replace+morph，
                        fake-fog=6、probe=4（单项可再覆盖）
+      --no-vm-cpool    关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立
+                       加密常量池、指令改索引引用，静态分析看不到明文常量
       --eval           EVAL 多层加壳
       --eval-layers=   EVAL 加壳层数（默认 3）
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）
@@ -226,7 +232,8 @@ if (isset($args['info'])) {
 // ============ 配置加载：等级预设 / 分层 JSON / 散装参数 ============
 // 优先级：--level 预设 或 --config 分层 JSON（二者互斥，分层 JSON 完全替换 layers）
 //         -> 普通 JSON 配置（标量覆盖） -> 纯散装 CLI 参数
-// CLI 标量覆盖项（除去 level/config/input/output 等非配置键）在预设/分层之上叠加。
+// CLI 标量覆盖项（除去 level/config 等非配置键；input/output 是合法配置键，
+// 允许命令行覆盖 JSON 中的取值）在预设/分层/JSON 配置之上叠加。
 $LEVEL_NON_OVERRIDE = ['level', 'config'];
 $cliOverrides = array_diff_key($args, array_flip($LEVEL_NON_OVERRIDE));
 try {
@@ -239,15 +246,19 @@ try {
                 $config = new Config(array_merge($config->all(), $cliOverrides));
             }
         } else {
+            // 普通 JSON 配置：文件提供基础配置，CLI 标量覆盖项叠加。
+            // 与分层 JSON / 预设路径保持一致，只叠加 $cliOverrides
+            // （已剔除 level/config 等非配置键）—— 早期实现直接
+            // array_merge($fileCfg, $args)，会把 --config 的路径本身、
+            // --level 等原始 CLI 键混进配置数组，语义脆弱。
             $fileCfg = Config::fromJsonFile($args['config'])->all();
-            $configOverrides = array_merge($fileCfg, $args); // 命令行覆盖文件
-            $config = new Config($configOverrides);
+            $config = new Config(array_merge($fileCfg, $cliOverrides));
         }
     } elseif (!empty($args['level'])) {
         // 等级预设：CLI 标量覆盖项叠加在预设之上
         $config = Config::fromPreset((string) $args['level'], $cliOverrides);
     } else {
-        $config = new Config($args);
+        $config = Config::fromCli($args);
     }
 } catch (Throwable $e) {
     fwrite(STDERR, "配置加载失败: " . $e->getMessage() . "\n");

@@ -1,4 +1,4 @@
-# 嗷呜awa PHP 混淆器
+# 嗷呜awaのPHP 混淆器
 
 ![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
@@ -61,6 +61,7 @@
 - **字节码垃圾指令**（`--vm-junk=N`）：注入「真实执行但栈平衡、无副作用」的废 opcode，淹没真实逻辑。
 - **诱饵函数 / fake-fog**（`--vm-fake-fog=N`）：永不调用的栈平衡假函数，膨胀函数表。
 - **分片密钥链**（`--vm-keychain`）：`kᵢ = sha256(kᵢ₋₁ ‖ i)`，单点密钥无法还原其它分片。
+- **常量池加密**（默认开，`--no-vm-cpool` 关）：`PUSH_C` 字面量抽入独立常量池（指令改索引引用、重复字面量去重），池以独立密钥加密——运行期解码后的指令流里只有索引，静态提取分片密钥也看不到明文常量。
 - **内置函数名编码**（`--vm-builtin-replace`）：`strlen` / `array_map` 等明文调用名盐化后编码进包，运行期解码。
 - **解释器运行时变形**（`--vm-morph`）：派发叠加独立第二层 scramble，每构建 dispatch 数学不同，消除固定指纹。
 - **反调试 / 反篡改探针矩阵**（`--vm-probe=N`）：xdebug / phpdbg / uopz 检测 + 字节码 CRC 自校验。

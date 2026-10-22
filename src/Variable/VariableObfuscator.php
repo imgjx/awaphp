@@ -8,9 +8,13 @@
  * 安全排除项（避免破坏可运行性）：
  *  - 超全局变量（$GLOBALS / $_GET ...）、$this
  *  - $$ 变量变量持有者（如 $$foo 中的 $foo）
- *  - heredoc / nowdoc 区域内的插值变量
  *  - 通过 $GLOBALS['x'] 形式引用的变量名 x
  *  - compact('x') 字符串参数引用的变量名 x
+ *
+ * 说明：heredoc / nowdoc 区域内的插值变量**不在排除之列**。heredoc 的
+ * `$var` / `{$var}` 插值在 token 流中就是普通 T_VARIABLE，与区域外的所有
+ * 出现同属一个变量，全局一致改名后语义不变（已实测验证）；nowdoc 本身
+ * 不插值，其内容只是纯文本 token，天然不受影响。
  */
 
 declare(strict_types=1);
@@ -477,11 +481,15 @@ final class VariableObfuscator
         $guard = 0;
         while ($j >= 0 && $guard++ < 24) {
             $t = $tokens[$j];
+            if (is_string($t) && $t === '?') {
+                $j = Parser::prevSignificant($tokens, $j);
+                continue; // 可空类型前缀
+            }
+            if (Parser::isTypeSeparator($t)) {
+                $j = Parser::prevSignificant($tokens, $j);
+                continue; // 联合/交集类型分隔（PHP 8.1+ 的 & 为 T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG）
+            }
             if (is_string($t)) {
-                if (in_array($t, ['?', '|', '&'], true)) {
-                    $j = Parser::prevSignificant($tokens, $j);
-                    continue; // 可空/联合/交集类型提示
-                }
                 return false; // '(' ',' ';' '}' '=' 等 → 普通参数或其他
             }
             if (!is_array($t)) {

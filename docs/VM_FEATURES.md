@@ -29,8 +29,10 @@
 | **数组** | `[1,2,3]`、`array(1,2)`、`['k'=>v]`、`$a[]=v`、`$a[$k]=v`、`$a[$k]` | 索引数组 / 关联数组 / push / 下标读写 |
 | **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
 | **函数** | `function f($a,$b){ return ...; }`、递归、`$f()` 变量函数 | 每次调用获得**独立变量帧**，无跨函数污染 |
+| **实参绑定** | 引用参数 `f(&$x)`、可变参数 `f(...$args)`、命名实参 `f(b:1,a:2)`、解包实参 `f(...$arr)`（含字符串键→命名） | 编译期只压栈 + 发射标记（`PUSH_REF`/`ARG_NAMED`/`ARG_SPREAD`），重排/解引用全部在**运行期**按被调方签名完成——即使 receiver 类型编译期不可知（`$obj->m(b:1)`）也正确；引用参数按 by-ref 位做 copy-in/copy-out，命名参数跳过时可正确落入默认值 |
+| **静态调用** | `C::m()`、`C::$m()`、`self::m()`、`parent::m()` | 方法沿继承链查找；命名/引用/解包实参同样支持（`static::` 尚不支持，会回退） |
 | **内建 PHP 函数** | `strlen()`、`substr()`、`implode()`、`range()`… 任意 `function_exists` | 经 `call_user_func_array` 桥接；含引用返回/特殊签名的函数按 PHP 默认语义 |
-| **类** | `class C { public $p=...; function m(){...} }` | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链 |
+| **类** | `class C { public $p=...; function m(){...} }`、`extends` 继承、`implements` 接口、`trait`（`use T;`） | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链 |
 | **对象** | `new C()`、`new $cls()`、`$obj->m()`、`$obj->p` | 对象以 `\stdClass` + 元信息存储，行为等价 |
 | **循环** | `while` / `for` / `foreach`（索引 + 键值 `as $k=>$v`） | `break` / `continue` 均支持，跳转到正确位置 |
 | **条件** | `if / elseif / else`、三元 `?:`、短三元 `?:`（elvis）、`match` 表达式 | `match($subj){ 1,2=>"a", default=>"b" }`；多分支共享同一条件；支持嵌套 `match`、默认分支、表达式结果 |
@@ -41,6 +43,7 @@
 | **自增/自减** | `++$x` / `--$x`（前缀）、`x++` / `x--`（后缀） | 仅**简单变量**；复杂表达式上的后缀 `++` 会回退 |
 | **常量** | `true / false / null`、整型/浮点/字符串字面量（含 `\n \t \r \xNN \u{NNNN}` 转义）、编译期常量（`PHP_VERSION` 等） | 双引号插值**支持**（`"a{$x}b"`、`"{$arr['k']}"`、`"${x}"` 三种形态均已修复） |
 | **输出** | `echo $a, $b;` | 多参数逗号分隔 |
+| **异常** | `throw` / `try-catch` / `try-finally` / `try-catch-finally`（含多 catch、`catch (A\|B)`、`catch (E)` 无变量） | 编译为**异常表**（`[tryStart,end,handlerPc,kind,type,varName]`），运行期按最内层区间优先分发：先 catch 后 finally；含异常表的段整段跳过 flatten / stateMachine（避免绝对 pc 失真） |
 
 ### 2.1 一个能跑的示例（`tests/fixtures/complex_app.php`）
 
@@ -54,18 +57,19 @@
 
 | 特性 | 回退原因 |
 |------|---------|
-| `interface` / `trait` | 未实现类层级 |
-| 引用参数 `function f(&$x)` | 值语义 VM 无法表达引用 |
-| 可变参数 `function f(...$args)` | 未实现 |
-| 静态调用 `C::m()` / `self::` / `static::` | 未实现 `T_DOUBLE_COLON` |
+| `trait` 适配块（`insteadof` / `as`） | 未实现冲突消解语义（普通 `use T;` 已支持） |
 | 匿名函数 `function(){}` / 箭头函数 `fn()=>` | 外层 VM 壳直接跳过整段（等价语法：命名函数 / 函数调用可正常 VM 化） |
 | `$this->prop[]` 属性数组追加 | 不支持属性 push |
 | 数组/属性复合赋值 `$a['k'] += x`、`$this->p *= 2` | 仅简单变量支持 `+=` 等 |
 | 复杂表达式上的后缀 `++/--`（如 `$a[0]++`） | 仅简单变量支持 |
+| 动态属性读取 `$obj->$name()` 形式之外的动态成员、动态类名 `instanceof $c` | 运行期类型不可知 |
+| `self::$p[]` 静态属性数组读取 | 未实现该形态 |
+| `static::` 延迟静态绑定 | 未实现 `T_STATIC` 词法 |
+| `$GLOBALS` 整表赋值 / `$GLOBALS[]` 追加 | 超全局表特殊语义 |
 | 顶层 `return` / `exit` / `break` / `continue`（裸顶层） | 会破坏解释循环，外层 VM 壳跳过整段 |
-| `do-while` / `switch` / `try-catch` / `goto` / `throw` | 未实现对应指令 |
+| `goto` | 未实现对应指令 |
 
-> **编写可被 VM 包裹的代码时的建议**：函数/方法体保持"直来直去"——用 `for/foreach/while + if/三元`，避免 `static` 调用、引用参数、匿名函数、双引号插值；属性数组追加改用局部临时数组。
+> **编写可被 VM 包裹的代码时的建议**：函数/方法体保持"直来直去"——用 `for/foreach/while + if/三元`，避免匿名函数、属性数组追加；引用参数、可变参数、命名/解包实参、静态调用均已支持，可放心使用。
 
 ---
 
@@ -237,6 +241,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
 | **混淆分发** | 主循环以随机变量名编写；`switch` 的 case 顺序被打乱并注入诱饵 case；操作码以"被异或后的随机数字"作标签 | 看不到 `VmOp::ADD=10` 这类明文，难以还原指令语义 |
 | **二进制字节码容器** | 操作码 + 操作数经 **varint + 操作数类型标记**编码为二进制，再 gzip | 静态无法直接读取明文指令序列 |
 | **分片独立加密** | gzip 字节码切分为 N 片，每片用独立密钥 XOR 后 base64 内联，运行期分别解密再拼接 | 单一密钥泄露无法还原整段字节码 |
+| **常量池加密**（默认开，`--no-vm-cpool` 关） | 所有 `PUSH_C` 字面量操作数抽入独立常量池（指令改索引引用、重复字面量去重），池以独立密钥（计数器模式 SHA-256 流，`vm-cpool` 盐派生）加密后 base64 内嵌 | 运行期解码后的指令流里只有索引没有明文；静态提取分片密钥（`$___KEYS___`）只能还原指令流，常量另有一密钥 |
 | **跳转表调度** | `opcode ^ scramble` 经随机化跳转表（`array(...)` 字面量）映射到 case 标签，条目顺序随机 | 指令执行顺序被打乱，控制流难以线性还原 |
 | **控制流平坦化**（可选 `flatten`） | 编译期把线性指令重写为通用 `JMP/JZ/JNZ + 状态变量`，不新增专用指令 | 删除原有的自然块结构 |
 | **状态机混淆**（可选 `stateMachine`，与 flatten 互斥） | 在基本块划分之上做状态 ID 随机化（salted 非连续）+ 注入不可达诱饵状态 | 更激进的状态转移路径，诱饵状态干扰分析 |
@@ -253,6 +258,11 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
 - ⚠️ `ARRAY_KV` 构建关联数组时按"值→键"压栈，运行期已正确逆序，遍历顺序与原生一致（有 `arr_kv_order` 用例守护）。
 - ✅ **`match` 表达式的 token 边界**：`StatementSplitter` 曾把尾部 `;` 单独切成 `[';']` 空语句，导致 `parsePrimary(';')` 报错；已修正为 flush 时剔除顶层 `;`（裸空语句直接丢弃）。同时 `parseMatch` 收集分支结果改用 brace/paren/bracket **平衡收集器** `collectMatchArmResult()`，正确处理结果中含嵌套 `match`/`函数调用`/`数组` 的情形（其内部的 `,` 与 `}` 不再被误判为分支分隔符 / 体结束符）。已补 `match_int/match_var/match_multi/match_assign/match_nested` 等回归用例。
 - ✅ **花括号字符串插值**：`T_CURLY_OPEN` 的成对花括号曾被误判为语句块边界而 flush，导致插值串被截断；已引入独立的插值串深度 `$iDepth` 跟踪，`"$x"` / `{$arr['k']}` / `"${x}"` 三种形态均可正确编译。
+- ✅ **实参运行期绑定的三个连带坑**（v0.1.4 修复）：
+  - **NEW handler 不得直接调用展平闭包**：`$__flatten` / `$___FLAT___` 不在解释器闭包的 `use` 列表中（闭包只捕获显式声明的变量），`new C(...$a)` 时运行期报 "Value of type null is not callable"——改为把标记原样传入 `$__newObj`，由内部的 `$__bindArgs` 统一展平。
+  - **命名实参重排会留键空洞**：`f("x", c:"z")` 重排后得 `[0=>"x", 2=>"z"]`（跳过 `$b`），默认值补齐若按 `count()` 判定会把默认值追加到最高键之后，实参整体错位——补齐改为按 `array_key_exists($i, ...)` 逐位判定并 `ksort` 复位键序（下游 `POP_V` 序言按栈**位置**消费）。
+  - **by-ref 形参不能传字面量 null**：`$__bindArgs($args, null, null)` 触发 "Argument #3 ($cv) could not be passed by reference"——原生类构造 / 原生对象方法路径改经局部变量中转（`$ncv = null`）。
+  - 另修复参考运行期 `ARG_NAMED` 常量漏定义（handler 成死代码）与 `SCALL` 原生类路径漏绑定（标记泄漏给原生方法）两处双运行期不一致。
 
 ---
 

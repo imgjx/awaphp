@@ -27,7 +27,7 @@ final class VmIsa
         VmOp::ADD, VmOp::SUB, VmOp::MUL, VmOp::DIV, VmOp::MOD, VmOp::POW, VmOp::CONCAT,
         VmOp::BW_AND, VmOp::BW_OR, VmOp::BW_XOR, VmOp::BW_SHL, VmOp::BW_SHR,
         VmOp::EQ, VmOp::NE, VmOp::LT, VmOp::GT, VmOp::LE, VmOp::GE,
-        VmOp::IDENT, VmOp::NIDENT, VmOp::SPACESHIP, VmOp::BOOL_AND, VmOp::BOOL_OR,
+        VmOp::IDENT, VmOp::NIDENT, VmOp::SPACESHIP, VmOp::BOOL_AND, VmOp::BOOL_OR, VmOp::BOOL_XOR,
     ];
     /** 一元运算（栈：弹 v，压 OP v） */
     public const UN = [VmOp::NEG, VmOp::BW_NOT, VmOp::BOOL_NOT];

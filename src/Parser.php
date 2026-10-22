@@ -44,6 +44,27 @@ final class Parser
     }
 
     /**
+     * 类型分隔符判定：'|'（联合类型）/ '&'（交集类型）。
+     *
+     * 注意 PHP 8.1+ 词法变更：非引用位置的 &（如 `A&B $x`、`): A&B {`）
+     * 不再是裸字符 '&'，而是数组型 token
+     * T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG；仅当 & 后紧跟变量或
+     * `...`（引用传参 `&$x`）时才保留另一种 AMPERSAND token。
+     * 调用方需确保已处于类型上下文（参数列表/返回类型/catch 子句）后使用。
+     */
+    public static function isTypeSeparator($tok): bool
+    {
+        if (is_string($tok)) {
+            return $tok === '|' || $tok === '&';
+        }
+        if (!is_array($tok)) {
+            return false;
+        }
+        return defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
+            && $tok[0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG;
+    }
+
+    /**
      * 从 $i 向【前】找到第 $step 个"非空白非注释"的 token 索引。
      * 找不到返回 -1。
      */

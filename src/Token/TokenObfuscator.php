@@ -260,6 +260,12 @@ final class TokenObfuscator
      *  - 后一个有效 token 是 ':'（命名参数名 / goto 标签 / case 标签，保守排除）
      * 其余位置（= 右值、参数、返回、数组元素、条件表达式……）均为字面量，
      * 可安全替换为 !0 / !1（! 优先级高于所有二元运算符，语义逐位等价）。
+     *
+     * B4 追加排除：PHP 8.2+ 起 true/false 是合法类型（ standalone type ），
+     * 以下位置是类型声明而非字面量，替换成 !0/!1 会直接语法错误：
+     *  - 参数/属性类型：true 后紧跟 T_VARIABLE / T_ELLIPSIS（true $x / true ...$r）
+     *  - 属性修饰符后：public/private/protected/static/var/readonly true $x
+     *  - 返回类型及其联合/交集续段：): true { / ); / => / , / ) / |
      */
     private function isBoolLiteral(array $tokens, int $i): bool
     {
@@ -270,10 +276,36 @@ final class TokenObfuscator
                 || (defined('T_NULLSAFE_OBJECT_OPERATOR') && $pt === T_NULLSAFE_OBJECT_OPERATOR)) {
                 return false;
             }
+            // B4：属性/提升属性类型声明（public true $x; static readonly false $y;）
+            $modifiers = [T_PUBLIC, T_PRIVATE, T_PROTECTED, T_VAR, T_STATIC];
+            if (defined('T_READONLY')) {
+                $modifiers[] = T_READONLY;
+            }
+            if (in_array($pt, $modifiers, true)) {
+                return false;
+            }
         }
         $next = Parser::nextSignificant($tokens, $i);
         if ($next >= 0 && $tokens[$next] === ':') {
+            return false; // 命名参数名 / case 标签
+        }
+        // B4：true/false 后紧跟变量或 ... = 参数/属性类型声明
+        if ($next >= 0 && is_array($tokens[$next])
+            && in_array($tokens[$next][0], [T_VARIABLE, T_ELLIPSIS], true)) {
             return false;
+        }
+        // B4：返回类型（): true { / ); / =>）与联合/交集续段（int|true）。
+        // prev 为 ':'（返回类型/三元 else/命名参数，保守排除）或 '?' / '|' / '&'
+        // （可空/联合/交集成员），next 为语句/列表边界字符。
+        if ($prev >= 0) {
+            $prevIsTypeCtx = (is_string($tokens[$prev]) && $tokens[$prev] === ':')
+                || (is_string($tokens[$prev]) && $tokens[$prev] === '?')
+                || Parser::isTypeSeparator($tokens[$prev]);
+            $nextIsBoundary = $next >= 0 && is_string($tokens[$next])
+                && in_array($tokens[$next], ['{', ';', '=>', ',', ')'], true);
+            if ($prevIsTypeCtx && $nextIsBoundary) {
+                return false;
+            }
         }
         return true;
     }

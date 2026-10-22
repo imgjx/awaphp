@@ -186,6 +186,7 @@ final class LayerDescriptor
                     'morph'          => ['label' => '解释器运行时变形', 'type' => self::T_BOOL, 'default' => false, 'hint' => '派发叠加独立第二层 scramble，每构建 dispatch 数学不同，消除固定指纹'],
                     'fakeFog'        => ['label' => '诱饵函数', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 200, 'hint' => '注入 N 个永不调用的栈平衡假函数，淹没真实 opcode 集合、膨胀函数表'],
                     'probe'          => ['label' => '反分析探针', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 50, 'hint' => '反调试/反篡改探针矩阵（xdebug/phpdbg/uopz 检测 + 字节码 crc 自校验），命中即静默停止'],
+                    'cpool'          => ['label' => '常量池加密', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'PUSH_C 字面量抽入独立常量池（索引引用），池以独立密钥加密，静态分析看不到明文常量'],
                 ],
                 'tags' => ['VM'],
             ],

@@ -130,6 +130,8 @@ final class Obfuscator
                 'morph'          => (bool) $this->config->get('vm_morph'),
                 'fakeFog'        => (int) $this->config->get('vm_fake_fog'),
                 'probe'          => (int) $this->config->get('vm_probe'),
+                // VM 常量池加密（默认开，--no-vm-cpool 关）
+                'cpool'          => (bool) $this->config->get('vm_cpool'),
             ];
             $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c));
         }
@@ -486,6 +488,8 @@ final class Obfuscator
             'morph'          => (bool) ($params['morph'] ?? false),
             'fakeFog'        => (int) ($params['fakeFog'] ?? 0),
             'probe'          => (int) ($params['probe'] ?? 0),
+            // VM 常量池加密（默认开；分层参数键 cpool）
+            'cpool'          => (bool) ($params['cpool'] ?? true),
         ];
         try {
             $art = (new VmRuntimeGenerator($this->salt))->buildArtifact($src, $opts);

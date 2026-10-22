@@ -64,6 +64,13 @@ final class ClassObfuscator
             }
         }
 
+        // B3a/B3b：预标记参数列表区间（T_FUNCTION/T_FN 后的首个括号）与 catch 子句区间。
+        // 通用 prev/next 规则覆盖不到两类位置：
+        //  - 联合/交叉类型的首段：function f(A|B $x) 的 A，prev 是 '('；
+        //  - 无变量 catch：catch (A|B)，类型后直接 ')'。
+        $paramRanges = $this->parenRangesAfter($tokens, [T_FUNCTION, T_FN]);
+        $catchRanges = $this->parenRangesAfter($tokens, [T_CATCH]);
+
         $n = count($tokens);
         for ($i = 0; $i < $n; $i++) {
             $tok = $tokens[$i];
@@ -93,11 +100,27 @@ final class ClassObfuscator
                 // 类名在 :: 之前——T_DOUBLE_COLON 在 prev 列表只能覆盖 :: 之后的名称。
                 // PHP 中除 parent/self/static（关键字，非 T_STRING）外只有类名可位于 :: 前，安全。
                 $rename = true;
-            } elseif ($prev >= 0 && is_string($tokens[$prev]) && in_array($tokens[$prev], [':', '?', '|', '&'], true)
+            } elseif ($prev >= 0
+                && ((is_string($tokens[$prev]) && ($tokens[$prev] === ':' || $tokens[$prev] === '?'))
+                    || Parser::isTypeSeparator($tokens[$prev]))
                 && !($next >= 0 && is_string($tokens[$next]) && $tokens[$next] === '(')) {
                 // 返回类型（): Box { / ); / =>）、可空/联合/交集类型续段。
                 // 类名不是合法表达式，故这些运算符后跟已声明类名必为类型位置；
                 // '(' 后续排除函数调用形态。标签/命名参数的类名在运算符之前，不受影响。
+                // '?'（可空前缀）、':'（返回类型）为裸字符；'|'/'&' 经 isTypeSeparator
+                // 统一处理 PHP 8.1+ 的 T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG。
+                $rename = true;
+            }
+
+            // B3a：参数列表内联合/交叉类型首段（prev 是 '('，不在通用规则内）
+            if (!$rename && $this->inRanges($paramRanges, $i)
+                && $next >= 0 && Parser::isTypeSeparator($tokens[$next])) {
+                $rename = true;
+            }
+            // B3b：catch (A|B) 无变量形式——类型后直接 ')' 或类型分隔符
+            if (!$rename && $this->inRanges($catchRanges, $i)
+                && $next >= 0 && (Parser::isTypeSeparator($tokens[$next])
+                    || (is_string($tokens[$next]) && $tokens[$next] === ')'))) {
                 $rename = true;
             }
 
@@ -152,6 +175,87 @@ final class ClassObfuscator
             }
         }
         return $declared;
+    }
+
+    /**
+     * 收集指定关键字之后第一个 '(' 的配对区间（参数列表 / catch 子句）。
+     * 用于覆盖联合/交叉类型首段与无变量 catch 等通用规则盲区（BUG B3）。
+     * @param array<int,mixed> $tokens
+     * @param array<int,int> $keywords
+     * @return array<int,array{int,int}>
+     */
+    private function parenRangesAfter(array $tokens, array $keywords): array
+    {
+        $ranges = [];
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $tok = $tokens[$i];
+            if (!is_array($tok) || !in_array($tok[0], $keywords, true)) {
+                continue;
+            }
+            // 关键字后找第一个 '('（跳过函数名 / & 返回引用形式）
+            $open = -1;
+            for ($j = $i + 1; $j < $n; $j++) {
+                if (is_string($tokens[$j])) {
+                    if ($tokens[$j] === '(') {
+                        $open = $j;
+                        break;
+                    }
+                    // 参数列表开始前不可能遇到语句边界
+                    if ($tokens[$j] === '{' || $tokens[$j] === ';') {
+                        break;
+                    }
+                }
+            }
+            if ($open < 0) {
+                continue;
+            }
+            $close = $this->matchAnyBrace($tokens, $open);
+            if ($close > $open) {
+                $ranges[] = [$open, $close];
+            }
+        }
+        return $ranges;
+    }
+
+    /** @param array<int,array{int,int}> $ranges */
+    private function inRanges(array $ranges, int $i): bool
+    {
+        foreach ($ranges as $r) {
+            if ($i >= $r[0] && $i <= $r[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 从开括号下标找配对闭括号（字符串/注释/heredoc 等数组型 token 天然跳过）。
+     * 插值修正：T_CURLY_OPEN / T_DOLLAR_OPEN_CURLY_BRACES（"{$expr}" 起始）
+     * 是数组 token 但其闭合是裸 '}' 字符——不计入深度会让区间提前结束。
+     */
+    private function matchAnyBrace(array $tokens, int $open): int
+    {
+        $depth = 0;
+        $n = count($tokens);
+        for ($j = $open; $j < $n; $j++) {
+            $tok = $tokens[$j];
+            if (is_array($tok)) {
+                if (in_array($tok[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true)) {
+                    $depth++;
+                }
+                continue;
+            }
+            if ($tok === '(' || $tok === '[' || $tok === '{') {
+                $depth++;
+            } elseif ($tok === ')' || $tok === ']' || $tok === '}') {
+                $depth--;
+                if ($depth === 0) {
+                    return $j;
+                }
+            }
+        }
+        return -1;
     }
 
     /** @return array<string,true> */

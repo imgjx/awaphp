@@ -94,6 +94,18 @@ final class StringEncoder
         $paramNest = 0;
         $awaitParam = false;
         $defaultMode = false;
+
+        // B1 修复：类体成员级追踪。类/静态属性默认值、enum 支撑值都是常量表达式，
+        // 禁止出现 base64_decode(...) 这类函数调用，必须标记为"不可编码"。
+        // 思路：用花括号深度 + 类体栈判定当前是否处于"类成员声明层"
+        // （braceDepth === 类体内部深度，且不在方法体内）。方法体 braceDepth 更深，
+        // 不会误判；const/switch/参数默认值沿用原有 constMode/caseMode/defaultMode。
+        $T_ENUM = defined('T_ENUM') ? T_ENUM : -1;
+        $braceDepth = 0;
+        $classBraceStack = [];   // 类/接口/trait/enum 体内部的花括号深度栈
+        $awaitClassBrace = false;
+        $hdrParen = 0;           // 类头 (args/extends/implements) 期间的括号深度
+        $memberDefault = false;  // 类成员声明中 = 之后（属性默认值 / enum case 值）
         $n = count($tokens);
 
         for ($i = 0; $i < $n; $i++) {
@@ -101,6 +113,24 @@ final class StringEncoder
             $isArr = is_array($tok);
             $type = $isArr ? $tok[0] : null;
             $t = is_string($tok) ? $tok : null;
+
+            // 类体开括号定位：T_CLASS/T_INTERFACE/T_TRAIT/T_ENUM 之后，跳过 (args) 后的第一个 {
+            if ($type === T_CLASS || $type === T_INTERFACE || $type === T_TRAIT || $type === $T_ENUM) {
+                $awaitClassBrace = true;
+                $hdrParen = 0;
+            }
+            if ($awaitClassBrace) {
+                if ($t === '(') {
+                    $hdrParen++;
+                } elseif ($t === ')') {
+                    if ($hdrParen > 0) {
+                        $hdrParen--;
+                    }
+                } elseif ($t === '{' && $hdrParen === 0) {
+                    $awaitClassBrace = false;
+                    $classBraceStack[] = $braceDepth + 1;   // 类体内部深度（本 token 的 { 稍后 ++）
+                }
+            }
 
             if ($type === T_CONST) {
                 $constMode = true;
@@ -133,8 +163,30 @@ final class StringEncoder
                 $defaultMode = false;
             }
 
-            if ($isArr && $type === T_CONSTANT_ENCAPSED_STRING && ($constMode || $caseMode || $defaultMode)) {
+            // 类成员声明层的 = （属性默认值 / 静态属性默认值 / enum case 支撑值）
+            $top = $classBraceStack === [] ? -1 : $classBraceStack[count($classBraceStack) - 1];
+            $atMemberLevel = ($top >= 0 && $braceDepth === $top);
+            if ($t === '=' && $atMemberLevel && !$inParam) {
+                $memberDefault = true;
+            }
+
+            if ($isArr && $type === T_CONSTANT_ENCAPSED_STRING && ($constMode || $caseMode || $defaultMode || $memberDefault)) {
                 $safe[$i] = true;
+            }
+
+            // 语句边界复位
+            if ($t === ';') {
+                $memberDefault = false;
+            }
+            // 花括号深度推进 + 类体闭合出栈
+            if ($t === '{') {
+                $braceDepth++;
+            } elseif ($t === '}') {
+                if ($top >= 0 && $braceDepth === $top) {
+                    array_pop($classBraceStack);
+                }
+                $memberDefault = false;
+                $braceDepth--;
             }
         }
         return $safe;
