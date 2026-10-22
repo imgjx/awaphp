@@ -510,7 +510,9 @@ trait VmLitTrait
      *    转义的 \$ 则留在正文片内——据此区分"可折叠"与"需运行期求值"；
      *  - 闭合标识前恰好一个换行不属于串值；tokenizer 已把闭合行的缩进从
      *    各体行剥离（PHP 7.3+ flexible heredoc）；
-     *  - heredoc 处理双引号转义集，nowdoc 全字面（反斜杠不转义）。
+     *  - heredoc 处理双引号转义集，nowdoc 全字面（反斜杠不转义）；
+     *  - PHP 7.3+ flexible heredoc：tokenizer 不剥离体行缩进（T_END_HEREDOC
+     *    文本仍含闭合标识前导空白），由本函数按闭合缩进逐行剥离复刻。
      *
      * @param array{0:int,1:string} $startTok T_START_HEREDOC token
      */
@@ -519,10 +521,12 @@ trait VmLitTrait
         $nowdoc = str_contains($startTok[1], "'"); // <<<'ID' 为 nowdoc
         $body = '';
         $closed = false;
+        $endText = '';
         while (!$c->eof()) {
             $t = $c->next();
             if (is_array($t) && $t[0] === T_END_HEREDOC) {
                 $closed = true;
+                $endText = $t[1];
                 break;
             }
             if (!is_array($t)) {
@@ -538,6 +542,21 @@ trait VmLitTrait
         }
         if (!$closed) {
             throw new VmUnsupported('VM heredoc 未闭合（已回退）');
+        }
+        // PHP 7.3+ 弹性缩进剥离：闭合标识行的前导空白量决定每个体行的剥离量
+        // （tokenizer 原样保留缩进，剥离由编译器完成）。体行缩进不足时 PHP 自身
+        // 报 Parse error（源码级错误），此处宽容保持原样不影响合法代码；
+        // 空行无缩进可剥，天然不受影响。
+        if (preg_match('/^[ \t]*/', $endText, $m) && $m[0] !== '') {
+            $ind = $m[0];
+            $lines = explode("\n", $body);
+            foreach ($lines as &$ln) {
+                if (str_starts_with($ln, $ind)) {
+                    $ln = substr($ln, strlen($ind));
+                }
+            }
+            unset($ln);
+            $body = implode("\n", $lines);
         }
         // 闭合标识前的一个换行不属于串值
         if (str_ends_with($body, "\r\n")) {
