@@ -57,6 +57,9 @@ final class VmCompiler
     private array $classParent = [];
     /** @var array<string,array<string,true>> 类名 => implements 的接口名集合（instanceof 链遍历） */
     private array $classImpl = [];
+    /** @var array<string,array<string,true>> 类名 => 自身声明的静态属性名集合（继承链查找：
+     *  B::$p 在 B 未声明时定位到真正声明该属性的父类，共享同一存储——PHP 继承语义） */
+    private array $classStatics = [];
     /** @var array<string,true> 全程序 global 声明过的变量名（不含 $）——供运行期同步全局帧 */
     private array $globalNames = [];
     /** @var array<string,true> 全程序 const 语句声明的常量名（预扫描收集，供标识符解析） */

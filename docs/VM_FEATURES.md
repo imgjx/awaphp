@@ -30,7 +30,7 @@
 | **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
 | **函数** | `function f($a,$b){ return ...; }`、递归、`$f()` 变量函数 | 每次调用获得**独立变量帧**，无跨函数污染 |
 | **实参绑定** | 引用参数 `f(&$x)`、可变参数 `f(...$args)`、命名实参 `f(b:1,a:2)`、解包实参 `f(...$arr)`（含字符串键→命名） | 编译期只压栈 + 发射标记（`PUSH_REF`/`ARG_NAMED`/`ARG_SPREAD`），重排/解引用全部在**运行期**按被调方签名完成——即使 receiver 类型编译期不可知（`$obj->m(b:1)`）也正确；引用参数按 by-ref 位做 copy-in/copy-out，命名参数跳过时可正确落入默认值 |
-| **静态调用** | `C::m()`、`C::$m()`、`self::m()`、`parent::m()` | 方法沿继承链查找；命名/引用/解包实参同样支持（`static::` 尚不支持，会回退） |
+| **静态调用** | `C::m()`、`C::$m()`、`self::m()`、`parent::m()`、**`static::m()`（延迟静态绑定）** | 方法沿继承链查找；命名/引用/解包实参同样支持。`static::` 运行期按 **called class**（`get_called_class()` 同源）解析方法/常量/属性/`::class`；`self::`/`parent::` 方法调用是**转发调用**（保留 called class，PHP 实测语义）；实例方法内的静态形态调用转发 `$this`。动态类名 `instanceof $c` 亦支持 |
 | **内建 PHP 函数** | `strlen()`、`substr()`、`implode()`、`range()`… 任意 `function_exists` | 经 `call_user_func_array` 桥接；含引用返回/特殊签名的函数按 PHP 默认语义 |
 | **类** | `class C { public $p=...; function m(){...} }`、`extends` 继承、`implements` 接口、`trait`（`use T;`） | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链 |
 | **对象** | `new C()`、`new $cls()`、`$obj->m()`、`$obj->p` | 对象以 `\stdClass` + 元信息存储，行为等价 |
@@ -62,12 +62,12 @@
 | `$this->prop[]` 属性数组追加 | 不支持属性 push |
 | 数组/属性复合赋值 `$a['k'] += x`、`$this->p *= 2` | 仅简单变量支持 `+=` 等 |
 | 复杂表达式上的后缀 `++/--`（如 `$a[0]++`） | 仅简单变量支持 |
-| 动态属性读取 `$obj->$name()` 形式之外的动态成员、动态类名 `instanceof $c` | 运行期类型不可知 |
+| 动态属性读取 `$obj->$name()` 形式之外的动态成员 | 运行期类型不可知 |
 | `self::$p[]` 静态属性数组读取 | 未实现该形态 |
-| `static::` 延迟静态绑定 | 未实现 `T_STATIC` 词法 |
 | `$GLOBALS` 整表赋值 / `$GLOBALS[]` 追加 | 超全局表特殊语义 |
 | 顶层 `return` / `exit` / `break` / `continue`（裸顶层） | 会破坏解释循环，外层 VM 壳跳过整段 |
 | `goto` | 未实现对应指令 |
+| 方法级引用返回 `$r = &$o->m()` | 函数级 `$r = &g()` 已支持（CALL_RR）；方法级回退该语句 |
 
 > **编写可被 VM 包裹的代码时的建议**：函数/方法体保持"直来直去"——用 `for/foreach/while + if/三元`，避免匿名函数、属性数组追加；引用参数、可变参数、命名/解包实参、静态调用均已支持，可放心使用。
 

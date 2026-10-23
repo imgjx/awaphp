@@ -38,12 +38,18 @@ function __VMRUN__($__P)
     $CAST_INT=100;$CAST_FLOAT=101;$CAST_STRING=102;$CAST_BOOL=103;$CAST_ARRAY=104;$CAST_OBJECT=105;
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
     $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
-    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;
+    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
 
     $__META = "\x01__cls";
 
     // 共享全局帧：global 声明把帧槽位绑定为这里的引用（PHP global 语义）
     $__GFRAME = [];
+    // called-class 栈（static:: 延迟静态绑定）：VM 方法执行期间压入「本次调用的
+    // called class」。类操作数为 "\x00lsb:FB" 标记（static::）时按栈顶解析（栈空
+    // 回退编译期类名 FB）；"\x00fwd:FB" 标记（self::/parent:: 方法转发）表示
+    // 查找类为 FB 但 called class 保持栈顶（PHP 转发调用语义，实测确认）；
+    // 显式类名调用（C::m()）则把该类自身压栈。\x00 不可能出现在 PHP 类名中。
+    $__calledCls = [];
     // 包含去重表：include_once / require_once 与 INCLUDE_EMBED 的 once 语义共用
     // （INCLUDE_EMBED 记 embedId，INCLUDE_RT 记 'r'.realpath，二者键空间不冲突）
     $__INCTRACK = [];
@@ -349,11 +355,26 @@ function __VMRUN__($__P)
     };
 
     // 构造对象
-    $__newObj = function($cls,$args) use (&$__exec,$__P,$__META,&$__callMethod,&$__code,$__methodOwner,$__bindArgs){
+    $__newObj = function($cls,$args) use (&$__exec,$__P,$__META,&$__callMethod,&$__code,$__methodOwner,$__bindArgs,&$__calledCls){
+        // new static：类操作数为 "\x00lsb:FB" 标记 → 按 called class 解析
+        // （PHP: new static 实例化运行期实际类）。
+        if (is_string($cls) && strncmp($cls, "\x00lsb:", 5) === 0) {
+            $cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($cls, 5);
+        }
         if (isset($__P['classes'][$cls])) {
             $o = new \stdClass();
             $o->$__META = $cls;
-            foreach (($__P['classes'][$cls]['props']??[]) as $pn=>$def) {
+            // 属性默认值沿继承链收集（子类声明优先，父类补缺——PHP 继承语义）。
+            // 父类默认值段已按父类作用域编译（self:: 等已折值），直接求值即可。
+            $__pdefs = [];
+            $__cc = $cls; $__g = 0;
+            while (is_string($__cc) && $__cc !== '' && isset($__P['classes'][$__cc]) && $__g++ < 64) {
+                foreach (($__P['classes'][$__cc]['props']??[]) as $pn=>$def) {
+                    if (!array_key_exists($pn, $__pdefs)) { $__pdefs[$pn] = $def; }
+                }
+                $__cc = $__P['classParents'][$__cc] ?? null;
+            }
+            foreach ($__pdefs as $pn=>$def) {
                 $__ev = [];
                 $o->$pn = ($def===null) ? null : $__exec($__code($def), $__ev, null, [], null);
             }
@@ -373,7 +394,9 @@ function __VMRUN__($__P)
 
     // VM 回调解析：把"指向 VM 函数/方法的 callable"包装成原生 PHP 闭包，
     // 使 call_user_func / array_map / usort 等原生高阶函数能直接驱动 VM 代码。
-    $__vmcb = function($cb) use (&$__exec,$__P,&$__code,&$__callMethod,$__META,&$__pad){
+    // 方法回调执行期间压 called class（static:: 延迟解析依据；对象回调压对象
+    // 实际类，类名/字符串回调压该类）。
+    $__vmcb = function($cb) use (&$__exec,$__P,&$__code,&$__callMethod,$__META,&$__pad,&$__calledCls){
         if (is_string($cb) && isset($__P['funcs'][$cb])) {
             $seg = $__P['funcs'][$cb];
             $sp = $__P['funcParams'][$cb] ?? [];
@@ -389,7 +412,7 @@ function __VMRUN__($__P)
                 $seg = $__P['classes'][$o]['methods'][$m];
                 $sp = $__P['classParams'][$o][$m] ?? [];
                 $cet = $__P['classET'][$o][$m] ?? null;
-                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); };
+                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet,$o,&$__calledCls) { $__ev=[]; $__calledCls[]=$o; try { return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); } finally { array_pop($__calledCls); } };
             }
         }
         if (is_string($cb) && strpos($cb,'::')!==false) {
@@ -398,7 +421,7 @@ function __VMRUN__($__P)
                 $seg = $__P['classes'][$p[0]]['methods'][$p[1]];
                 $sp = $__P['classParams'][$p[0]][$p[1]] ?? [];
                 $cet = $__P['classET'][$p[0]][$p[1]] ?? null;
-                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); };
+                return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$cet,$p,&$__calledCls) { $__ev=[]; $__calledCls[]=$p[0]; try { return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$cet); } finally { array_pop($__calledCls); } };
             }
         }
         return $cb;
@@ -463,9 +486,24 @@ function __VMRUN__($__P)
 
     // 原生函数间接分发（CALL_NATIVE）：natTbl 索引 → 真实函数名。
     // 高阶函数的 VM 回调参数包装为原生闭包，保留原生语义。
-    $__callFn = function($idx,$args) use ($__P,$__vmcb){
+    $__callFn = function($idx,$args) use ($__P,$__vmcb,$__META,&$__calledCls){
         $nt = $__P['natTbl'] ?? [];
         $name = is_int($idx) && isset($nt[$idx]) ? (string)$nt[$idx] : (string)$idx;
+        // VM 类是 stdClass + META 代理：反射类名的内建函数须经 META 还原真实类名，
+        // 否则 get_class/get_parent_class 对外暴露 stdClass（语义错误）。
+        if ($name === 'get_class' && isset($args[0]) && is_object($args[0])
+            && isset($args[0]->$__META) && is_string($args[0]->$__META)) {
+            return $args[0]->$__META;
+        }
+        if ($name === 'get_parent_class' && isset($args[0]) && is_object($args[0])
+            && isset($args[0]->$__META) && is_string($args[0]->$__META)) {
+            return $__P['classParents'][$args[0]->$__META] ?? false;
+        }
+        if ($name === 'get_called_class') {
+            // PHP: 类作用域外调用抛 Error
+            if ($__calledCls === []) { throw new \Error('get_called_class(): Called from outside a class'); }
+            return $__calledCls[count($__calledCls)-1];
+        }
         if (($name==='call_user_func'||$name==='call_user_func_array'||$name==='forward_static_call'
             ||$name==='forward_static_call_array'||$name==='array_map') && isset($args[0])) {
             $args[0] = $__vmcb($args[0]);
@@ -481,7 +519,7 @@ function __VMRUN__($__P)
 
     // 调用方法
     // $__cv：调用方帧变量表（按引用传入）——by-ref 实参的 copy-in / copy-out。
-    $__callMethod = function($obj,$m,$args,&$__cv=null) use (&$__exec,$__P,$__META,&$__code,&$__pad,$__methodOwner,$__bindArgs){
+    $__callMethod = function($obj,$m,$args,&$__cv=null) use (&$__exec,$__P,$__META,&$__code,&$__pad,$__methodOwner,$__bindArgs,&$__calledCls){
         if (is_object($obj) && isset($obj->$__META) && is_string($obj->$__META)) {
             // 沿继承链查找方法实现（PHP 继承语义：子类对象调用父类方法）
             $__mo = $__methodOwner($obj->$__META, $m);
@@ -490,7 +528,14 @@ function __VMRUN__($__P)
                 [$args,$refs] = $__bindArgs($args,$spec,$__cv);
                 $args = $__pad($spec,$args);
                 $__ev = ['$this'=>$obj];
-                $__r = $__exec($__P['classes'][$__mo]['methods'][$m],$__ev,$obj,$args,null,false,$__P['classET'][$__mo][$m] ?? null);
+                // called class = 对象实际类（PHP: get_called_class()）——方法体内的
+                // static:: 据此延迟解析（子类对象调父类方法时解析到子类）。
+                $__calledCls[] = $obj->$__META;
+                try {
+                    $__r = $__exec($__P['classes'][$__mo]['methods'][$m],$__ev,$obj,$args,null,false,$__P['classET'][$__mo][$m] ?? null);
+                } finally {
+                    array_pop($__calledCls);
+                }
                 // copy-out：被调方引用参数的最终值写回调用方变量
                 foreach ($refs as $i => $mm) {
                     if ($__cv !== null && array_key_exists($mm[1], $__ev)) {
@@ -594,7 +639,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$__callFn,&$__GFRAME,&$__INCTRACK
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$__callFn,&$__GFRAME,&$__INCTRACK,&$__calledCls
     ){
         $__stack = $__init;
         $__pc = 0;
@@ -705,6 +750,14 @@ function __VMRUN__($__P)
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1]; $__m = $__ins[2];
+                    // LSB / 转发标记：static:: → 解析类=called 栈顶（栈空回退 FB）；
+                    // self::/parent:: 方法转发 → 查找类=FB，called class 保持栈顶。
+                    $__fwd = false;
+                    if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
+                        $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
+                    } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
+                        $__fwd = true; $__cls = substr($__cls, 5);
+                    }
                     $__mo = $__methodOwner($__cls, $__m);
                     if ($__mo !== null) {
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
@@ -718,8 +771,21 @@ function __VMRUN__($__P)
                         // 实参绑定：命名重排 + 引用 copy-in/copy-out（同 $__callFunc）
                         $__spec = $__P['classParams'][$__mo][$__m] ?? [];
                         [$__a,$__refs] = $__bindArgs($__a,$__spec,$__vars);
-                        $__ev = [];
-                        $__r = $__exec($__mcode, $__ev, null, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        // $this 转发：PHP 语义——实例方法上下文内的 static::/self::/
+                        // parent::/显式类名 调用非静态方法均转发 $this（实测确认，
+                        // 四种形态一致）。静态方法不使用 $this（合法 PHP 不会在静态
+                        // 方法内引用 $this），置入亦无害；无实例上下文时为 null。
+                        $__ev = ($__this !== null) ? ['$this' => $__this] : [];
+                        // called class 入栈：显式类名调用压该类自身；转发调用
+                        // （self::/parent::/static::）保持当前 called class。
+                        $__calledCls[] = $__fwd
+                            ? (($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : $__cls)
+                            : $__cls;
+                        try {
+                            $__r = $__exec($__mcode, $__ev, $__this, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        } finally {
+                            array_pop($__calledCls);
+                        }
                         foreach ($__refs as $__i => $__mm) {
                             if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
                         }
@@ -740,6 +806,13 @@ function __VMRUN__($__P)
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1]; $__m = array_pop($__stack);
+                    // LSB / 转发标记（同 SCALL）：static::$m() / self::$m()
+                    $__fwd = false;
+                    if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
+                        $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
+                    } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
+                        $__fwd = true; $__cls = substr($__cls, 5);
+                    }
                     $__mo = is_string($__m) ? $__methodOwner($__cls, $__m) : null;
                     if ($__mo !== null) {
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
@@ -753,8 +826,16 @@ function __VMRUN__($__P)
                         // 实参绑定：命名重排 + 引用 copy-in/copy-out（同 SCALL）
                         $__spec = $__P['classParams'][$__mo][$__m] ?? [];
                         [$__a,$__refs] = $__bindArgs($__a,$__spec,$__vars);
-                        $__ev = [];
-                        $__r = $__exec($__mcode, $__ev, null, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        // $this 转发：同 SCALL——实例上下文内的静态形态调用转发 $this
+                        $__ev = ($__this !== null) ? ['$this' => $__this] : [];
+                        $__calledCls[] = $__fwd
+                            ? (($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : $__cls)
+                            : $__cls;
+                        try {
+                            $__r = $__exec($__mcode, $__ev, $__this, $__pad($__spec, $__a), null, false, $__P['classET'][$__mo][$__m] ?? null);
+                        } finally {
+                            array_pop($__calledCls);
+                        }
                         foreach ($__refs as $__i => $__mm) {
                             if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
                         }
@@ -771,9 +852,42 @@ function __VMRUN__($__P)
                     // 类型判定：$v instanceof C（C 为编译期常量类名）
                     $__stack[] = $__instanceof(array_pop($__stack), $__ins[1]);
                     break;
+                case $INSTANCEOF_V:
+                    // 动态类名 instanceof：$o instanceof $n（右值运行期求值）。
+                    // 对象右值取其类名（PHP 语义）；非字符串/对象抛 TypeError。
+                    $__cls = array_pop($__stack);
+                    if (is_object($__cls)) { $__cls = get_class($__cls); }
+                    elseif (!is_string($__cls)) { throw new \TypeError('instanceof expects a string or an object'); }
+                    $__stack[] = $__instanceof(array_pop($__stack), $__cls);
+                    break;
+                case $LSB_BIND:
+                    // static::$p：按 called class 解析声明该属性的类（沿继承链向上
+                    // 找已初始化槽位——无默认值的静态属性也已在预导段建槽），把别名
+                    // 帧槽 "\x01lsb:prop" 绑为该共享帧槽位的引用；后续 PUSH_V/POP_V/
+                    // INDEX_SET 全部走编译期常量别名，避开运行期类名。
+                    $__c = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : '';
+                    $__mn = "\x01sp:" . $__c . ":" . $__ins[1];
+                    $__g = 0;
+                    while (!array_key_exists($__mn, $__GFRAME) && $__g++ < 64) {
+                        $__nx = $__P['classParents'][$__c] ?? null;
+                        if (!is_string($__nx) || $__nx === '') { break; }
+                        $__c = $__nx; $__mn = "\x01sp:" . $__c . ":" . $__ins[1];
+                    }
+                    if (!array_key_exists($__mn, $__GFRAME)) { $__GFRAME[$__mn] = null; }
+                    $__vars["\x01lsb:" . $__ins[1]] = &$__GFRAME[$__mn];
+                    break;
+                case $LSB_CLASS:
+                    // static::class：压入当前 called 类名（PHP: 运行期实际类）
+                    $__stack[] = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : '';
+                    break;
                 case $SPROP:
                     // 类常量 / 静态属性：C::CONST 或 C::$p
                     $__cls = $__ins[1]; $__p = $__ins[2];
+                    // static::CONST：LSB 标记 → 按 called class 解析（实测 PHP 对
+                    // 常量同样做延迟静态绑定；self::/parent:: 则编译期解析）。
+                    if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
+                        $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
+                    }
                     // VM 类常量（含 implements/extends 继承链，PHP 继承语义）
                     $__co = $__constOwner($__cls, $__p);
                     if ($__co !== null) {

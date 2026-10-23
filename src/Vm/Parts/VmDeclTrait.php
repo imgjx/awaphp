@@ -176,16 +176,85 @@ trait VmDeclTrait
         // "是否 VM 类"，此时类体还没编译完——不占位会把 self::$x 误判为原生类静态
         // 属性而走 SPROP 反射路径（运行期得到 null，静默出错）。
         $this->classes[$name] = ['props' => [], 'methods' => [], 'consts' => []];
+        // 预登记自身静态属性名：成员编译期 self::$p 的继承链查找（staticPropOwner）
+        // 需要知道「本类声明了哪些静态属性」——PHP 语义：子类未重声明时与父类
+        // 同名静态属性共享存储，重声明（含无默认值）则 shadow。
+        $this->classStatics[$name] = $this->prescanStaticPropNames($inner);
         // parent:: 解析同理：成员编译期就要能查到父类名。
         if ($parent !== null) {
             $this->classParent[$name] = $parent;
         }
         [$props, $methods, $consts, $statics] = $this->compileMembers($inner, $name);
         $this->classes[$name] = ['props' => $props, 'methods' => $methods, 'consts' => $consts];
+        // 静态属性所有权全量登记（编译结果是权威来源：含 trait use 复制进来的）。
+        // 成员编译期 self::$p / A::$p 的继承链解析（staticPropOwner）依赖此表：
+        // PHP 语义中，子类未重声明静态属性时与父类共享存储，重声明（含无默认值）
+        // 则 shadow——只有知道「每个类自己声明了哪些静态属性」才能定 owner。
+        $this->classStatics[$name] = array_fill_keys(array_keys($statics), true);
         // 静态属性默认值 → 主程序前导初始化段。仍在类作用域内编译，默认值表达式
         // 可引用 self::CONST 等类常量。
         $this->emitStaticInit($name, $statics);
         $this->curClass = $prevClass;
+    }
+
+    /**
+     * 预扫描类体【自身声明】的静态属性名集合（name => true）。
+     *
+     * 必须跑在 compileMembers 之前：成员体内的 self::$p / parent::$p 引用在成员
+     * 编译期就要经 staticPropOwner 沿继承链定位「声明类」（定共享帧槽位名），
+     * 而此时 emitStaticInit 尚未建槽，只有这张表能回答「本类是否自己声明了 $p」。
+     * PHP 语义：子类未重声明时与父类同名静态属性共享存储；重声明（含无默认值）
+     * 则 shadow 父类槽位。
+     *
+     * 只扫类体直接声明；trait use 引入的静态属性由 compileMembers 复制时登记
+     * （此时才知道使用方类名），并在 compileClass 末尾以编译结果全量覆盖。
+     *
+     * @param array<int,mixed> $inner 类体 token（不含外层花括号）
+     * @return array<string,true>
+     */
+    private function prescanStaticPropNames(array $inner): array
+    {
+        $names = [];
+        $members = StatementSplitter::split($inner);
+        foreach ($members as $m) {
+            if ($this->firstSig($m) === T_USE) {
+                continue; // trait use：静态属性编译成员时才复制，此处不预知
+            }
+            if (!$this->memberIsStatic($m)) {
+                continue;
+            }
+            $ms = $this->stripModifiers($m);
+            $f = $this->firstSig($ms);
+            if ($f === T_FUNCTION || $f === T_CONST) {
+                continue; // 静态方法 / 类常量与静态属性存储无关
+            }
+            // 属性声明：`static $a = 1, $b;`——与 compileMembers 属性分支同款，
+            // 按顶层逗号分段（类型提示内的 ',' 不可能出现，但保守起见分层判定），
+            // 逐段跳过类型提示后取首个 T_VARIABLE。
+            foreach ($this->splitTopLevel($ms, ',') as $part) {
+                $part = $this->trimWs($part);
+                if ($part === []) {
+                    continue;
+                }
+                $vc = new Cursor($part);
+                $vc->skipWs();
+                while (!$vc->eof() && !$vc->is(T_VARIABLE)) {
+                    $vc->skipWs();
+                    if ($vc->eof() || $vc->is(T_VARIABLE)) {
+                        break;
+                    }
+                    $t = $vc->peek();
+                    if (is_array($t) && $t[0] === T_STRING) { $vc->next(); continue; }
+                    if (is_array($t) && $t[0] === T_NS_SEPARATOR) { $vc->next(); continue; }
+                    if (is_string($t) && in_array($t, ['?', '|', '&'], true)) { $vc->next(); continue; }
+                    break;
+                }
+                if ($vc->is(T_VARIABLE)) {
+                    $names[ltrim($vc->expectText(T_VARIABLE), '$')] = true;
+                }
+            }
+        }
+        return $names;
     }
 
     /**
@@ -266,6 +335,9 @@ trait VmDeclTrait
                         if (!array_key_exists($pn, $statics)) {
                             $statics[$pn] = $seg;
                         }
+                        // 登记所有权：use 进来的静态属性归使用方类所有
+                        // （PHP 语义：trait 静态属性在使用方类上下文中生效）
+                        $this->classStatics[$owner][$pn] = true;
                     }
             // trait 方法的参数规格（默认值段）一并复制；类自身同名方法优先
             foreach (($this->traits[$tn]['params'] ?? []) as $mn => $sp) {
@@ -421,10 +493,14 @@ trait VmDeclTrait
     private function emitStaticInit(string $cls, array $statics): void
     {
         foreach ($statics as $pname => $exprTokens) {
-            if ($exprTokens === null || $exprTokens === []) {
-                continue; // 无默认值：首次 GLOBAL_REF 绑定时共享帧槽位即为 null
-            }
             $mangled = $this->staticVarName($cls, $pname);
+            if ($exprTokens === null || $exprTokens === []) {
+                // 无默认值：仍需建共享帧槽——static::$p 的 LSB_BIND 靠「槽位存在性」
+                // 区分「本类声明了该属性（默认 null）」与「未声明（应沿继承链上找）」，
+                // 否则子类重声明的 null 属性会错误读到父类默认值。
+                $this->staticInit[] = [VmOp::GLOBAL_REF, $mangled];
+                continue;
+            }
             $code = [];
             $code[] = [VmOp::GLOBAL_REF, $mangled];
             $this->compileExpr($exprTokens, $code);

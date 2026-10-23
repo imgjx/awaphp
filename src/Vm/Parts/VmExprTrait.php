@@ -201,7 +201,9 @@ trait VmExprTrait
         $save = $c->pos();
         $c->skipWs();
         $t = $c->peek();
-        if (is_array($t) && $t[0] === T_STRING) {
+        // T_STATIC（PHP 8.1+ 的 static 关键字；8.0- 为 T_STRING 'static'）：
+        // static::$prop 左值（延迟静态绑定，见 staticPropLvalueInfo 的 lsb 标记）
+        if (is_array($t) && ($t[0] === T_STRING || $t[0] === T_STATIC)) {
             // Class::$prop 静态属性左值（self/static/parent/已登记 VM 类名）。
             // 收集紧凑 span：T_STRING (T_NS_SEPARATOR T_STRING)* T_DOUBLE_COLON T_VARIABLE
             $span = [$t];
@@ -440,6 +442,16 @@ trait VmExprTrait
     }
 
     /**
+     * static::$p 的别名帧槽名：LSB_BIND 在运行期把它绑到「called class 声明该
+     * 属性的共享帧槽位」的引用。别名是编译期常量（\x01lsb:prop），从而让
+     * PUSH_V/POP_V/INDEX_SET/PRE_INC 等指令无需感知运行期类名。
+     */
+    private function lsbAlias(string $prop): string
+    {
+        return "\x01lsb:" . $prop;
+    }
+
+    /**
      * 编译左值读取（把左值当前值压栈）。仅支持 变量 / 变量[下标] / $this->属性。
      * @param array<int,mixed> $target
      * @param array<int,array<int,mixed>> $code
@@ -452,19 +464,25 @@ trait VmExprTrait
             // 带下标时先压一份「容器+键」留在值之下（INDEX_SET 弹出序为
             // [value, key, container]，与普通赋值路径 compileLVResolve 的栈形态一致），
             // 再压第二份「容器+键」供 INDEX_GET 读旧值（出栈即消费）。
-            $mangled = $this->staticVarName($sp['cls'], $sp['prop']);
-            $code[] = [VmOp::GLOBAL_REF, $mangled];
+            if ($sp['lsb']) {
+                // static::$p：LSB_BIND 按 called class 绑定别名帧槽
+                $code[] = [VmOp::LSB_BIND, $sp['prop']];
+                $slot = $this->lsbAlias($sp['prop']);
+            } else {
+                $code[] = [VmOp::GLOBAL_REF, $this->staticVarName($sp['cls'], $sp['prop'])];
+                $slot = $this->staticVarName($sp['cls'], $sp['prop']);
+            }
             if ($sp['key'] === null) {
-                $code[] = [VmOp::PUSH_V, $mangled];
+                $code[] = [VmOp::PUSH_V, $slot];
                 return;
             }
             if ($sp['key'] === []) {
                 // self::$p[] 不能读（PHP 本身即致命）：不当左值处理
                 throw new VmUnsupported('VM 不支持 self::$p[] 读取形态（已回退）');
             }
-            $code[] = [VmOp::PUSH_V, $mangled];
+            $code[] = [VmOp::PUSH_V, $slot];
             $this->compileExpr($sp['key'], $code);
-            $code[] = [VmOp::PUSH_V, $mangled];
+            $code[] = [VmOp::PUSH_V, $slot];
             $this->compileExpr($sp['key'], $code);
             $code[] = [VmOp::INDEX_GET];
             return;
@@ -517,10 +535,17 @@ trait VmExprTrait
             // 静态属性：GLOBAL_REF 绑定共享帧槽位。裸属性无需压容器（POP_V 经引用
             // 直接写穿）；带下标则压「容器副本 (+键)」，由 store 阶段 INDEX_SET/
             // ARRAY_PUSH 后 POP_V 写回（与 $arr[$k] = v 同款栈形态）。
-            $mangled = $this->staticVarName($sp['cls'], $sp['prop']);
-            $code[] = [VmOp::GLOBAL_REF, $mangled];
+            if ($sp['lsb']) {
+                // static::$p：LSB_BIND 按 called class 绑定别名帧槽（写穿目标
+                // 由运行期决定——C 未重声明时写父类槽位，与 PHP 语义一致）
+                $code[] = [VmOp::LSB_BIND, $sp['prop']];
+                $slot = $this->lsbAlias($sp['prop']);
+            } else {
+                $slot = $this->staticVarName($sp['cls'], $sp['prop']);
+                $code[] = [VmOp::GLOBAL_REF, $slot];
+            }
             if ($sp['key'] !== null) {
-                $code[] = [VmOp::PUSH_V, $mangled];
+                $code[] = [VmOp::PUSH_V, $slot];
                 if ($sp['key'] !== []) {
                     $this->compileExpr($sp['key'], $code);
                 }
@@ -559,7 +584,8 @@ trait VmExprTrait
         if ($sp !== null) {
             // 静态属性写：裸属性直接 POP_V 写穿共享帧引用；带下标则先
             // INDEX_SET/ARRAY_PUSH 更新容器副本，再 POP_V 写回。
-            $mangled = $this->staticVarName($sp['cls'], $sp['prop']);
+            // lsb：别名槽已由 compileLVResolve 的 LSB_BIND 绑好，直接写穿。
+            $mangled = $sp['lsb'] ? $this->lsbAlias($sp['prop']) : $this->staticVarName($sp['cls'], $sp['prop']);
             if ($sp['key'] === null) {
                 $code[] = [VmOp::POP_V, $mangled];
             } elseif ($sp['key'] === []) {
@@ -1102,7 +1128,8 @@ trait VmExprTrait
      * （PHP 优先级表：** > 一元 > instanceof > ! > * > + > ...）。
      * 注意 `!` 的操作数也经本层解析——`!$x instanceof A` 语义为
      * `!($x instanceof A)`（instanceof 绑定更紧）。
-     * 动态类名（$x instanceof $c）不支持，抛 VmUnsupported 回退。
+     * 右值为变量/括号表达式（$o instanceof $n / $o instanceof ($a.$b)）时
+     * 编译为 INSTANCEOF_V（运行期求值类名）；字面类名走 INSTANCEOF 常量路径。
      */
     private function parseInstanceof(Cursor $c, array &$code): void
     {
@@ -1111,8 +1138,12 @@ trait VmExprTrait
             $c->next();
             $c->skipWs();
             $t = $c->peek();
-            if (is_array($t) && $t[0] === T_VARIABLE) {
-                throw new VmUnsupported('VM 不支持动态类名 instanceof（已回退）');
+            if ((is_array($t) && $t[0] === T_VARIABLE) || $t === '(') {
+                // 动态类名：右值按同级表达式编译（变量 / 括号表达式 / 属性链），
+                // INSTANCEOF_V 运行期弹出类名与被判定值（对象类名取其类）。
+                $this->parsePow($c, $code);
+                $code[] = [VmOp::INSTANCEOF_V];
+                continue;
             }
             if (!is_array($t) || !in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_STATIC], true)) {
                 throw new VmUnsupported('VM 不支持的 instanceof 右值（已回退）');
@@ -1223,9 +1254,15 @@ trait VmExprTrait
             if ($sp !== null) {
                 // 静态属性：GLOBAL_REF 绑定共享帧槽位后走常规 PRE_INC/PRE_DEC
                 // （运行期经引用写穿，语义与普通变量一致）。
-                $mangled = $this->staticVarName($sp['cls'], $sp['prop']);
-                $code[] = [VmOp::GLOBAL_REF, $mangled];
-                $code[] = [$dec ? VmOp::PRE_DEC : VmOp::PRE_INC, $mangled];
+                // static::$p（lsb）：LSB_BIND 按 called class 绑定别名帧槽。
+                if ($sp['lsb']) {
+                    $code[] = [VmOp::LSB_BIND, $sp['prop']];
+                    $slot = $this->lsbAlias($sp['prop']);
+                } else {
+                    $slot = $this->staticVarName($sp['cls'], $sp['prop']);
+                    $code[] = [VmOp::GLOBAL_REF, $slot];
+                }
+                $code[] = [$dec ? VmOp::PRE_DEC : VmOp::PRE_INC, $slot];
                 return;
             }
             $v = $c->expectText(T_VARIABLE);
@@ -1618,6 +1655,14 @@ trait VmExprTrait
                     $this->parseTernary($c, $code);
                     $code[] = [VmOp::PRINT_];
                     return;
+                case T_STATIC:
+                    // static:: 延迟静态绑定（PHP 8.1+ 分词；8.0- 的 static 是
+                    // T_STRING 'static'，走下方 T_STRING 分支的同类判定）
+                    if ($this->peekIsDoubleColon($c, 1)) {
+                        $this->parseStaticMember($c, $code);
+                        return;
+                    }
+                    throw new VmUnsupported('VM 不支持的词法：T_STATIC');
                 case T_STRING:
                     // 关键字 true/false/null，或函数调用，或常量
                     $up = strtolower($t[1]);
@@ -1650,6 +1695,21 @@ trait VmExprTrait
                         // 第三参 callee=函数名：命中 sigCache 时启用命名实参重排 /
                         // 引用参数 PUSH_REF / 解包实参校验（预扫描见 prescanSignature）
                         $argc = $this->compileArgs($c, $code, self::NATIVE_REF_POS[strtolower($name)] ?? [], $name);
+                        // 类作用域内的两个反射内建：get_called_class() → LSB_CLASS
+                        // （VM called-class 栈顶，延迟静态绑定依据）；
+                        // get_class() 无实参 → LOAD_THIS + 原生调用（运行期 $__callFn
+                        // 特判把 VM 对象还原为真实类名，不暴露 stdClass）。
+                        if ($argc === 0 && $this->curClass !== '') {
+                            if ($name === 'get_called_class') {
+                                $code[] = [VmOp::LSB_CLASS];
+                                return;
+                            }
+                            if ($name === 'get_class') {
+                                $code[] = [VmOp::LOAD_THIS];
+                                $code[] = [VmOp::CALL_NATIVE, $this->natIdx('get_class'), 1, 0];
+                                return;
+                            }
+                        }
                         // 用户函数（预扫描全集）→ CALL（VM 函数表，支持前向引用）；
                         // 其余视为原生函数 → CALL_NATIVE（natTbl 间接，静态不暴露函数名）
                         if (isset($this->funcNames[$name])) {
@@ -1745,46 +1805,68 @@ trait VmExprTrait
 
     /**
      * 静态成员访问：C::m() / C::$p / C::CONST / self::m() / static::m() / Foo\Bar::m()。
-     * 调用方光标位于类名 T_STRING 处。
+     * 调用方光标位于类名 T_STRING（或 T_STATIC）处。
+     *
+     * 延迟静态绑定（LSB）与转发语义（PHP 实测确认）：
+     *  - static::X      → 类操作数取 "\x00lsb:编译期类名" 标记，运行期按
+     *                    called-class 栈顶解析（方法/常量/属性/class 均延迟）；
+     *  - self::m() / parent::m() → 【方法调用】是转发调用：called class 保持
+     *                    栈顶（C::m2() 里 parent::m()，m 内 static:: 仍解析到 C），
+     *                    类操作数取 "\x00fwd:编译期类名" 标记；
+     *  - self::CONST / self::$p / 显式 C::X → 编译期解析（不延迟）。
      * @param array<int,array<int,mixed>> $code
      */
     private function parseStaticMember(Cursor $c, array &$code): void
     {
-        // 类名可能带命名空间分隔符：Foo\Bar
+        // 类名可能带命名空间分隔符：Foo\Bar；PHP 8.1+ 的 static 是 T_STATIC
         $cls = '';
         while (!$c->eof()) {
             $tk = $c->peek();
             if (is_array($tk) && $tk[0] === T_STRING) { $cls .= $tk[1]; $c->next(); continue; }
+            if (is_array($tk) && $tk[0] === T_STATIC) { $cls .= 'static'; $c->next(); continue; }
             if (is_array($tk) && $tk[0] === T_NS_SEPARATOR) { $cls .= '\\'; $c->next(); continue; }
             break;
         }
         $low = strtolower($cls);
-        if ($low === 'self' || $low === 'static') {
+        // self::/parent:: 方法调用的转发标记（仅调用路径使用；常量/属性编译期解析）
+        $fwdCls = null;
+        if ($low === 'static') {
             if ($this->curClass === '') {
-                throw new VmUnsupported('VM 无法解析 self:: / static::（不在类上下文中，已回退）');
+                throw new VmUnsupported('VM 无法解析 static::（不在类上下文中，已回退）');
             }
-            $cls = $this->curClass;
-        } elseif ($low === 'parent') {
-            // parent:: 解析为编译期记录的父类名（compileClass 解析 extends）。
-            // 父类不在 VM 类表（原生父类）时保留原样，由 SPROP/SCALL 运行期反射路径处理。
+            // static:: → LSB 标记（运行期按 called class 解析；栈空回退编译期类名）
+            $cls = VmOp::LSB_MARK . $this->curClass;
+        } elseif ($low === 'self' || $low === 'parent') {
             if ($this->curClass === '') {
-                throw new VmUnsupported('VM 无法解析 parent::（不在类上下文中，已回退）');
+                throw new VmUnsupported('VM 无法解析 self:: / parent::（不在类上下文中，已回退）');
             }
-            $parent = $this->classParent[$this->curClass] ?? null;
-            if ($parent === null) {
-                throw new VmUnsupported('VM 无法解析 parent::（未记录父类名，已回退）');
+            if ($low === 'parent') {
+                $parent = $this->classParent[$this->curClass] ?? null;
+                if ($parent === null) {
+                    throw new VmUnsupported('VM 无法解析 parent::（未记录父类名，已回退）');
+                }
+                $cls = $parent;
+            } else {
+                $cls = $this->curClass;
             }
-            $cls = $parent;
+            $fwdCls = "\x00fwd:" . $cls;
         }
         $c->expect(T_DOUBLE_COLON);
         $mem = $c->peek();
         if ($mem === null) {
             throw new VmUnsupported('静态成员语法异常（已回退）');
         }
-        // C::class 是特例：直接压入类名字符串
-        if (is_array($mem) && $mem[0] === T_STRING && strtolower($mem[1]) === 'class') {
+        // C::class 是特例：直接压入类名字符串。static::class 取运行期 called 类名
+        // （PHP 8 里 ::class 后的 class 是 T_CLASS token，不是 T_STRING）
+        $memIsClass = is_array($mem) && ($mem[0] === T_CLASS
+            || ($mem[0] === T_STRING && strtolower($mem[1]) === 'class'));
+        if ($memIsClass) {
             $c->next();
-            $code[] = [VmOp::PUSH_C, $cls];
+            if (strncmp($cls, VmOp::LSB_MARK, 5) === 0) {
+                $code[] = [VmOp::LSB_CLASS];
+            } else {
+                $code[] = [VmOp::PUSH_C, $cls];
+            }
             return;
         }
         $mname = is_array($mem) ? $mem[1] : (string) $mem;
@@ -1796,27 +1878,77 @@ trait VmExprTrait
                 // 直接回退 EVAL 也不行——VM 类不是真实 PHP 类，eval 里访问即致命）。
                 $code[] = [VmOp::PUSH_V, $mname];
                 $argc = $this->compileArgs($c, $code);
-                $code[] = [VmOp::SCALL_VAR, $cls, $argc];
+                $code[] = [VmOp::SCALL_VAR, $fwdCls ?? $cls, $argc];
                 return;
             }
-            $argc = $this->compileArgs($c, $code, [], $cls . '::' . $mname);
-            $code[] = [VmOp::SCALL, $cls, $mname, $argc];
+            // 签名查找用编译期类名（标记只是运行期解析用；PHP 命名实参/引用参数
+            // 规格按被调方法的定义类解析，与延迟绑定无关）
+            $argc = $this->compileArgs($c, $code, [], $this->lsbClassOrRaw($cls) . '::' . $mname);
+            $code[] = [VmOp::SCALL, $fwdCls ?? $cls, $mname, $argc];
             return;
         }
         if (is_array($mem) && $mem[0] === T_VARIABLE) {
             // 静态属性：VM 类走共享帧槽位；原生类（DateTime 等）走 SPROP 反射路径
             $prop = ltrim($mname, '$');
-            if (isset($this->classes[$cls])) {
-                $mangled = $this->staticVarName($cls, $prop);
-                $code[] = [VmOp::GLOBAL_REF, $mangled];
-                $code[] = [VmOp::PUSH_V, $mangled];
+            if (isset($this->classes[$this->lsbClassOrRaw($cls)])) {
+                if (strncmp($cls, VmOp::LSB_MARK, 5) === 0) {
+                    // static::$p：LSB_BIND 按 called class 绑定别名帧槽
+                    $code[] = [VmOp::LSB_BIND, $prop];
+                    $code[] = [VmOp::PUSH_V, $this->lsbAlias($prop)];
+                } else {
+                    // 共享存储解析：显式类名/self/parent 未重声明时落到声明类槽位
+                    // （emitStaticInit 只给声明类建槽——PHP：子类未重声明即共享）
+                    $owner = $this->staticPropOwner($cls, $prop) ?? $cls;
+                    $mangled = $this->staticVarName($owner, $prop);
+                    $code[] = [VmOp::GLOBAL_REF, $mangled];
+                    $code[] = [VmOp::PUSH_V, $mangled];
+                }
             } else {
                 $code[] = [VmOp::SPROP, $cls, $prop];
             }
             return;
         }
-        // 类常量（C::CONST / self::CONST / parent::CONST）
+        // 类常量（C::CONST / self::CONST / parent::CONST / static::CONST）
         $code[] = [VmOp::SPROP, $cls, $mname];
+    }
+
+    /**
+     * LSB 标记类名 → 其记录的编译期回退类名；非标记原样返回。
+     * 用于编译期判定「该类是否为 VM 类」（标记只可能由本类内 static:: 产生，
+     * 回退类名必为 curClass，一定是 VM 类）。
+     */
+    private function lsbClassOrRaw(string $cls): string
+    {
+        return strncmp($cls, VmOp::LSB_MARK, 5) === 0 ? substr($cls, 5) : $cls;
+    }
+
+    /**
+     * 静态属性声明类解析（PHP 共享存储语义）：子类未重声明静态属性时与父类
+     * 共享同一存储，重声明（含无默认值 `static $p;`）则 shadow。
+     *
+     * emitStaticInit 只给【声明类】建共享帧槽（\x01sp:Owner:prop），故任何
+     * 编译期类名引用（self::$p / C::$p / parent::$p / ++C::$p）都必须先经
+     * 本函数定位声明类，再取槽位名——否则显式子类名读继承属性得 null
+     * （曾致 lsb_prop_append：B::$log[] 写进不存在的 B 槽）。
+     *
+     * 依赖 classStatics 表（prescanStaticPropNames + compileMembers 登记），
+     * 故父类必须在本类成员编译前已编译（PHP 单继承且通常先声明父类；
+     * 极端前向引用场景父类未编译时返回 null，调用方回退为原类名——槽位
+     * 将由父类自己的 emitStaticInit 建，名称恰好一致）。
+     *
+     * @return string|null 声明类名；null = 沿链未找到（调用方回退原类名）
+     */
+    private function staticPropOwner(string $cls, string $prop): ?string
+    {
+        $cc = $cls;
+        $guard = 0;
+        while (is_string($cc) && $cc !== '' && isset($this->classes[$cc]) && $guard++ < 64) {
+            if (isset($this->classStatics[$cc][$prop])) {
+                return $cc;
+            }
+            $cc = $this->classParent[$cc] ?? null;
+        }
+        return null;
     }
 
     /**
@@ -1845,12 +1977,13 @@ trait VmExprTrait
      * 非静态属性左值 / 非 VM 类返回 null。
      *
      * @param array<int,mixed> $target
-     * @return array{cls:string,prop:string,key:array<int,mixed>|null}|null
+     * @return array{cls:string,prop:string,key:array<int,mixed>|null,lsb:bool}|null
      */
     private function staticPropLvalueInfo(array $target): ?array
     {
         $t0 = $target[0] ?? null;
-        if (!(is_array($t0) && $t0[0] === T_STRING)) {
+        // T_STATIC（PHP 8.1+）与 T_STRING 'static'（8.0-）均为延迟静态绑定左值
+        if (!(is_array($t0) && ($t0[0] === T_STRING || $t0[0] === T_STATIC))) {
             return null;
         }
         $n = count($target);
@@ -1894,7 +2027,15 @@ trait VmExprTrait
         if ($resolved === null || !isset($this->classes[$resolved])) {
             return null;
         }
-        return ['cls' => $resolved, 'prop' => ltrim($var[1], '$'), 'key' => $key];
+        // 静态属性共享存储解析：子类未重声明时与父类共享槽位（PHP 语义），
+        // 显式子类名读/写必须落到【声明类】的共享帧槽（emitStaticInit 只给
+        // 声明类建槽）；重声明（含无默认值）则 shadow，owner 即子类自身。
+        $prop = ltrim($var[1], '$');
+        $owner = $this->staticPropOwner($resolved, $prop);
+        // static::$p：延迟静态绑定——运行期按 called class 解析（lsb 标记），
+        // self::/parent:: 与显式类名则编译期解析（PHP 语义，实测确认）。
+        $lsb = ($t0[0] === T_STATIC) || strtolower($cls) === 'static';
+        return ['cls' => $owner ?? $resolved, 'prop' => $prop, 'key' => $key, 'lsb' => $lsb];
     }
 
     /**
@@ -1907,7 +2048,7 @@ trait VmExprTrait
         $save = $c->pos();
         $c->skipWs();
         $t = $c->peek();
-        if (!(is_array($t) && $t[0] === T_STRING)) {
+        if (!(is_array($t) && ($t[0] === T_STRING || $t[0] === T_STATIC))) {
             $c->seek($save);
             return null;
         }
@@ -1915,6 +2056,7 @@ trait VmExprTrait
         while (!$c->eof()) {
             $tk = $c->peek();
             if (is_array($tk) && $tk[0] === T_STRING) { $clsName .= $tk[1]; $c->next(); continue; }
+            if (is_array($tk) && $tk[0] === T_STATIC) { $clsName .= 'static'; $c->next(); continue; }
             if (is_array($tk) && $tk[0] === T_NS_SEPARATOR) { $clsName .= '\\'; $c->next(); continue; }
             break;
         }
@@ -1934,8 +2076,12 @@ trait VmExprTrait
             $c->seek($save);
             return null;
         }
+        $prop = ltrim($mv[1], '$');
+        // 共享存储解析：显式类名未重声明静态属性时落到声明类槽位（见 staticPropOwner）
+        $owner = $this->staticPropOwner($resolved, $prop);
         $c->next();
-        return ['cls' => $resolved, 'prop' => ltrim($mv[1], '$')];
+        return ['cls' => $owner ?? $resolved, 'prop' => $prop,
+                'lsb' => ($t[0] === T_STATIC) || strtolower($clsName) === 'static'];
     }
 
     /**
@@ -1963,9 +2109,21 @@ trait VmExprTrait
         if ($t === null) {
             throw new VmUnsupported('new 语法异常');
         }
-        if (is_array($t) && $t[0] === T_STRING) {
-            $cls = $t[1];
+        // PHP 8.1+ 的 static 关键字：new static → LSB 标记（运行期按 called
+        // class 实例化；new self / new parent 则编译期解析——PHP 语义：
+        // self/parent 取定义类，static 取运行期实际类）。
+        $isStaticKw = is_array($t) && $t[0] === T_STATIC;
+        if (is_array($t) && ($t[0] === T_STRING || $isStaticKw)) {
+            $cls = $isStaticKw ? 'static' : $t[1];
             $c->next();
+            if (strtolower($cls) === 'static') {
+                if ($this->curClass === '') {
+                    throw new VmUnsupported('VM 无法解析 new static（不在类上下文中，已回退）');
+                }
+                $cls = VmOp::LSB_MARK . $this->curClass;
+            } else {
+                $cls = $this->resolveStaticClassName($cls) ?? $cls;
+            }
             $argc = $this->compileArgs($c, $code);
             $code[] = [VmOp::NEW, $cls, $argc];
         } elseif (is_array($t) && $t[0] === T_VARIABLE) {

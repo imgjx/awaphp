@@ -230,6 +230,23 @@ final class VmOp
     // 操作数: name(函数名), dst(目标帧槽), argc
     public const CALL_RR      = 137;
 
+    // ---- 动态类名 instanceof / static:: 延迟静态绑定（LSB）----
+    // INSTANCEOF_V：$o instanceof $n（右值为运行期表达式）。无操作数——
+    // 先弹出类名（对象则取其类），再弹出被判定值，语义同 INSTANCEOF。
+    public const INSTANCEOF_V = 138;
+    // LSB_BIND：static::$p 的共享帧槽位绑定。操作数: prop(属性名)。
+    // 运行期按「当前 called class」解析出真正声明该属性的类（沿继承链向上
+    // 找已初始化的槽位），把别名帧槽 "\x01lsb:prop" 绑为该槽位的引用；
+    // 后续 PUSH_V/POP_V/INDEX_SET 等全部走别名槽（编译期常量名）。
+    public const LSB_BIND     = 139;
+    // LSB_CLASS：static::class——压入当前 called 类名（PHP: 取运行期实际类）。
+    public const LSB_CLASS    = 140;
+    // LSB 类操作数标记：SCALL/SCALL_VAR/SPROP/NEW 的类操作数为
+    // "\x00lsb:编译期回退类名" 时，运行期按 called-class 栈顶解析
+    // （栈空时回退到标记内记录的编译期类名，覆盖闭包等无栈场景）。
+    // \x00 不可能出现在 PHP 类名中，与真实类名不会碰撞。
+    public const LSB_MARK     = "\x00lsb:";
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -324,6 +341,9 @@ final class VmOp
         self::IDX_PRE_INC   => ['n'],
         self::IDX_PRE_DEC   => ['n'],
         self::CALL_RR       => ['n', 'n', 'i'],
+        self::INSTANCEOF_V  => [],
+        self::LSB_BIND      => ['n'],
+        self::LSB_CLASS     => [],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -434,6 +454,9 @@ final class VmOp
         self::IDX_PRE_INC   => 'IDX_PRE_INC',
         self::IDX_PRE_DEC   => 'IDX_PRE_DEC',
         self::CALL_RR       => 'CALL_RR',
+        self::INSTANCEOF_V  => 'INSTANCEOF_V',
+        self::LSB_BIND      => 'LSB_BIND',
+        self::LSB_CLASS     => 'LSB_CLASS',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',
