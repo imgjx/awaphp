@@ -112,13 +112,16 @@ trait VmDeclTrait
             }
             $c->expect('{');
             $tinner = $c->untilMatchBrace();
-            [$tprops, $tmethods, $tconsts, $tstatics] = $this->compileMembers($tinner, $tname);
+            [$tprops, $tmethods, $tconsts, $tstatics, $troots] = $this->compileMembers($tinner, $tname);
             $this->traits[$tname] = [
                 'props'   => $tprops,
                 'methods' => $tmethods,
                 'consts'  => $tconsts,
                 // trait 静态属性默认值 token（use 时按【使用方类名】重新编译初始化段）
                 'statics' => $tstatics,
+                // 方法名 => 根 trait 名（自身声明的方法根为自己）——使用方据此
+                // 判重「同一 trait 经不同路径多次引入不构成冲突」
+                'roots'   => $troots,
                 // 方法参数规格（默认值段）：随 use 一并复制进使用方类
                 'params'  => $this->classParams[$tname] ?? [],
                 // 方法签名（命名实参重排 / 引用参数 / 解包校验用）：use 时按
@@ -290,11 +293,15 @@ trait VmDeclTrait
      * 编译类 / trait 成员表（方法 + 属性 + 常量 + 静态属性）。
      * 支持 trait 引入：`use LoggerTrait;` / `use A, B;`——把已编译 trait 的
      * 方法、属性、常量与静态属性复制进来（类自身成员优先，覆盖同名 trait 成员）。
-     * trait 适配块（`use A { ... }` 的 insteadof / as）暂不支持，直接回退。
+     * 支持 trait 适配块：`use A, B { A::m insteadof B; B::m as bm; }`——
+     * 编译期完成冲突消解与别名注册（语义对齐原生：未消解冲突/非法规则回退，
+     * 由原生产出真实致命错误）。
      *
      * @param array<int,mixed> $inner 类体 token（不含外层花括号）
-     * @return array{0:array<string,array<int,array<int,mixed>>|null>,1:array<string,array<int,array<int,mixed>>>,2:array<string,array<int,array<int,mixed>>|null>,3:array<string,array<int,mixed>|null>}
-     *         第 4 项：静态属性名 => 默认值表达式 token（null = 无默认值，首次绑定时为 null）
+     * @return array{0:array<string,array<int,array<int,mixed>>|null>,1:array<string,array<int,array<int,mixed>>>,2:array<string,array<int,array<int,mixed>>|null>,3:array<string,array<int,mixed>|null>,4:array<string,string>}
+     *         第 4 项：静态属性名 => 默认值表达式 token（null = 无默认值，首次绑定时为 null）；
+     *         第 5 项：方法名 => 根 trait 名（自身声明的方法根为 $owner；供使用方
+     *         做「同一 trait 经不同路径多次引入不构成冲突」的判重）
      */
     private function compileMembers(array $inner, string $owner): array
     {
@@ -302,19 +309,43 @@ trait VmDeclTrait
         $methods = [];
         $consts = [];
         $statics = [];
+        $roots = [];
         $members = StatementSplitter::split($inner);
+        // 预扫自身声明的方法名：PHP 语义中类自身同名方法使 trait 冲突不再致命
+        // （无论 use 出现在方法声明之前还是之后，见 trait 冲突抑制）
+        $ownMethods = [];
+        foreach ($members as $m) {
+            if ($this->firstSig($m) === T_USE) {
+                continue;
+            }
+            foreach ($this->memberMethodNames($m) as $omn) {
+                $ownMethods[$omn] = true;
+            }
+        }
         foreach ($members as $m) {
             $sig = $this->firstSig($m);
             if ($sig === T_USE) {
-                // use TraitName[, Other]; —— 复制 trait 成员（类自身成员优先）
-                $names = $this->parseUseTraitNames($m);
+                // use TraitName[, Other]; / use A, B { 规则; ... }; —— 复制 trait 成员
+                // （类自身成员优先）+ 适配块冲突消解 / 别名注册
+                [$names, $rules] = $this->parseUseTrait($m);
+                // —— 成员来源跟踪（适配块消解 + 冲突检测用）——
+                // rootM：方法名 => 根 trait 集合（同一 trait 经不同路径多次引入
+                //   不构成冲突——PHP 按 trait 实例判重，如 trait D{use A;} 后
+                //   class C{use D,A;} 合法）
+                // srcM：方法名 => 当前 $methods[mn] 的来源 trait（先到优先）
+                $rootM = [];
+                $srcM = [];
                 foreach ($names as $tn) {
                     if (!isset($this->traits[$tn])) {
                         throw new VmUnsupported("VM 不支持的 trait：{$tn}（未先声明或已适配，已回退）");
                     }
                     foreach ($this->traits[$tn]['methods'] as $mn => $mc) {
+                        $root = $this->traits[$tn]['roots'][$mn] ?? $tn;
+                        $rootM[$mn][$root] = true;
                         if (!isset($methods[$mn])) {
                             $methods[$mn] = $mc;
+                            $srcM[$mn] = $tn;
+                            $roots[$mn] = $root;
                             // 静态性一并复制（FCC 校验用；类自身同名方法优先，
                             // 自身编译时会覆盖本登记）
                             if (isset($this->classStatic[$tn][$mn])) {
@@ -358,6 +389,28 @@ trait VmDeclTrait
                 }
             }
                 }
+                // —— 应用适配规则（insteadof 先于 as：PHP 中规则书写顺序无关）——
+                $rootM0 = $rootM; // 未限定 as 的歧义判定用【规则应用前】的副本
+                foreach ($rules as $r) {
+                    if ($r['kind'] === 'insteadof') {
+                        $this->applyInsteadof($r, $names, $methods, $srcM, $rootM, $roots, $owner);
+                    } elseif ($r['kind'] === 'as') {
+                        $this->applyAsAlias($r, $names, $methods, $rootM0, $roots, $owner);
+                    } else {
+                        throw new VmUnsupported('VM 不支持该 trait 适配规则形态（已回退）');
+                    }
+                }
+                // —— 冲突检测（PHP：未消解即致命——回退让原生产出真实错误）——
+                foreach ($rootM as $mn => $rts) {
+                    if (count($rts) > 1 && !isset($ownMethods[$mn])) {
+                        throw new VmUnsupported(
+                            "trait 方法冲突未消解（" . implode('/', array_keys($rts)) . "::{$mn}，已回退）"
+                        );
+                    }
+                }
+                $this->checkTraitMemberConflicts($names, 'props', $owner);
+                $this->checkTraitMemberConflicts($names, 'statics', $owner, true);
+                $this->checkTraitMemberConflicts($names, 'consts', $owner);
                 continue;
             }
             // static 修饰符判定必须在 stripModifiers【之前】（后者会把它剥掉）。
@@ -416,6 +469,8 @@ trait VmDeclTrait
                 $this->tryStack = [];
                 $this->inFinally = false;
                 $methods[$mn] = $mcode;
+                // 自身声明的方法：根为自己（使用方据此与 trait 副本区分）
+                $roots[$mn] = $owner;
                 // 登记方法参数规格（默认值段），运行期调用前补齐
                 $this->classParams[$owner][$mn] = $mspec;
             } elseif ($f === T_CONST) {
@@ -486,7 +541,7 @@ trait VmDeclTrait
                 }
             }
         }
-        return [$props, $methods, $consts, $statics];
+        return [$props, $methods, $consts, $statics, $roots];
     }
 
     /**
@@ -575,13 +630,17 @@ trait VmDeclTrait
     }
 
     /**
-     * 解析 `use TraitA, TraitB;`（类体内）中的 trait 名列表。
-     * 出现适配块（`{`）时抛回退——insteadof / as 的语义改写暂不支持。
+     * 解析 `use TraitA, TraitB;` / `use TraitA, TraitB { 规则; ... };`（类体内）。
+     * 适配块规则（PHP trait 适配语法）：
+     *   T::m insteadof U1, U2, ...;   冲突消解（保留 T 的副本，排除其余）
+     *   [T::]m as [public|protected|private] alias;   别名（原名保留）
+     *
+     * 返回规则数组（元素见 applyTraitRules 的消费约定）；无适配块时 rules 为空。
      *
      * @param array<int,mixed> $stmt
-     * @return array<int,string>
+     * @return array{0:array<int,string>,1:array<int,array<string,mixed>>}
      */
-    private function parseUseTraitNames(array $stmt): array
+    private function parseUseTrait(array $stmt): array
     {
         $c = new Cursor($stmt);
         $c->skipWs();
@@ -598,7 +657,9 @@ trait VmDeclTrait
                         $n .= '\\' . $c->expectText(T_STRING);
                     }
                 }
-                $names[] = $n;
+                if (!in_array($n, $names, true)) {
+                    $names[] = $n; // use A,A; 原生合法且幂等，去重
+                }
             }
             $c->skipWs();
             if ($c->is(',')) {
@@ -607,10 +668,341 @@ trait VmDeclTrait
             }
             break;
         }
+        $rules = [];
         if ($c->is('{')) {
-            throw new VmUnsupported('VM 不支持 trait 适配块（insteadof/as，已回退）');
+            // 适配块：规则以 ';' 分隔。块内无嵌套括号/花括号（PHP 语法保证），
+            // 按 ';' 粗切即可。
+            $block = $c->untilMatchBrace();
+            foreach ($this->splitTopSemicolons($block) as $rtoks) {
+                if ($this->onlyWs($rtoks)) {
+                    continue;
+                }
+                $rules[] = $this->parseAdaptRule($rtoks);
+            }
         }
-        return $names;
+        return [$names, $rules];
+    }
+
+    /**
+     * 按顶层 ';' 切分规则 token 序列（适配块内无嵌套括号，直接切）。
+     *
+     * @param array<int,mixed> $toks
+     * @return array<int,array<int,mixed>>
+     */
+    private function splitTopSemicolons(array $toks): array
+    {
+        $out = [];
+        $cur = [];
+        foreach ($toks as $t) {
+            if ($t === ';') {
+                $out[] = $cur;
+                $cur = [];
+                continue;
+            }
+            $cur[] = $t;
+        }
+        if ($cur !== []) {
+            $out[] = $cur;
+        }
+        return $out;
+    }
+
+    /** token 序列是否只含空白/注释 */
+    private function onlyWs(array $toks): bool
+    {
+        foreach ($toks as $t) {
+            if (is_string($t)) {
+                if (trim($t) !== '') {
+                    return false;
+                }
+            } elseif (!in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 解析单条适配规则。返回结构：
+     *   ['kind'=>'insteadof','from'=>'A','method'=>'m','excl'=>['B','C']]
+     *   ['kind'=>'as','from'=>?string,'method'=>'m','vis'=>?string,'alias'=>'am']
+     * 无法识别的形态（如 `as static`）返回 ['kind'=>'unsupported']，由调用方回退。
+     *
+     * @param array<int,mixed> $toks
+     * @return array<string,mixed>
+     */
+    private function parseAdaptRule(array $toks): array
+    {
+        $c = new Cursor($toks);
+        $c->skipWs();
+        $from = null;
+        // `T::m ...`（限定）还是 `m ...`（未限定）：前瞻 T_DOUBLE_COLON 判定，
+        // 无 `::` 时该 T_STRING 就是方法名，不能被消费掉
+        $nx = $c->peekSigAt(1);
+        if ($c->is(T_STRING) && is_array($nx) && $nx[0] === T_DOUBLE_COLON) {
+            $from = $c->expectText(T_STRING);
+            $c->skipWs();
+            $c->expect(T_DOUBLE_COLON);
+        }
+        if (!$c->is(T_STRING)) {
+            return ['kind' => 'unsupported'];
+        }
+        $method = $c->expectText(T_STRING);
+        $c->skipWs();
+        if ($c->is(T_INSTEADOF)) {
+            $c->next();
+            $excl = [];
+            while (!$c->eof()) {
+                $c->skipWs();
+                if ($c->is(T_STRING)) {
+                    $excl[] = $c->expectText(T_STRING);
+                } else {
+                    break;
+                }
+                $c->skipWs();
+                if ($c->is(',')) {
+                    $c->next();
+                    continue;
+                }
+                break;
+            }
+            if ($excl === [] || $from === null) {
+                return ['kind' => 'unsupported'];
+            }
+            return ['kind' => 'insteadof', 'from' => $from, 'method' => $method, 'excl' => $excl];
+        }
+        if ($c->is(T_AS)) {
+            $c->next();
+            $c->skipWs();
+            $vis = null;
+            if ($c->is(T_PUBLIC)) { $vis = 'public'; $c->next(); $c->skipWs(); }
+            elseif ($c->is(T_PROTECTED)) { $vis = 'protected'; $c->next(); $c->skipWs(); }
+            elseif ($c->is(T_PRIVATE)) { $vis = 'private'; $c->next(); $c->skipWs(); }
+            if (!$c->is(T_STRING)) {
+                // `as static` 等原生致命形态
+                return ['kind' => 'unsupported'];
+            }
+            $alias = $c->expectText(T_STRING);
+            return ['kind' => 'as', 'from' => $from, 'method' => $method, 'vis' => $vis, 'alias' => $alias];
+        }
+        return ['kind' => 'unsupported'];
+    }
+
+    /**
+     * 归一化默认值 token 序列（去空白/注释后拼接文本）——用于判定两个 trait
+     * 的属性/常量默认值是否「一致」（PHP：一致则允许多 trait 同名，不一致致命）。
+     *
+     * @param array<int,mixed>|null $toks
+     */
+    private function normToks($toks): string
+    {
+        if ($toks === null) {
+            return '';
+        }
+        $s = '';
+        foreach ($toks as $t) {
+            if (is_array($t)) {
+                if (in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                $s .= $t[1];
+            } else {
+                $s .= $t;
+            }
+        }
+        return $s;
+    }
+
+    /**
+     * 取一个类成员语句中声明的方法名（T_FUNCTION 后的首个 T_STRING，
+     * 跳过引用返回标记 &）。用于 trait 冲突抑制的自身方法预扫。
+     *
+     * @param array<int,mixed> $m
+     * @return array<int,string>
+     */
+    private function memberMethodNames(array $m): array
+    {
+        $out = [];
+        $n = count($m);
+        for ($i = 0; $i < $n; $i++) {
+            $t = $m[$i];
+            if (!(is_array($t) && $t[0] === T_FUNCTION)) {
+                continue;
+            }
+            for ($j = $i + 1; $j < $n; $j++) {
+                $u = $m[$j];
+                if (is_array($u) && in_array($u[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                if ($u === '&' || (is_array($u) && $u[0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG)) {
+                    continue;
+                }
+                if (is_array($u) && $u[0] === T_STRING) {
+                    $out[] = $u[1];
+                }
+                break;
+            }
+            break;
+        }
+        return $out;
+    }
+
+    /**
+     * 应用一条 insteadof 规则：`T::m insteadof U1, U2, ...`
+     * 从 rootM[m] 移除被排除 trait 的根；若当前 $methods[m] 的承载副本来自被
+     * 排除的 trait，改指向保留方 T 的副本（方法体 / 参数规格 / 签名 / 静态性
+     * 一并切换——FCC 静态性表 classStatic 尤其不能留 stale）。
+     *
+     * @param array<string,mixed> $r 规则
+     * @param array<int,string> $names 本 use 语句引入的 trait 名
+     * @param array<string,array<int,array<int,mixed>>> $methods 引用：方法表
+     * @param array<string,string> $srcM 引用：方法名 => 承载副本的来源 trait
+     * @param array<string,array<string,true>> $rootM 引用：方法名 => 根 trait 集合
+     * @param array<string,string> $roots 引用：方法名 => 根 trait（持久化用）
+     */
+    private function applyInsteadof(array $r, array $names, array &$methods, array &$srcM, array &$rootM, array &$roots, string $owner): void
+    {
+        $from = $r['from'];
+        $m = $r['method'];
+        $excl = $r['excl'];
+        if (!in_array($from, $names, true) || !isset($this->traits[$from]['methods'][$m])) {
+            // 原生：A precedence rule was defined for X::m but this method does not exist
+            throw new VmUnsupported("trait insteadof 规则引用不存在的方法 {$from}::{$m}（已回退）");
+        }
+        foreach ($excl as $x) {
+            if (!in_array($x, $names, true)) {
+                throw new VmUnsupported("trait insteadof 排除列表含未引入的 trait {$x}（已回退）");
+            }
+            if ($x === $from) {
+                // 原生：Inconsistent insteadof definition
+                throw new VmUnsupported("trait insteadof 保留方同时出现在排除列表（{$from}::{$m}，已回退）");
+            }
+        }
+        if (!isset($rootM[$m])) {
+            return; // 无副本可排（如仅保留方为抽象方法——由抽象满足语义处理）
+        }
+        // 被排除 trait 的该方法的【根】（其副本可能又是别的 trait 复制来的）
+        $exclRoots = [];
+        foreach ($excl as $x) {
+            $exclRoots[] = $this->traits[$x]['roots'][$m] ?? $x;
+        }
+        foreach (array_keys($rootM[$m]) as $root) {
+            if (in_array($root, $exclRoots, true)) {
+                unset($rootM[$m][$root]);
+            }
+        }
+        // 承载副本的来源被排除 → 改指向保留方
+        if (isset($srcM[$m]) && in_array($srcM[$m], $excl, true)) {
+            $methods[$m] = $this->traits[$from]['methods'][$m];
+            $srcM[$m] = $from;
+            $roots[$m] = $this->traits[$from]['roots'][$m] ?? $from;
+            if (isset($this->traits[$from]['params'][$m])) {
+                $this->classParams[$owner][$m] = $this->traits[$from]['params'][$m];
+            } else {
+                unset($this->classParams[$owner][$m]);
+            }
+            $sg = $this->traits[$from]['sigs'][$m] ?? null;
+            if ($sg !== null) {
+                $this->sigCache[$owner . '::' . $m] = $sg;
+            } else {
+                unset($this->sigCache[$owner . '::' . $m]);
+            }
+            if (isset($this->classStatic[$from][$m])) {
+                $this->classStatic[$owner][$m] = true;
+            } else {
+                unset($this->classStatic[$owner][$m]);
+            }
+        }
+    }
+
+    /**
+     * 应用一条 as 规则：`[T::]m as [public|protected|private] alias`
+     * 为方法添加别名副本（PHP：原名保留，as 只增不删；可见性 VM 不记录——已知缺口）。
+     *
+     * @param array<string,mixed> $r 规则
+     * @param array<int,string> $names 本 use 语句引入的 trait 名
+     * @param array<string,array<int,array<int,mixed>>> $methods 引用：方法表
+     * @param array<string,array<string,true>> $rootM0 【规则应用前】的根集合
+     *        （未限定 as 的歧义判定与 insteadof 无关——原生两种顺序均致命）
+     * @param array<string,string> $roots 引用：方法名 => 根 trait（持久化用）
+     */
+    private function applyAsAlias(array $r, array $names, array &$methods, array $rootM0, array &$roots, string $owner): void
+    {
+        $m = $r['method'];
+        $alias = $r['alias'];
+        $from = $r['from'];
+        if ($from !== null) {
+            if (!in_array($from, $names, true) || !isset($this->traits[$from]['methods'][$m])) {
+                throw new VmUnsupported("trait as 规则引用不存在的方法 {$from}::{$m}（已回退）");
+            }
+            $srcT = $from;
+        } else {
+            // 未限定：方法名在多个 trait 中存在（不同根）即原生致命
+            if (!isset($rootM0[$m]) || $rootM0[$m] === []) {
+                throw new VmUnsupported("trait as 规则引用不存在的方法 {$m}（已回退）");
+            }
+            if (count($rootM0[$m]) > 1) {
+                throw new VmUnsupported("trait as 别名歧义（{$m} 存在于多个 trait，已回退）");
+            }
+            $srcT = array_key_first($rootM0[$m]);
+        }
+        if ($alias === $m) {
+            return; // `m as m`：原生合法空操作
+        }
+        if (isset($methods[$alias])) {
+            // 原生：Trait method X::n has not been applied as C::n, because of collision
+            throw new VmUnsupported("trait as 别名 {$alias} 与已有方法撞名（已回退）");
+        }
+        $methods[$alias] = $this->traits[$srcT]['methods'][$m];
+        $roots[$alias] = $this->traits[$srcT]['roots'][$m] ?? $srcT;
+        if (isset($this->traits[$srcT]['params'][$m])) {
+            $this->classParams[$owner][$alias] = $this->traits[$srcT]['params'][$m];
+        }
+        $sg = $this->traits[$srcT]['sigs'][$m] ?? null;
+        if ($sg !== null) {
+            $this->sigCache[$owner . '::' . $alias] = $sg;
+        }
+        if (isset($this->classStatic[$srcT][$m])) {
+            $this->classStatic[$owner][$alias] = true;
+        } else {
+            unset($this->classStatic[$owner][$alias]);
+        }
+    }
+
+    /**
+     * trait 属性/常量/静态属性的多来源冲突检测。
+     * PHP 语义：多个 trait 声明同名成员，定义【完全一致】才合法，否则致命
+     * （与类自身同名成员无关——类自身属性不抑制冲突，见 trait 属性冲突实测）。
+     *
+     * @param array<int,string> $names 本 use 语句引入的 trait 名
+     * @param array<string,string> $owner
+     */
+    private function checkTraitMemberConflicts(array $names, string $kind, string $owner, bool $norm = false): void
+    {
+        if (count($names) < 2) {
+            return;
+        }
+        // 成员名 => [trait => 值]
+        $by = [];
+        foreach ($names as $tn) {
+            if (!isset($this->traits[$tn][$kind])) {
+                continue;
+            }
+            foreach ($this->traits[$tn][$kind] as $pn => $v) {
+                $by[$pn][$tn] = $norm ? $this->normToks($v) : $v;
+            }
+        }
+        foreach ($by as $pn => $vals) {
+            if (count($vals) < 2) {
+                continue;
+            }
+            $uniq = array_unique(array_map(static function ($v) {
+                return is_array($v) ? serialize($v) : (string) $v;
+            }, $vals));
+            if (count($uniq) > 1) {
+                throw new VmUnsupported("trait {$kind} {$pn} 定义冲突（已回退）");
+            }
+        }
     }
 
     /**

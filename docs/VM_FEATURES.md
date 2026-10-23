@@ -34,7 +34,7 @@
 | **实参绑定** | 引用参数 `f(&$x)`、可变参数 `f(...$args)`、命名实参 `f(b:1,a:2)`、解包实参 `f(...$arr)`（含字符串键→命名） | 编译期只压栈 + 发射标记（`PUSH_REF`/`ARG_NAMED`/`ARG_SPREAD`），重排/解引用全部在**运行期**按被调方签名完成——即使 receiver 类型编译期不可知（`$obj->m(b:1)`）也正确；引用参数按 by-ref 位做 copy-in/copy-out，命名参数跳过时可正确落入默认值 |
 | **静态调用** | `C::m()`、`C::$m()`、`self::m()`、`parent::m()`、**`static::m()`（延迟静态绑定）** | 方法沿继承链查找；命名/引用/解包实参同样支持。`static::` 运行期按 **called class**（`get_called_class()` 同源）解析方法/常量/属性/`::class`；`self::`/`parent::` 方法调用是**转发调用**（保留 called class，PHP 实测语义）；实例方法内的静态形态调用转发 `$this`。动态类名 `instanceof $c` 亦支持 |
 | **内建 PHP 函数** | `strlen()`、`substr()`、`implode()`、`range()`… 任意 `function_exists` | 经 `call_user_func_array` 桥接；含引用返回/特殊签名的函数按 PHP 默认语义 |
-| **类** | `class C { public $p=...; function m(){...} }`、`extends` 继承、`implements` 接口、`trait`（`use T;`） | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链 |
+| **类** | `class C { public $p=...; function m(){...} }`、`extends` 继承、`implements` 接口、`trait`（`use T;` 及适配块 `use A,B{ A::m insteadof B; B::m as am; }`） | 属性默认值、构造器 `__construct`、`$this->p`、`$this->m()`、方法链；trait 适配块在**编译期**完成冲突消解与别名注册（按根 trait 判重，同一 trait 经不同路径引入不冲突），`insteadof` 改向 / `as` 别名均支持（含静态方法、多排除、空操作 `m as m`） |
 | **对象** | `new C()`、`new $cls()`、`$obj->m()`、`$obj->p` | 对象以 `\stdClass` + 元信息存储，行为等价 |
 | **循环** | `while` / `for` / `foreach`（索引 + 键值 `as $k=>$v`） | `break` / `continue` 均支持，跳转到正确位置 |
 | **条件** | `if / elseif / else`、三元 `?:`、短三元 `?:`（elvis）、`match` 表达式 | `match($subj){ 1,2=>"a", default=>"b" }`；多分支共享同一条件；支持嵌套 `match`、默认分支、表达式结果 |
@@ -59,7 +59,6 @@
 
 | 特性 | 回退原因 |
 |------|---------|
-| `trait` 适配块（`insteadof` / `as`） | 未实现冲突消解语义（普通 `use T;` 已支持） |
 | 匿名函数 `function(){}` / 箭头函数 `fn()=>` | 外层 VM 壳直接跳过整段（等价语法：命名函数 / 函数调用可正常 VM 化） |
 | `$this->prop[]` 属性数组追加 | 不支持属性 push |
 | 数组/属性复合赋值 `$a['k'] += x`、`$this->p *= 2` | 仅简单变量支持 `+=` 等 |
@@ -267,6 +266,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
   - 另修复参考运行期 `ARG_NAMED` 常量漏定义（handler 成死代码）与 `SCALL` 原生类路径漏绑定（标记泄漏给原生方法）两处双运行期不一致。
 - ✅ **CALL_VAR 产物语法缺陷（v0.1.7 修复）**：生成运行期 `caseBody(CALL_VAR)` 曾把「绑定实参 + 调用」写成 `([$a,] = f(), g())` 逗号表达式——PHP 无逗号运算符，凡使用变量函数调用（`$f(...)`，含 FCC 创建后调用）的产物全部 `php -l` 失败（运行期表现为 `ParseError: Unclosed '{' ... does not match ')'`）。已改为 if/else 结构（与参考运行期逐行对齐）。
 - ✅ **FCC 双运行期一致性（v0.1.7 新增）**：`$___FCC___` / `$__fcc` 建闭包函数初版漏抄了「VM 类名 FCC 分支的闭合括号 + `if(isset(...))` 块后的 stray `;`」，导致原生对象 FCC 路径被嵌进 VM 分支永远不可达、函数体括号不平衡——生成产物整体语法错误。修复后 FCC 探针三模式（flat_off/flat_on/sm_on）19 例、P8 特性矩阵 10×6 全绿。
+- ✅ **trait 适配块 `insteadof` / `as`（v0.1.8 新增）**：编译期完成冲突消解与别名注册。规则按「先 insteadof 后 as」应用（与声明顺序无关）；冲突判重按**根 trait**（trait 内 `use` 的递归展开），同一 trait 经不同路径引入不冲突；未限定 `as` 用**规则应用前**的根集合判歧义（与是否有 insteadof 消解无关，对齐原生两种规则顺序均致命的语义）。以下场景由 `VmUnsupported` 触发整文件回退、交还原生产出真实致命错误：未消解方法冲突、未限定 `as` 歧义、`as` 别名撞名、insteadof 保留方/排除方不存在或自排除、trait 属性/常量/静态属性定义不一致、常量上的 `as`（原生视为方法别名而致命）、`as static` 等非法形态。已知缺口：VM 不记录方法可见性（`as protected pm` 的别名越权调用不抛错，原生会抛）；VM 类非真实 PHP 类，`ReflectionMethod` 不可见（与 trait 无关的存量架构限制）。探针：trait 语义 44 例（35 原生基线 + 9 追加）× 4 驱动（参考运行期 + 生成运行期三模式）全绿；真实管线 trait 重文件 `--vm` / `--vm --vm-p8` 输出与原生逐字节一致。
 
 ---
 
