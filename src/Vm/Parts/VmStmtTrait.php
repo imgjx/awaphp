@@ -349,6 +349,14 @@ trait VmStmtTrait
                 $code[] = [VmOp::POP_V, "\x01ctl"];
                 $this->emitJumpToFinally($code);
             } else {
+                // 引用返回函数（function &g()）：return 前把返回目标绑到
+                // 桥接槽 "\x01rr"（CALL_RR 调用后据此把目标引用绑到调用方
+                // 帧槽——PHP: $r=&g() 后 $r=9 改的是 g 内的 $s）。
+                // 目标限「简单变量 / 变量+下标属性链」，其余形态抛
+                // VmUnsupported 由语句级回退保底（值返回降级）。
+                if ($this->curReturnsRef) {
+                    $this->emitReturnRefBridge($expr, $code);
+                }
                 $this->compileExpr($expr, $code);
                 $code[] = [VmOp::RET];
             }
@@ -496,6 +504,35 @@ trait VmStmtTrait
         if ($c->is(';')) {
             $c->next();
         }
+    }
+
+    /**
+     * 引用返回函数（function &g()）的 return <expr> 桥接插桩：
+     * 把返回目标绑到桥接槽 "\x01rr"——CALL_RR 调用返回后据此把目标
+     * 引用绑到调用方帧槽（PHP: $r=&g() 后 $r=9 改的是 g 内的 $s）。
+     * 目标限「简单变量 / 变量+下标属性链」，复用引用赋值链式桥接；
+     * 其余形态（常量/运算/调用结果）抛 VmUnsupported，语句级回退保底。
+     *
+     * @param array<int,mixed> $expr
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function emitReturnRefBridge(array $expr, array &$code): void
+    {
+        $sig = $this->trimWs($expr);
+        if ($sig === []) {
+            throw new VmUnsupported('VM 引用返回的 return 无目标（已回退）');
+        }
+        $first = $sig[0];
+        if (!(is_array($first) && $first[0] === T_VARIABLE)) {
+            throw new VmUnsupported('VM 引用返回的目标必须是变量（已回退）');
+        }
+        if (count($sig) === 1) {
+            // 简单变量：直接绑桥接槽（帧槽名过 varName 路由 static 局部等）
+            $code[] = [VmOp::MAKE_REF, "\x01rr", $this->varName($first[1])];
+            return;
+        }
+        // 变量 + 后缀链（$a[0] / $this->p ...）：复用链式桥接，末级 dst=桥接槽
+        $this->compileRefAssignRHS(new Cursor($sig), "\x01rr", $code);
     }
 
     // ========================================================================

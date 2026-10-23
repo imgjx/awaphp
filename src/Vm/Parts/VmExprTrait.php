@@ -627,7 +627,15 @@ trait VmExprTrait
         if ($t === []) {
             return null;
         }
-        if (!$this->isAmpFollowedByVar($t[0])) {
+        // 赋值右值首 token 的 & 必为引用运算符，两种 amp 形态都要认：
+        // PHP 8.1+ 按「& 后是否紧跟变量」分两种 token——
+        //   &$a   → T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG
+        //   &g()  → T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG（后跟函数名）
+        // PHP 8.0- 两种都是裸字符 '&'。只认 FOLLOWED 会漏掉引用返回
+        // 函数调用 $r = &g()（CALL_RR 路径），故此处三种形态全accept。
+        $a = $t[0];
+        $isAmp = $this->isAmpFollowedByVar($a) || $this->isAmpNotFollowedByVar($a) || $a === '&';
+        if (!$isAmp) {
             return null;
         }
         return $this->trimWs(array_slice($t, 1));
@@ -648,6 +656,22 @@ trait VmExprTrait
     {
         $c->skipWs();
         $first = $c->peek();
+        if (is_array($first) && $first[0] === T_STRING) {
+            // 引用返回函数调用：$dst = &g(args) —— 发射 CALL_RR
+            // （调用时向被调帧预置桥接槽，返回后把桥接槽引用绑到 dst）。
+            // 仅限编译期已登记 funcRef 的引用返回函数；否则回退不支持。
+            $c->next();
+            $fname = $first[1];
+            $c->skipWs();
+            if (!$c->is('(') || !isset($this->funcRef[$fname])) {
+                throw new VmUnsupported('VM 引用赋值目标必须是简单变量或引用返回函数调用（已回退）');
+            }
+            // compileArgs 自身 expect('(') 开头、expect(')') 收尾（自消费双括号），
+            // 此处勿再 next()/expect(')')——曾因双重消费 '(' 抛「期望 (」回退。
+            $argc = $this->compileArgs($c, $code);
+            $code[] = [VmOp::CALL_RR, $fname, $dst, $argc];
+            return;
+        }
         if (!(is_array($first) && $first[0] === T_VARIABLE)) {
             throw new VmUnsupported('VM 引用赋值目标必须是简单变量（已回退）');
         }
@@ -1467,7 +1491,10 @@ trait VmExprTrait
             $sig[] = $t;
         }
         if (count($sig) === 1 && is_array($sig[0]) && $sig[0][0] === T_VARIABLE) {
-            $code[] = [VmOp::PUSH_REF, $sig[0][1]];
+            // 帧槽名经 varName() 路由：static 局部变量等共享槽位场景下
+            // （$a → \x01sl:c:$a），直接发原名会读到不存在的帧槽得 null
+            // （实测 static $a=[]; $a[]=count($a) 首调 count(null) 致命）。
+            $code[] = [VmOp::PUSH_REF, $this->varName($sig[0][1])];
             return true;
         }
         return false;

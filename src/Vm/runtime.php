@@ -38,7 +38,7 @@ function __VMRUN__($__P)
     $CAST_INT=100;$CAST_FLOAT=101;$CAST_STRING=102;$CAST_BOOL=103;$CAST_ARRAY=104;$CAST_OBJECT=105;
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
     $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
-    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;
+    $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;
 
     $__META = "\x01__cls";
 
@@ -409,12 +409,18 @@ function __VMRUN__($__P)
     // $__cv：调用方帧变量表（按引用传入）——by-ref 实参需在此做 copy-in / copy-out。
     // VM 帧是值语义（POP_V 从栈拷贝），故引用参数按「传入当前值 → 被调方执行 →
     // 回写参数最终值」实现，等价于 PHP 的引用传递语义。
-    $__callFunc = function($name,$args,&$__cv=null) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad,$__bindArgs){
+    // $__rr：引用返回桥接（CALL_RR 用）。哨兵默认值 false——不能默认 null：
+    // 按引用传入「值为 null 的变量」后参数值仍是 null，无法区分「传了第 4 参」
+    // 与「没传」（PHP 引用语义：参数与实参别名同一存储，比较的是值）。
+    $__callFunc = function($name,$args,&$__cv=null,&$__rr=false) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad,$__bindArgs){
         if (isset($__P['funcs'][$name])) {
             $spec = $__P['funcParams'][$name] ?? [];
             [$args,$refs] = $__bindArgs($args,$spec,$__cv);
             $args = $__pad($spec,$args);
-            $__ev = [];
+            // 引用返回调用（CALL_RR）：被调帧预置桥接槽，函数内 return $var
+            // 前已发 MAKE_REF "\x01rr" 槽名——返回后把桥接槽引用传出，
+            // 由调用方绑到目标帧槽（PHP: $r=&g() 共享 g 内 $s 的存储）。
+            $__ev = ($__rr !== false) ? ["\x01rr" => null] : [];
             $__r = $__exec($__P['funcs'][$name],$__ev,null,$args,null,false,$__P['funcET'][$name] ?? null);
             // copy-out：被调方引用参数的最终值写回调用方变量（PHP: f($a) 里 $a 被改写）
             foreach ($refs as $i => $m) {
@@ -422,6 +428,7 @@ function __VMRUN__($__P)
                     $__cv[$m[0]] = $__ev[$m[1]];
                 }
             }
+            if ($__rr !== false && array_key_exists("\x01rr", $__ev)) { $__rr = &$__ev["\x01rr"]; }
             return $__r;
         }
         // 命名/解包标记对原生函数无意义（CALL_NATIVE 路径另行处理 refMask）：
@@ -581,7 +588,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$__callFn,&$__GFRAME,&$__INCTRACK
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$__callFn,&$__GFRAME,&$__INCTRACK
     ){
         $__stack = $__init;
         $__pc = 0;
@@ -643,6 +650,19 @@ function __VMRUN__($__P)
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     // 传调用方帧变量表：by-ref 实参据此 copy-in / copy-out
                     $__stack[] = $__callFunc($__ins[1], $__a, $__vars);
+                    if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
+                    break;
+                case $CALL_RR:
+                    // 引用返回函数调用：$dst = &g(args)。弹参 → 经 callFunc
+                    // 第 4 参（引用）取回桥接槽 "\x01rr" 的引用 → 绑到目标帧槽。
+                    // 与 PHP $r=&g() 后 $r=9 改 g 内 $s 的语义一致。
+                    $__argc = $__ins[3]; $__a = [];
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    $__a = array_reverse($__a);
+                    if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
+                    $__rrv = null;
+                    $__callFunc($__ins[1], $__a, $__vars, $__rrv);
+                    $__vars[$__ins[2]] = &$__rrv;
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $CALL_VAR:

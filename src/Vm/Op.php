@@ -222,6 +222,14 @@ final class VmOp
     public const IDX_PRE_INC   = 135;
     public const IDX_PRE_DEC   = 136;
 
+    // ---- 引用返回函数调用（function &g() 的 $r = &g()）----
+    // PHP 语义：$r = &g() 把 $r 绑定到 g 内 return 的变量本身（非值拷贝），
+    // 之后 $r = 9 改变的是 g 内的 $s。实现：CALL_RR 调用时向被调帧预置
+    // 引用桥接槽 "\x01rr"，函数内 return $var 前发 MAKE_REF "\x01rr" 槽名
+    // 把桥接槽绑到返回变量；调用返回后 CALL_RR 把桥接槽的引用绑到目标帧槽。
+    // 操作数: name(函数名), dst(目标帧槽), argc
+    public const CALL_RR      = 137;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -315,6 +323,7 @@ final class VmOp
         self::IDX_POST_DEC  => ['n'],
         self::IDX_PRE_INC   => ['n'],
         self::IDX_PRE_DEC   => ['n'],
+        self::CALL_RR       => ['n', 'n', 'i'],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -424,6 +433,7 @@ final class VmOp
         self::IDX_POST_DEC  => 'IDX_POST_DEC',
         self::IDX_PRE_INC   => 'IDX_PRE_INC',
         self::IDX_PRE_DEC   => 'IDX_PRE_DEC',
+        self::CALL_RR       => 'CALL_RR',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

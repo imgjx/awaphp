@@ -203,6 +203,15 @@ final class VmCompiler
     private array $curStatic = [];
     /** 当前函数/方法作用域标识（函数名或 class::method），用于静态局部变量槽位命名 */
     private string $curScopeId = '';
+    /**
+     * 引用返回标志表：funcName => true（`function &g()`）。
+     * 编译期两份用途：函数体内 return $var 前插 MAKE_REF 桥接槽；
+     * `$r = &g()` 调用点发射 CALL_RR。
+     * @var array<string,bool>
+     */
+    private array $funcRef = [];
+    /** 当前正在编译的函数是否引用返回（return 桥接插桩依据） */
+    private bool $curReturnsRef = false;
 
     // —— 异常处理：每段（main / 函数 / 类方法）独立的异常表（与 try 编译同步填充）——
     // 条目形态：[tryStart, tryEnd, handlerPc, kind, type, varName]
@@ -273,6 +282,26 @@ final class VmCompiler
                     break;
                 }
             }
+            // 引用返回预登记（function &g()）：& 在 PHP 8.1+ 是
+            // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG（其后是函数名而非
+            // 变量），8.0- 是裸 '&'。调用点 $r = &g() 发射 CALL_RR 的依据，
+            // 调用点可先于声明出现，故与 funcNames 一并预扫描。
+            $sig2 = [];
+            foreach ($s as $tk) {
+                if (is_array($tk) && in_array($tk[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                $sig2[] = $tk;
+            }
+            if (count($sig2) >= 2 && $sig2[0][0] === T_FUNCTION
+                && ($this->isAmpNotFollowedByVar($sig2[1]) || $sig2[1] === '&')) {
+                foreach ($sig2 as $tk) {
+                    if (is_array($tk) && $tk[0] === T_STRING) {
+                        $this->funcRef[$tk[1]] = true;
+                        break;
+                    }
+                }
+            }
             // 顺带登记签名（形参名顺序 + 引用/可变标志），供命名实参重排与
             // by-ref 引用句柄发射使用（调用点可先于声明出现，故必须预扫描）。
             $this->prescanSignature($s);
@@ -309,6 +338,8 @@ final class VmCompiler
             'consts'      => $this->consts,
             'funcs'       => $this->funcs,
             'funcParams'  => $this->funcParams,
+            // 引用返回函数表（function &g()）：return 桥接与 $r=&g() 编译依据
+            'funcRef'     => $this->funcRef,
             'classes'     => $this->classes,
             'classParams' => $this->classParams,
             // 类层级信息：instanceof 运行期链遍历（VM 类是 stdClass + META 属性，

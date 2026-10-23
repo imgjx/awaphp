@@ -23,10 +23,26 @@ trait VmDeclTrait
         $c = new Cursor($stmt);
         $c->skipWs();
         $c->expect(T_FUNCTION);
+        // 引用返回标志：function &g() —— & 在 PHP 8.1 是
+        // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG（其后是函数名不是变量），
+        // 8.0- 是裸 '&'；两者都在此处消费。
+        // 注意先 skipWs()：peek() 含空白，不跳过则 isAmpNotFollowedByVar
+        // 永远看到 T_WHITESPACE；PHP 8.1+ 的 & 是数组 token，is('&') 也不匹配。
+        $c->skipWs();
+        if ($this->isAmpNotFollowedByVar($c->peek()) || $c->is('&')) {
+            $c->next();
+            $byRef = true;
+        } else {
+            $byRef = false;
+        }
         $name = $c->expectText(T_STRING);
         // 进入函数作用域：登记静态局部变量收集表，供变量读写路由到共享帧槽位
         $this->curScopeId = $name;
         $this->curStatic = [];
+        $this->curReturnsRef = $byRef;
+        if ($byRef) {
+            $this->funcRef[$name] = true;
+        }
         // 本函数异常表引用 + 异常控制栈复位（每个函数/方法是独立控制流边界）
         $this->funcET[$name] ??= [];
         $this->curSegET = &$this->funcET[$name];
@@ -50,6 +66,7 @@ trait VmDeclTrait
         // 离开函数作用域：复位，避免串到后续函数/主作用域
         $this->curScopeId = '';
         $this->curStatic = [];
+        $this->curReturnsRef = false;
     }
 
     /**
@@ -510,6 +527,13 @@ trait VmDeclTrait
         $c = new Cursor($stmt);
         $c->skipWs();
         $c->expect(T_FUNCTION);
+        // 引用返回标志：function &m()（方法级；消费 & 避免 Parse error，
+        // 调用点 $r = &$o->m() 的引用绑定暂不支持，走语句级回退）。
+        // 同 compileFunction：先 skipWs() 再判定（peek 含空白）。
+        $c->skipWs();
+        if ($this->isAmpNotFollowedByVar($c->peek()) || $c->is('&')) {
+            $c->next();
+        }
         $name = $c->expectText(T_STRING);
         $c->expect('(');
         $params = $this->parseParams($c);
