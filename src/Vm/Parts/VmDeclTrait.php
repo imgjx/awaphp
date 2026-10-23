@@ -303,6 +303,13 @@ trait VmDeclTrait
                 $mc = new Cursor($ms);
                 $mc->skipWs();
                 $mc->expect(T_FUNCTION);
+                // 引用返回方法 function &m()：消费 &（PHP 8.1+ 为 NOT_FOLLOWED
+                // token，8.0- 为裸 '&'）——调用点 $r = &$o->m() 的引用绑定
+                // 暂不支持（走语句级回退），此处至少保证声明可编译。
+                $mc->skipWs();
+                if ($this->isAmpNotFollowedByVar($mc->peek()) || $mc->is('&')) {
+                    $mc->next();
+                }
                 $mn = $mc->expectText(T_STRING);
                 if ($mn === null) {
                     continue;

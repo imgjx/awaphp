@@ -707,6 +707,14 @@ trait VmExprTrait
                     throw new VmUnsupported('VM 引用赋值不支持动态属性名（已回退）');
                 }
                 $c->next();
+                // 方法调用形态 $o->m(...)：引用返回方法调用 $r = &$o->m()。
+                // 若不当属性段静默编译成 MAKE_REF_PROP，语义完全错误（不调用
+                // 方法、改绑属性）——必须拒绝。语句级 eval 回退对 VM 类亦致命
+                // （运行期是 stdClass，无真实方法），故标 fileFallback 整文件回退。
+                $c->skipWs();
+                if ($c->is('(')) {
+                    throw VmUnsupported::fileLevel('VM 引用赋值暂不支持引用返回方法调用 $r = &$o->m()（已回退）');
+                }
                 $next = '$__rf' . ($this->tempSeq++);
                 $code[] = [VmOp::PUSH_V, $curSlot];
                 $code[] = [VmOp::MAKE_REF_PROP, $next, $p[1]];

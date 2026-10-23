@@ -390,5 +390,19 @@ final class VmCompiler
 
 /**
  * 自定义 VM 不支持当前语法时抛出，由 VirtualMachine 捕获并回退为普通加壳。
+ *
+ * $fileFallback：语句级 EVAL_STMT 回退亦不安全的构造（如引用返回方法调用
+ * $r = &$o->m()——eval 里 VM 类不是真实 PHP 类，调方法必致命）。
+ * compileStatement 的 catch 见此标记直接重抛，由壳层整文件回退。
  */
-final class VmUnsupported extends RuntimeException {}
+final class VmUnsupported extends RuntimeException
+{
+    public bool $fileFallback = false;
+
+    public static function fileLevel(string $message): self
+    {
+        $e = new self($message);
+        $e->fileFallback = true;
+        return $e;
+    }
+}

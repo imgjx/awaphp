@@ -409,18 +409,21 @@ function __VMRUN__($__P)
     // $__cv：调用方帧变量表（按引用传入）——by-ref 实参需在此做 copy-in / copy-out。
     // VM 帧是值语义（POP_V 从栈拷贝），故引用参数按「传入当前值 → 被调方执行 →
     // 回写参数最终值」实现，等价于 PHP 的引用传递语义。
-    // $__rr：引用返回桥接（CALL_RR 用）。哨兵默认值 false——不能默认 null：
-    // 按引用传入「值为 null 的变量」后参数值仍是 null，无法区分「传了第 4 参」
-    // 与「没传」（PHP 引用语义：参数与实参别名同一存储，比较的是值）。
-    $__callFunc = function($name,$args,&$__cv=null,&$__rr=false) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad,$__bindArgs){
+    // $rrDst：引用返回目标帧槽名（CALL_RR 用；null = 普通调用）。
+    // 桥接回写必须走【容器元素级】引用赋值（$__cv[$rrDst] = &$__ev["\x01rr"]）：
+    // PHP 不会把按引用参数的「变量级」重绑（$x = &...）传播回调用方（实测 8.3），
+    // 而元素级赋值沿同一帧表 hashtable 直接穿透（MAKE_REF 即此机制）。
+    // 且不再经过共享本地变量中转——否则两次调用的桥接槽会经同一变量并入
+    // 同一引用集，导致 $a=&g();$b=&g() 后 $a/$b 共享存储。
+    $__callFunc = function($name,$args,&$__cv=null,$rrDst=null) use (&$__exec,$__P,&$__code,$__vmcb,&$__pad,$__bindArgs){
         if (isset($__P['funcs'][$name])) {
             $spec = $__P['funcParams'][$name] ?? [];
             [$args,$refs] = $__bindArgs($args,$spec,$__cv);
             $args = $__pad($spec,$args);
             // 引用返回调用（CALL_RR）：被调帧预置桥接槽，函数内 return $var
-            // 前已发 MAKE_REF "\x01rr" 槽名——返回后把桥接槽引用传出，
-            // 由调用方绑到目标帧槽（PHP: $r=&g() 共享 g 内 $s 的存储）。
-            $__ev = ($__rr !== false) ? ["\x01rr" => null] : [];
+            // 前已发 MAKE_REF "\x01rr" 槽名——返回后把桥接槽引用按元素级
+            // 赋值写回调用方帧槽（PHP: $r=&g() 共享 g 内 $s 的存储）。
+            $__ev = ($rrDst !== null) ? ["\x01rr" => null] : [];
             $__r = $__exec($__P['funcs'][$name],$__ev,null,$args,null,false,$__P['funcET'][$name] ?? null);
             // copy-out：被调方引用参数的最终值写回调用方变量（PHP: f($a) 里 $a 被改写）
             foreach ($refs as $i => $m) {
@@ -428,7 +431,10 @@ function __VMRUN__($__P)
                     $__cv[$m[0]] = $__ev[$m[1]];
                 }
             }
-            if ($__rr !== false && array_key_exists("\x01rr", $__ev)) { $__rr = &$__ev["\x01rr"]; }
+            if ($rrDst !== null && $__cv !== null) {
+                if (!array_key_exists("\x01rr", $__ev)) { $__ev["\x01rr"] = null; }
+                $__cv[$rrDst] = &$__ev["\x01rr"];
+            }
             return $__r;
         }
         // 命名/解包标记对原生函数无意义（CALL_NATIVE 路径另行处理 refMask）：
@@ -654,15 +660,15 @@ function __VMRUN__($__P)
                     break;
                 case $CALL_RR:
                     // 引用返回函数调用：$dst = &g(args)。弹参 → 经 callFunc
-                    // 第 4 参（引用）取回桥接槽 "\x01rr" 的引用 → 绑到目标帧槽。
-                    // 与 PHP $r=&g() 后 $r=9 改 g 内 $s 的语义一致。
+                    // 第 4 参（目标帧槽名）把桥接槽 "\x01rr" 的引用按元素级
+                    // 写回本帧槽——PHP: $r=&g() 后 $r=9 改的是 g 内的 $s。
+                    // 桥接回写在 callFunc 内完成（元素级赋值才穿透帧表），
+                    // 此处不再经本地变量中转（变量级重绑不传播 + 引用集污染）。
                     $__argc = $__ins[3]; $__a = [];
                     for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
                     $__a = array_reverse($__a);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                    $__rrv = null;
-                    $__callFunc($__ins[1], $__a, $__vars, $__rrv);
-                    $__vars[$__ins[2]] = &$__rrv;
+                    $__callFunc($__ins[1], $__a, $__vars, $__ins[2]);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $CALL_VAR:

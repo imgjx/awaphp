@@ -77,6 +77,11 @@ trait VmStmtTrait
             if ($this->referencesVmClass($origStmt)) {
                 throw $e;
             }
+            // 文件级回退标记：语句级 eval 亦不安全的构造（如引用返回方法调用），
+            // 重抛由壳层整文件回退到未 VM 化代码。
+            if ($e->fileFallback) {
+                throw $e;
+            }
             $code[] = [VmOp::PUSH_C, $this->detokenize($origStmt)];
             $code[] = [VmOp::EVAL_STMT];
         }
