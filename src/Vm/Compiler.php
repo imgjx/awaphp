@@ -60,6 +60,10 @@ final class VmCompiler
     /** @var array<string,array<string,true>> 类名 => 自身声明的静态属性名集合（继承链查找：
      *  B::$p 在 B 未声明时定位到真正声明该属性的父类，共享同一存储——PHP 继承语义） */
     private array $classStatics = [];
+    /** @var array<string,array<string,true>> 类名 => 自身声明的静态方法名集合（FCC：
+     *  C::m(...) 对非静态方法创建期即抛 Error——"Non-static method ... cannot be
+     *  called statically"，与 PHP 8.1+ 一致；静态方法才可建一等可调用闭包） */
+    private array $classStatic = [];
     /** @var array<string,true> 全程序 global 声明过的变量名（不含 $）——供运行期同步全局帧 */
     private array $globalNames = [];
     /** @var array<string,true> 全程序 const 语句声明的常量名（预扫描收集，供标识符解析） */
@@ -345,6 +349,8 @@ final class VmCompiler
             'funcRef'     => $this->funcRef,
             'classes'     => $this->classes,
             'classParams' => $this->classParams,
+            // 静态方法表（FCC 创建期校验：C::m(...) 非静态即 Error）
+            'classStatic' => $this->classStatic,
             // 类层级信息：instanceof 运行期链遍历（VM 类是 stdClass + META 属性，
             // 原生 instanceof 看不到继承/实现关系，必须由编译期记录）。
             'classParents' => $this->classParent,

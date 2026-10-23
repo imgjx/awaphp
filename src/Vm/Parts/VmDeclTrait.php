@@ -315,6 +315,11 @@ trait VmDeclTrait
                     foreach ($this->traits[$tn]['methods'] as $mn => $mc) {
                         if (!isset($methods[$mn])) {
                             $methods[$mn] = $mc;
+                            // 静态性一并复制（FCC 校验用；类自身同名方法优先，
+                            // 自身编译时会覆盖本登记）
+                            if (isset($this->classStatic[$tn][$mn])) {
+                                $this->classStatic[$owner][$mn] = true;
+                            }
                         }
                     }
                     foreach ($this->traits[$tn]['props'] as $pn => $pd) {
@@ -385,6 +390,14 @@ trait VmDeclTrait
                 $mn = $mc->expectText(T_STRING);
                 if ($mn === null) {
                     continue;
+                }
+                // 静态方法登记（FCC：C::m(...) 对非静态方法创建期即抛 Error）。
+                // 非静态时显式清除：use 复制进来的 trait 静态方法若被类自身
+                // 非静态同名方法覆盖（PHP：类自身成员优先），登记必须跟着翻。
+                if ($isStaticMember) {
+                    $this->classStatic[$owner][$mn] = true;
+                } else {
+                    unset($this->classStatic[$owner][$mn]);
                 }
                 // 进入方法作用域：静态局部变量按 class::method 键控（跨调用保持、全实例共享）
                 $this->curScopeId = $owner . '::' . $mn;

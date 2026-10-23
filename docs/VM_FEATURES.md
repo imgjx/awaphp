@@ -29,6 +29,8 @@
 | **数组** | `[1,2,3]`、`array(1,2)`、`['k'=>v]`、`$a[]=v`、`$a[$k]=v`、`$a[$k]` | 索引数组 / 关联数组 / push / 下标读写 |
 | **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
 | **函数** | `function f($a,$b){ return ...; }`、递归、`$f()` 变量函数 | 每次调用获得**独立变量帧**，无跨函数污染 |
+| **一等可调用方法（FCC，PHP 8.1+）** | `$o->m(...)`、`$this->m(...)`、`C::m(...)`、`C::$m(...)`、`$cls::m(...)`、`self::/static::/parent::m(...)`、动态方法名 `$o->$n(...)` / `C::$n(...)` | 创建期即校验并抛错（措辞与原生逐字一致）：null 接收者 / 方法不存在（无 `__call`/`__callStatic` 时）/ 类名 FCC 指向非静态方法；实例 FCC 绑定 `$this`，静态方法亦可经实例 FCC；`__call`/`__callStatic` 允许不存在方法的 FCC 创建（调用期才魔术分发）；`static::` 创建期解析到 called class，闭包调用期压栈保证闭包内 `static::` 一致。已知缺口：VM 不记录方法可见性，private/protected 越权 FCC 不抛错（原生会抛） |
+| **魔术方法** | `__construct`、`__call`、`__callStatic` | 普通调用与 FCC 双双走魔术分发；`get_called_class()` 在桥接闭包内解析到创建期类 |
 | **实参绑定** | 引用参数 `f(&$x)`、可变参数 `f(...$args)`、命名实参 `f(b:1,a:2)`、解包实参 `f(...$arr)`（含字符串键→命名） | 编译期只压栈 + 发射标记（`PUSH_REF`/`ARG_NAMED`/`ARG_SPREAD`），重排/解引用全部在**运行期**按被调方签名完成——即使 receiver 类型编译期不可知（`$obj->m(b:1)`）也正确；引用参数按 by-ref 位做 copy-in/copy-out，命名参数跳过时可正确落入默认值 |
 | **静态调用** | `C::m()`、`C::$m()`、`self::m()`、`parent::m()`、**`static::m()`（延迟静态绑定）** | 方法沿继承链查找；命名/引用/解包实参同样支持。`static::` 运行期按 **called class**（`get_called_class()` 同源）解析方法/常量/属性/`::class`；`self::`/`parent::` 方法调用是**转发调用**（保留 called class，PHP 实测语义）；实例方法内的静态形态调用转发 `$this`。动态类名 `instanceof $c` 亦支持 |
 | **内建 PHP 函数** | `strlen()`、`substr()`、`implode()`、`range()`… 任意 `function_exists` | 经 `call_user_func_array` 桥接；含引用返回/特殊签名的函数按 PHP 默认语义 |
@@ -263,6 +265,8 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
   - **命名实参重排会留键空洞**：`f("x", c:"z")` 重排后得 `[0=>"x", 2=>"z"]`（跳过 `$b`），默认值补齐若按 `count()` 判定会把默认值追加到最高键之后，实参整体错位——补齐改为按 `array_key_exists($i, ...)` 逐位判定并 `ksort` 复位键序（下游 `POP_V` 序言按栈**位置**消费）。
   - **by-ref 形参不能传字面量 null**：`$__bindArgs($args, null, null)` 触发 "Argument #3 ($cv) could not be passed by reference"——原生类构造 / 原生对象方法路径改经局部变量中转（`$ncv = null`）。
   - 另修复参考运行期 `ARG_NAMED` 常量漏定义（handler 成死代码）与 `SCALL` 原生类路径漏绑定（标记泄漏给原生方法）两处双运行期不一致。
+- ✅ **CALL_VAR 产物语法缺陷（v0.1.7 修复）**：生成运行期 `caseBody(CALL_VAR)` 曾把「绑定实参 + 调用」写成 `([$a,] = f(), g())` 逗号表达式——PHP 无逗号运算符，凡使用变量函数调用（`$f(...)`，含 FCC 创建后调用）的产物全部 `php -l` 失败（运行期表现为 `ParseError: Unclosed '{' ... does not match ')'`）。已改为 if/else 结构（与参考运行期逐行对齐）。
+- ✅ **FCC 双运行期一致性（v0.1.7 新增）**：`$___FCC___` / `$__fcc` 建闭包函数初版漏抄了「VM 类名 FCC 分支的闭合括号 + `if(isset(...))` 块后的 stray `;`」，导致原生对象 FCC 路径被嵌进 VM 分支永远不可达、函数体括号不平衡——生成产物整体语法错误。修复后 FCC 探针三模式（flat_off/flat_on/sm_on）19 例、P8 特性矩阵 10×6 全绿。
 
 ---
 

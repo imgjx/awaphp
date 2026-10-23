@@ -247,6 +247,28 @@ final class VmOp
     // \x00 不可能出现在 PHP 类名中，与真实类名不会碰撞。
     public const LSB_MARK     = "\x00lsb:";
 
+    // ---- 一等可调用方法语法（FCC，PHP 8.1+：$o->m(...) / C::m(...)）----
+    // 创建期语义与原生一致：VM 类方法不存在 / 类名 FCC 指向非静态方法 /
+    // 接收者为 null 均在此刻抛 Error（PHP 亦如此，不在调用期）。
+    // MECALL_FCC：实例方法 FCC。操作数: method(方法名常量)。
+    //   栈[对象] → 弹对象压闭包（非静态方法→$this 绑定该对象；静态方法→等价
+    //   静态调用；不存在的方法若类有 __call 则允许创建，调用期才走魔术分发）。
+    public const MECALL_FCC   = 141;
+    // MECALL_FCC_VAR：动态方法名实例 FCC（$o->$m(...)）。无操作数——
+    //   栈[对象, 方法名]：方法名（变量值）先压栈（与 MECALL 同序）。
+    public const MECALL_FCC_VAR = 143;
+    // SCALL_FCC：类名 FCC（C::m(...) / self::m(...) / parent::m(...) /
+    //   static::m(...)）。操作数: class(可带 LSB/fwd 标记), method。
+    //   创建期按标记解析类名（static:: → called 栈顶）；静态方法→闭包桥接
+    //   类方法段（调用期压 called class 保证 static:: 解析）；非静态方法→Error。
+    public const SCALL_FCC    = 142;
+    // SCALL_FCC_VAR：动态方法名类名 FCC（C::$m(...)）。操作数: class。
+    //   栈[方法名]：方法名（变量值）先压栈。
+    public const SCALL_FCC_VAR = 144;
+    // SCALL_FCC_DYN：类名与方法名均为运行期值的 FCC（$cls::m(...) / $cls::$m(...)）。
+    //   无操作数——栈[类名, 方法名]：两者依次压栈（类名在下）。
+    public const SCALL_FCC_DYN = 145;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -344,6 +366,11 @@ final class VmOp
         self::INSTANCEOF_V  => [],
         self::LSB_BIND      => ['n'],
         self::LSB_CLASS     => [],
+        self::MECALL_FCC    => ['n'],
+        self::MECALL_FCC_VAR => [],
+        self::SCALL_FCC     => ['n', 'n'],
+        self::SCALL_FCC_VAR => ['n'],
+        self::SCALL_FCC_DYN => [],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -457,6 +484,11 @@ final class VmOp
         self::INSTANCEOF_V  => 'INSTANCEOF_V',
         self::LSB_BIND      => 'LSB_BIND',
         self::LSB_CLASS     => 'LSB_CLASS',
+        self::MECALL_FCC    => 'MECALL_FCC',
+        self::MECALL_FCC_VAR => 'MECALL_FCC_VAR',
+        self::SCALL_FCC     => 'SCALL_FCC',
+        self::SCALL_FCC_VAR => 'SCALL_FCC_VAR',
+        self::SCALL_FCC_DYN => 'SCALL_FCC_DYN',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

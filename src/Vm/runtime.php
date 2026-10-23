@@ -39,6 +39,8 @@ function __VMRUN__($__P)
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
     $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
     $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
+    // FCC（PHP 8.1+ 一等可调用方法语法）
+    $MECALL_FCC=141;$SCALL_FCC=142;$MECALL_FCC_VAR=143;$SCALL_FCC_VAR=144;$SCALL_FCC_DYN=145;
 
     $__META = "\x01__cls";
 
@@ -427,6 +429,90 @@ function __VMRUN__($__P)
         return $cb;
     };
 
+    // FCC：一等可调用创建（PHP 8.1+ $o->m(...) / C::m(...) / $o->$m(...) /
+    // C::$m(...) / $cls::m(...)）。创建期校验与原生一致：
+    //   - VM 类方法不存在（且无 __call / __callStatic）→ Error；
+    //   - 类名 FCC 指向非静态方法 → Error（"Non-static method ... cannot be
+    //     called statically"——原生亦在创建期抛，不在调用期）；
+    //   - 接收者为 null → Error（"Call to a member function m() on null"）。
+    // 返回【原生闭包】：实例 FCC 的 $this 绑定到该对象（经 $__callMethod 分发，
+    // 静态方法亦可——原生允许 $o->s(...)）；类名 FCC 桥接类方法段，调用期压
+    // called class（保证闭包内 static:: 解析到创建期类，与 PHP 闭包作用域一致）。
+    // 非 VM 对象/类交还原生 Closure::fromCallable（可见性校验等原生语义保留）。
+    // 已知缺口：VM 不记录方法可见性，private/protected 方法的越权 FCC 不会
+    // 抛错（原生会抛 "Call to private method ..."）。
+    $__fcc = function($cb) use (&$__exec,$__P,&$__code,&$__callMethod,$__META,&$__pad,&$__methodOwner,&$__calledCls){
+        if (is_array($cb) && count($cb)===2) {
+            $__o = $cb[0]; $__m = $cb[1];
+            if ($__o === null) {
+                throw new \Error('Call to a member function ' . (is_string($__m) ? $__m : '') . '() on null');
+            }
+            if (is_object($__o) && isset($__o->$__META) && is_string($__o->$__META)) {
+                $__cls = $__o->$__META;
+                if ($__methodOwner($__cls, $__m) === null) {
+                    // __call 魔术：不存在的方法允许创建 FCC（PHP：调用期才走魔术分发）
+                    if (!isset($__P['classes'][$__cls]['methods']['__call'])) {
+                        throw new \Error("Call to undefined method {$__cls}::{$__m}()");
+                    }
+                }
+                return function(...$a) use (&$__callMethod,$__o,$__m) { return $__callMethod($__o,$__m,$a); };
+            }
+        }
+        if (is_string($cb) && strpos($cb,'::')!==false) {
+            $__p = explode('::',$cb,2);
+            $__cls = $__p[0]; $__m = $__p[1];
+            if (isset($__P['classes'][$__cls])) {
+                $__mo = $__methodOwner($__cls, $__m);
+                if ($__mo === null) {
+                    // __callStatic：桥接到魔术方法（调用期分发，PHP 同语义）
+                    if (isset($__P['classes'][$__cls]['methods']['__callStatic'])) {
+                        $__seg = $__P['classes'][$__cls]['methods']['__callStatic'];
+                        $__sp = $__P['classParams'][$__cls]['__callStatic'] ?? [];
+                        $__cet = $__P['classET'][$__cls]['__callStatic'] ?? null;
+                        return function(...$a) use (&$__exec,&$__code,&$__pad,$__seg,$__sp,$__cet,$__cls,$__m,&$__calledCls) {
+                            $__ev = []; $__calledCls[] = $__cls;
+                            try { return $__exec($__code($__seg),$__ev,null,$__pad($__sp,array_merge([$__m],$a)),null,false,$__cet); }
+                            finally { array_pop($__calledCls); }
+                        };
+                    }
+                    throw new \Error("Call to undefined method {$__cls}::{$__m}()");
+                }
+                if (empty($__P['classStatic'][$__mo][$__m])) {
+                    throw new \Error("Non-static method {$__cls}::{$__m}() cannot be called statically");
+                }
+                $__seg = $__P['classes'][$__mo]['methods'][$__m];
+                $__sp = $__P['classParams'][$__mo][$__m] ?? [];
+                $__cet = $__P['classET'][$__mo][$__m] ?? null;
+                return function(...$a) use (&$__exec,&$__code,&$__pad,$__seg,$__sp,$__cet,$__cls,&$__calledCls) {
+                    $__ev = []; $__calledCls[] = $__cls;
+                    try { return $__exec($__code($__seg),$__ev,null,$__pad($__sp,$a),null,false,$__cet); }
+                    finally { array_pop($__calledCls); }
+                };
+            }
+        }
+        // 原生对象 / 类路径：先按 FCC 语法语义自行校验（错误措辞与原生
+        // $o->m(...) 一致——Closure::fromCallable 的措辞不同），通过后交还。
+        if (is_array($cb) && count($cb)===2 && is_object($cb[0])) {
+            if (!method_exists($cb[0], $cb[1]) && !method_exists($cb[0], '__call')) {
+                throw new \Error('Call to undefined method ' . get_class($cb[0]) . '::' . $cb[1] . '()');
+            }
+            return Closure::fromCallable($cb);
+        }
+        if (is_string($cb) && strpos($cb,'::')!==false) {
+            $__p = explode('::',$cb,2);
+            if ((class_exists($__p[0]) || interface_exists($__p[0])) && !isset($__P['classes'][$__p[0]])) {
+                if (!method_exists($__p[0], $__p[1]) && !method_exists($__p[0], '__callStatic')) {
+                    throw new \Error("Call to undefined method {$__p[0]}::{$__p[1]}()");
+                }
+                if (method_exists($__p[0], $__p[1]) && !(new \ReflectionMethod($__p[0], $__p[1]))->isStatic()) {
+                    throw new \Error("Non-static method {$__p[0]}::{$__p[1]}() cannot be called statically");
+                }
+            }
+            return Closure::fromCallable($cb);
+        }
+        return Closure::fromCallable($cb);
+    };
+
 
     // 调用函数（用户定义或内置）
     // $__cv：调用方帧变量表（按引用传入）——by-ref 实参需在此做 copy-in / copy-out。
@@ -544,8 +630,23 @@ function __VMRUN__($__P)
                 }
                 return $__r;
             }
+            // __call 魔术分发（PHP：调用不存在的方法时触发，魔术方法收
+            // (方法名, 实参数组)）。FCC 一等可调用（$o->m(...) 对不存在
+            // 方法允许创建）与普通 $o->m() 均依赖此路径。
+            $__mmo = $__methodOwner($obj->$__META, '__call');
+            if ($__mmo !== null) {
+                $__mspec = $__P['classParams'][$__mmo]['__call'] ?? [];
+                $__margs = $__pad($__mspec, [$m, $args]);
+                $__ev = ['$this'=>$obj];
+                $__calledCls[] = $obj->$__META;
+                try {
+                    return $__exec($__P['classes'][$__mmo]['methods']['__call'],$__ev,$obj,$__margs,null,false,$__P['classET'][$__mmo]['__call'] ?? null);
+                } finally {
+                    array_pop($__calledCls);
+                }
+            }
         }
-        if (is_object($obj) && method_exists($obj,$m)) {
+        if (is_object($obj) && (method_exists($obj,$m) || method_exists($obj,'__call'))) {
             // 原生对象方法：同样展平/去标记（同 $__callFunc 原生路径）。
             // by-ref 形参不可传字面量 null，须经局部变量中转。
             $__ncv = null;
@@ -639,7 +740,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$__callFn,&$__GFRAME,&$__INCTRACK,&$__calledCls
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
     ){
         $__stack = $__init;
         $__pc = 0;
@@ -744,6 +845,18 @@ function __VMRUN__($__P)
                     $__stack[] = $__callMethod($__obj, (string)$__m, $__a, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
+                case $MECALL_FCC:
+                    // FCC：$o->m(...)（PHP 8.1+ 一等可调用）——弹对象压闭包。
+                    // 创建期校验（方法不存在/接收者为 null）与原生一致。
+                    $__obj = array_pop($__stack);
+                    $__stack[] = $__fcc([$__obj, $__ins[1]]);
+                    break;
+                case $MECALL_FCC_VAR:
+                    // FCC：$o->$m(...)——栈[对象, 方法名]（方法名在下压入序之后）
+                    $__m = array_pop($__stack);
+                    $__obj = array_pop($__stack);
+                    $__stack[] = $__fcc([$__obj, (string)$__m]);
+                    break;
                 case $SCALL:
                     // 静态 / 类方法调用：C::m(args)（方法沿继承链查找）
                     $__argc = $__ins[3]; $__a = [];
@@ -796,7 +909,21 @@ function __VMRUN__($__P)
                         [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__stack[] = call_user_func_array([$__cls, $__m], $__a);
                     } else {
-                        $__stack[] = null;
+                        // __callStatic 魔术分发（PHP：调用不存在的静态方法时触发）。
+                        // 仅当魔术方法存在才走——否则维持既有 null 语义。
+                        $__cso = $__methodOwner($__cls, '__callStatic');
+                        if ($__cso !== null) {
+                            $__csspec = $__P['classParams'][$__cso]['__callStatic'] ?? [];
+                            $__csargs = $__pad($__csspec, [$__m, $__a]);
+                            $__calledCls[] = $__cls;
+                            try {
+                                $__stack[] = $__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null);
+                            } finally {
+                                array_pop($__calledCls);
+                            }
+                        } else {
+                            $__stack[] = null;
+                        }
                     }
                     break;
                 case $SCALL_VAR:
@@ -845,8 +972,52 @@ function __VMRUN__($__P)
                         [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__stack[] = call_user_func_array([$__cls, $__m], $__a);
                     } else {
-                        $__stack[] = null;
+                        // __callStatic 魔术分发（同 SCALL）：仅当魔术方法存在才走
+                        $__cso = is_string($__cls) ? $__methodOwner($__cls, '__callStatic') : null;
+                        if ($__cso !== null && is_string($__m)) {
+                            $__csspec = $__P['classParams'][$__cso]['__callStatic'] ?? [];
+                            $__csargs = $__pad($__csspec, [$__m, $__a]);
+                            $__calledCls[] = $__cls;
+                            try {
+                                $__stack[] = $__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null);
+                            } finally {
+                                array_pop($__calledCls);
+                            }
+                        } else {
+                            $__stack[] = null;
+                        }
                     }
+                    break;
+                case $SCALL_FCC:
+                    // FCC：C::m(...) / self::m(...) / parent::m(...) / static::m(...)
+                    // （PHP 8.1+ 类名一等可调用）。类操作数可带 LSB/fwd 标记——
+                    // FCC 创建期即解析（static:: → called 栈顶；self::/parent:: →
+                    // 标记内原始类名），解析后交 $__fcc 建闭包（创建期校验）。
+                    $__cls = $__ins[1];
+                    if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
+                        $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
+                    } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
+                        $__cls = substr($__cls, 5);
+                    }
+                    $__stack[] = $__fcc($__cls . '::' . $__ins[2]);
+                    break;
+                case $SCALL_FCC_VAR:
+                    // FCC：C::$m(...)（动态方法名，类名为操作数）——栈[方法名]
+                    $__m = array_pop($__stack);
+                    $__cls = $__ins[1];
+                    if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
+                        $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
+                    } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
+                        $__cls = substr($__cls, 5);
+                    }
+                    $__stack[] = $__fcc($__cls . '::' . (string)$__m);
+                    break;
+                case $SCALL_FCC_DYN:
+                    // FCC：$cls::m(...) / $cls::$m(...)（类名与方法名均为运行期值）
+                    // 栈[类名, 方法名]——类名在下先压入。
+                    $__m = array_pop($__stack);
+                    $__cls = array_pop($__stack);
+                    $__stack[] = $__fcc((is_string($__cls) ? $__cls : '') . '::' . (string)$__m);
                     break;
                 case $INSTANCEOF:
                     // 类型判定：$v instanceof C（C 为编译期常量类名）

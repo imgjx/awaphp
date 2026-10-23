@@ -1337,6 +1337,15 @@ trait VmExprTrait
                     if (!$c->is('(')) {
                         throw new VmUnsupported('VM 不支持动态属性读取（已回退）');
                     }
+                    // FCC：$o->$m(...)（PHP 8.1+ 动态方法名一等可调用）
+                    if ($this->argsAreEllipsisOnly($c)) {
+                        $c->next(); // '('
+                        $c->next(); // '...'
+                        $c->expect(')');
+                        $this->emitPushVar($mv, $code); // 方法名（变量值）先压栈
+                        $code[] = [VmOp::MECALL_FCC_VAR];
+                        continue;
+                    }
                     $argc = $this->compileArgs($c, $code);
                     $this->emitPushVar($mv, $code);
                     $code[] = [VmOp::MECALL, $argc];
@@ -1344,6 +1353,15 @@ trait VmExprTrait
                 }
                 $name = $c->expectText(T_STRING);
                 if ($c->is('(')) {
+                    // FCC：$o->m(...) / $this->m(...)（PHP 8.1+ 一等可调用）——
+                    // 实参恰为单个 '...' 时弹对象压闭包（创建期校验与原生一致）。
+                    if ($this->argsAreEllipsisOnly($c)) {
+                        $c->next(); // '('
+                        $c->next(); // '...'
+                        $c->expect(')');
+                        $code[] = [VmOp::MECALL_FCC, $name];
+                        continue;
+                    }
                     // $this->m()：类编译期已知，传 'C::m' 启用签名驱动的实参编译
                     $callee = ($recvIsThis && $this->curClass !== '') ? $this->curClass . '::' . $name : '';
                     $argc = $this->compileArgs($c, $code, [], $callee);
@@ -1515,6 +1533,63 @@ trait VmExprTrait
         }
         $c->expect(')');
         return $argc;
+    }
+
+    /**
+     * FCC 判定（PHP 8.1+ 一等可调用方法语法）：光标位于 '(' 时，向前探看
+     * （不消费任何 token）括号内是否【恰为一个 T_ELLIPSIS】——
+     *   $o->m(...) / C::m(...) / $o->$m(...) / C::$m(...)
+     * 是则返回 true，调用方按 FCC 路径编译（弹对象/类名压闭包）。
+     * 普通调用（零实参、解包 ...$a、命名实参、任意其它实参）均返回 false。
+     *
+     * 探看失败不影响光标：进入前记录 pos，所有分支出口 seek 回原位。
+     */
+    private function argsAreEllipsisOnly(Cursor $c): bool
+    {
+        if (!$c->is('(')) {
+            return false;
+        }
+        $save = $c->pos();
+        $c->next(); // '('
+        $found = false;
+        $pd = 1;
+        while (!$c->eof()) {
+            $t = $c->peek();
+            if (is_string($t)) {
+                if ($t === '(') {
+                    $pd++;
+                } elseif ($t === ')') {
+                    $pd--;
+                    if ($pd === 0) {
+                        $c->next();
+                        break;
+                    }
+                } elseif ($pd === 1) {
+                    // 顶层出现其它字符 token（',' / '=' / 运算符…）→ 非 FCC
+                    $c->seek($save);
+                    return false;
+                }
+            } elseif (is_array($t)) {
+                if (in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    $c->next();
+                    continue;
+                }
+                if ($pd === 1) {
+                    if ($t[0] === T_ELLIPSIS && !$found) {
+                        $found = true;
+                        $c->next();
+                        continue;
+                    }
+                    // 第二个有效 token（无论是不是 ellipsis）→ 非 FCC
+                    // （如 ...$a 解包、命名实参 name: expr）
+                    $c->seek($save);
+                    return false;
+                }
+            }
+            $c->next();
+        }
+        $c->seek($save);
+        return $found;
     }
 
     /**
@@ -1750,6 +1825,21 @@ trait VmExprTrait
                         $mname = is_array($mem) ? $mem[1] : (string) $mem;
                         $c->next();
                         if ($c->is('(')) {
+                            // FCC：$cls::m(...) / $cls::$m(...)（类名与方法名
+                            // 均为运行期值）——类名在下、方法名在上压栈。
+                            if ($this->argsAreEllipsisOnly($c)) {
+                                $c->next(); // '('
+                                $c->next(); // '...'
+                                $c->expect(')');
+                                $this->emitPushVar($name, $code); // 类名（变量值）
+                                if (is_array($mem) && $mem[0] === T_VARIABLE) {
+                                    $this->emitPushVar($mname, $code);
+                                } else {
+                                    $code[] = [VmOp::PUSH_C, $mname];
+                                }
+                                $code[] = [VmOp::SCALL_FCC_DYN];
+                                return;
+                            }
                             $argc = $this->compileArgs($c, $code);
                             $code[] = [VmOp::SCALL, '__VAR__', $mname, $argc];
                         } else {
@@ -1876,9 +1966,29 @@ trait VmExprTrait
                 // C16::$m() 动态方法名静态调用：方法名（变量值）先压栈，再压实参，
                 // 由 SCALL_VAR 在运行期弹出分发（静默按 null 处理会静默出错；
                 // 直接回退 EVAL 也不行——VM 类不是真实 PHP 类，eval 里访问即致命）。
+                // FCC：C::$m(...)（动态方法名类名一等可调用）
+                if ($this->argsAreEllipsisOnly($c)) {
+                    $c->next(); // '('
+                    $c->next(); // '...'
+                    $c->expect(')');
+                    $code[] = [VmOp::PUSH_V, $mname];
+                    $code[] = [VmOp::SCALL_FCC_VAR, $fwdCls ?? $cls];
+                    return;
+                }
                 $code[] = [VmOp::PUSH_V, $mname];
                 $argc = $this->compileArgs($c, $code);
                 $code[] = [VmOp::SCALL_VAR, $fwdCls ?? $cls, $argc];
+                return;
+            }
+            // FCC：C::m(...) / self::m(...) / parent::m(...) / static::m(...)
+            // （PHP 8.1+ 类名一等可调用）。创建期即按标记解析类名
+            // （static:: → called 栈顶；self::/parent:: → 标记内原始类名），
+            // 故此处无需拆分标记，原样透传即可。
+            if ($this->argsAreEllipsisOnly($c)) {
+                $c->next(); // '('
+                $c->next(); // '...'
+                $c->expect(')');
+                $code[] = [VmOp::SCALL_FCC, $fwdCls ?? $cls, $mname];
                 return;
             }
             // 签名查找用编译期类名（标记只是运行期解析用；PHP 命名实参/引用参数
