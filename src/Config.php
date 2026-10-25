@@ -101,6 +101,8 @@ final class Config
         $this->data['vm_morph']         = $b($this->data['vm_morph'] ?? $p8) ?? false;
         $this->data['vm_fake_fog']      = max(0, min(200, $i($this->data['vm_fake_fog'] ?? ($p8 ? 6 : 0))));
         $this->data['vm_probe']         = max(0, min(50, $i($this->data['vm_probe'] ?? ($p8 ? 4 : 0))));
+        // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层 VM 产物再喂给 VM 编译。默认 1（单层）。
+        $this->data['vm_layers']        = max(1, $i($this->data['vm_layers'] ?? 1));
         $this->data['junk_runtime']   = $b($this->data['junk_runtime'] ?? false) ?? false;
         $this->data['junk_intensity'] = max(1, min(10, $i($this->data['junk_intensity'] ?? 1)));
         $this->data['junk_fake_b64']  = $b($this->data['junk_fake_b64'] ?? true) ?? true;

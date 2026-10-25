@@ -39,6 +39,13 @@ trait VmExprTrait
         $compound = $m['compound'];
         $valueTokens = $m['value'];
 
+        // $this 不可被重新赋值（PHP: Cannot re-assign $this）。VM 不支持该左值，
+        // 整文件回退到原代码以对齐原生致命语义。
+        $t0 = $target[0] ?? null;
+        if (is_array($t0) && $t0[0] === T_VARIABLE && $t0[1] === '$this' && count($target) === 1) {
+            throw VmUnsupported::fileLevel('VM 不支持对 $this 重新赋值（已回退）');
+        }
+
         if ($compound !== null) {
             // 复合赋值：支持简单变量 $x op= v、实例属性 $o->p op= v（含 $this->p）、
             // 数组元素 $a[$k] op= v 与 VM 类静态属性 C::$p op= v。
@@ -67,7 +74,7 @@ trait VmExprTrait
         if ($refToks !== null) {
             $t0 = $target[0] ?? null;
             if (!(is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1)
-                || $t0[1] === '$GLOBALS') {
+                || $t0[1] === '$GLOBALS' || $t0[1] === '$this') {
                 throw new VmUnsupported('VM 引用赋值目标必须是简单变量（已回退）');
             }
             $this->compileRefAssignRHS(new Cursor($refToks), $this->varName($t0[1]), $code);
@@ -438,6 +445,11 @@ trait VmExprTrait
      */
     private function varName(string $name): string
     {
+        // 静态方法体内引用 $this：PHP 原生会致命 "Using $this when not in object
+        // context"。VM 不模拟该致命，故整文件回退到原代码（运行期同样致命），对齐语义。
+        if ($name === '$this' && $this->curMethodStatic) {
+            throw VmUnsupported::fileLevel('VM 静态方法内使用 $this（已回退）');
+        }
         return $this->curStatic[$name] ?? $name;
     }
 
@@ -1262,7 +1274,7 @@ trait VmExprTrait
                     $slot = $this->staticVarName($sp['cls'], $sp['prop']);
                     $code[] = [VmOp::GLOBAL_REF, $slot];
                 }
-                $code[] = [$dec ? VmOp::PRE_DEC : VmOp::PRE_INC, $slot];
+                $this->emitIncDec($code, $slot, $dec, false);
                 return;
             }
             $v = $c->expectText(T_VARIABLE);
@@ -1308,7 +1320,7 @@ trait VmExprTrait
                 $code[] = [$dec ? VmOp::IDX_PRE_DEC : VmOp::IDX_PRE_INC, $this->varName($v)];
                 return;
             }
-            $code[] = [$dec ? VmOp::PRE_DEC : VmOp::PRE_INC, $this->varName($v)];
+            $this->emitIncDec($code, $this->varName($v), $dec, false);
             return;
         }
         $this->parsePostfix($c, $code);
@@ -1434,9 +1446,9 @@ trait VmExprTrait
                 $c->next();
                 $last = end($code);
                 if ($last !== false && isset($last[0]) && $last[0] === VmOp::PUSH_V) {
-                    // 后缀：结果压入旧值，再把变量自增（POST_INC 内部完成自增）
+                    // 后缀：先弹出变量原 PUSH_V，再发复合序列（栈留旧值）
                     array_pop($code);
-                    $code[] = [VmOp::POST_INC, $last[1]];
+                    $this->emitIncDec($code, $last[1], false, true);
                 } else {
                     throw new VmUnsupported('VM 暂不支持复杂表达式的后缀 ++（已回退）');
                 }
@@ -1446,7 +1458,7 @@ trait VmExprTrait
                 $last = end($code);
                 if ($last !== false && isset($last[0]) && $last[0] === VmOp::PUSH_V) {
                     array_pop($code);
-                    $code[] = [VmOp::POST_DEC, $last[1]];
+                    $this->emitIncDec($code, $last[1], true, true);
                 } else {
                     throw new VmUnsupported('VM 暂不支持复杂表达式的后缀 --（已回退）');
                 }

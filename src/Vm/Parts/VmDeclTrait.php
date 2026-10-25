@@ -57,9 +57,21 @@ trait VmDeclTrait
         }
         $c->expect('{');
         $body = $c->untilMatchBrace();
+        // 预扫描：函数体内重复标签（原生 parse 期致命）
+        $this->prescanDuplicateLabels($body);
+        // 进入函数作用域：goto/label 状态整体换新（外层 main 状态保存，
+        // 函数收尾后恢复——main 的 goto 可跨越函数声明 targeting 其后标签）
+        $savedLabels = $this->labelTab;
+        $savedGotos = $this->pendingGotos;
+        $this->labelTab = [];
+        $this->pendingGotos = [];
         $code = [];
         $this->bindParams($code, $params);
         $this->compileBlock($body, $code);
+        // 函数作用域收尾：校验并回填本函数全部 goto
+        $this->resolveGotos($code, $this->funcET[$name] ?? []);
+        $this->labelTab = $savedLabels;
+        $this->pendingGotos = $savedGotos;
         $this->funcs[$name] = $code;
         // 登记参数规格（默认值段），供运行期调用方补齐缺失实参
         $this->funcParams[$name] = $this->paramSpecs($params);
@@ -247,7 +259,7 @@ trait VmDeclTrait
                         break;
                     }
                     $t = $vc->peek();
-                    if (is_array($t) && $t[0] === T_STRING) { $vc->next(); continue; }
+                    if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_ARRAY, T_CALLABLE], true)) { $vc->next(); continue; }
                     if (is_array($t) && $t[0] === T_NS_SEPARATOR) { $vc->next(); continue; }
                     if (is_string($t) && in_array($t, ['?', '|', '&'], true)) { $vc->next(); continue; }
                     break;
@@ -463,7 +475,7 @@ trait VmDeclTrait
                 // 预登记方法签名（'C::m'）：$this->m() / self::m() / C::m() 调用点据此
                 // 支持命名实参重排、引用参数 PUSH_REF 与解包实参校验
                 $this->prescanSignature($ms, $owner . '::');
-                [$mcode, $mspec] = $this->compileFunctionCode($ms);
+                [$mcode, $mspec] = $this->compileFunctionCode($ms, $isStaticMember);
                 $this->curScopeId = '';
                 $this->curStatic = [];
                 $this->tryStack = [];
@@ -510,7 +522,7 @@ trait VmDeclTrait
                         break;
                     }
                     $t = $pc->peek();
-                    if (is_array($t) && $t[0] === T_STRING) { $pc->next(); continue; }
+                    if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_ARRAY, T_CALLABLE], true)) { $pc->next(); continue; }
                     if (is_array($t) && $t[0] === T_NS_SEPARATOR) { $pc->next(); continue; }
                     if (is_string($t) && in_array($t, ['?', '|', '&'], true)) { $pc->next(); continue; }
                     break;
@@ -1010,9 +1022,13 @@ trait VmDeclTrait
      * @param array<int,mixed> $stmt
      * @return array{0:array<int,array<int,mixed>>,1:array<int,array{0:string,1:array<int,array<int,mixed>>|null}>} [字节码, 参数规格]
      */
-    private function compileFunctionCode(array $stmt): array
+    /** 当前是否正在编译静态方法体（用于 $this 静态上下文守卫，见 VmExprTrait::varName） */
+    private bool $curMethodStatic = false;
+
+    private function compileFunctionCode(array $stmt, bool $isStatic = false): array
     {
         $c = new Cursor($stmt);
+        $this->curMethodStatic = $isStatic;
         $c->skipWs();
         $c->expect(T_FUNCTION);
         // 引用返回标志：function &m()（方法级；消费 & 避免 Parse error，
@@ -1031,6 +1047,15 @@ trait VmDeclTrait
         }
         $c->expect('{');
         $body = $c->untilMatchBrace();
+        // 预扫描：方法体内重复标签（原生 parse 期致命）
+        $this->prescanDuplicateLabels($body);
+        // 进入方法作用域：goto/label 状态整体换新（类编译前后的外层状态
+        // 由调用方感知——方法间互不可见，main 状态在 compileClass 之上保存/
+        // 恢复点之外不受影响，故此处仅需保存/恢复当前值）
+        $savedLabels = $this->labelTab;
+        $savedGotos = $this->pendingGotos;
+        $this->labelTab = [];
+        $this->pendingGotos = [];
         $code = [];
         $this->bindParams($code, $params);
         // 构造函数属性提升：public/protected/private 参数即属性声明，
@@ -1044,7 +1069,20 @@ trait VmDeclTrait
             $code[] = [VmOp::PUSH_V, $p['n']];
             $code[] = [VmOp::PROPSET, ltrim($p['n'], '$')];
         }
+        if (!$isStatic) {
+            // 实例方法序章：显式把 $this 绑定进帧槽。LOAD_THIS 此前为「死指令」
+            // （运行期 __callMethod 亦会注入 $this），此处使其真正由编译器发出，
+            // 与运行期注入双保险，确保该 opcode 进入实际字节码。
+            $code[] = [VmOp::LOAD_THIS];
+            $code[] = [VmOp::POP_V, '$this'];
+        }
         $this->compileBlock($body, $code);
+        // 方法作用域收尾：校验并回填本方法全部 goto
+        // （curSegET 此刻正指向本方法异常表引用）
+        $this->resolveGotos($code, $this->curSegET);
+        $this->labelTab = $savedLabels;
+        $this->pendingGotos = $savedGotos;
+        $this->curMethodStatic = false;
         return [$code, $this->paramSpecs($params)];
     }
 
@@ -1141,7 +1179,7 @@ trait VmDeclTrait
             // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG 表示）；若在此吞掉，
             // `&$x` 的引用语义会被静默丢弃（实参按值传入、调用方看不到修改）。
             while (($t = $c->peek()) !== null) {
-                if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR], true)) {
+                if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_ARRAY, T_CALLABLE], true)) {
                     $c->next();
                     continue;
                 }

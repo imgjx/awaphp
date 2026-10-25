@@ -85,10 +85,10 @@ final class VmOp
     public const ARRAY_PUSH  = 75; // 弹出 val、弹出 arr，执行 $arr[] = val（再压回 arr）
 
     // ---- 变量自增自减 ----
-    public const PRE_INC  = 80;    // 操作数: name
-    public const PRE_DEC  = 81;    // 操作数: name
-    public const POST_INC = 82;    // 操作数: name -> 压入旧值后自增
-    public const POST_DEC = 83;    // 操作数: name -> 压入旧值后自减
+    // 说明：PRE_INC/PRE_DEC/POST_INC/POST_DEC（原 80–83）已精简移除，
+    // 编译器改用基础栈指令的复合序列（见 VmIncTrait::emitIncDec）。
+    // 属性 / 下标自增族（PROP_*_INC/DEC、IDX_*_INC/DEC）因依赖对象 / 容器在栈上、
+    // 干净叠加需 SWAP 原语，仍保留专用码。
     public const CALL_VAR = 90;    // 操作数: argc -> 弹出 argc 参数 + 函数名（变量值），动态调用
 
     // ---- 静态成员 / 语言构造 ----
@@ -320,8 +320,6 @@ final class VmOp
         self::RET       => [], self::RET_VOID => [], self::ECHO => [], self::HALT => [],
         self::ARRAY_MAKE => ['i'], self::ARRAY_KV => ['i'],
         self::INDEX_GET => [], self::INDEX_SET => [], self::COUNT => [], self::ARRAY_PUSH => [],
-        self::PRE_INC   => ['n'], self::PRE_DEC => ['n'],
-        self::POST_INC  => ['n'], self::POST_DEC => ['n'],
         self::CALL_VAR  => ['i'],
         self::JMP_B     => ['i'], self::SET_ST => ['i'], self::DISPATCH => [],
         self::SCALL     => ['n', 'n', 'i'],
@@ -427,10 +425,6 @@ final class VmOp
         self::INDEX_SET  => 'INDEX_SET',
         self::COUNT      => 'COUNT',
         self::ARRAY_PUSH  => 'ARRAY_PUSH',
-        self::PRE_INC    => 'PRE_INC',
-        self::PRE_DEC    => 'PRE_DEC',
-        self::POST_INC   => 'POST_INC',
-        self::POST_DEC   => 'POST_DEC',
         self::CALL_VAR   => 'CALL_VAR',
         self::JMP_B      => 'JMP_B',
         self::SET_ST     => 'SET_ST',

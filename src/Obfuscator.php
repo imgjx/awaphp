@@ -132,6 +132,9 @@ final class Obfuscator
                 'probe'          => (int) $this->config->get('vm_probe'),
                 // VM 常量池加密（默认开，--no-vm-cpool 关）
                 'cpool'          => (bool) $this->config->get('vm_cpool'),
+                // VM 嵌套层数（真·嵌套 VM）：把上一层产物再喂给 VM 编译，实现多层 VM 壳。
+                // 默认 1（单层）；>=2 时逐层回灌自己，每层先剥 PHP 开闭标签。
+                'layers'         => max(1, (int) $this->config->get('vm_layers')),
             ];
             $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c));
         }
@@ -463,6 +466,25 @@ final class Obfuscator
      * 失败时优雅回退（保留未 VM 化的源码，继续后续外壳）。
      */
     private function shellVm(array $params, string $code): string
+    {
+        $layers = max(1, (int) ($params['layers'] ?? 1));
+        $current = $code;
+        for ($i = 0; $i < $layers; $i++) {
+            $next = $this->shellVmOnce($params, $current);
+            // 本层未改变内容（编译失败回退到原样），再套无意义，提前终止。
+            if ($i > 0 && $next === $current) {
+                break;
+            }
+            $current = $next;
+        }
+        return $current;
+    }
+
+    /**
+     * 单层 VM 壳：剥 <?php/?> 后编译为 VM 产物。
+     * 嵌套 VM 由 shellVm() 循环回灌本方法实现（每层产物本身以 <?php 开头，可再被剥标签）。
+     */
+    private function shellVmOnce(array $params, string $code): string
     {
         $src = preg_replace('/^\s*<\?php/i', '', $code, 1);
         $src = preg_replace('/\?>\s*$/', '', $src);

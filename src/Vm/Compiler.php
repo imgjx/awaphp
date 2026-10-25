@@ -31,6 +31,8 @@ require_once __DIR__ . '/Parts/VmStmtTrait.php';
 require_once __DIR__ . '/Parts/VmExprTrait.php';
 require_once __DIR__ . '/Parts/VmLitTrait.php';
 require_once __DIR__ . '/Parts/VmTokTrait.php';
+require_once __DIR__ . '/Parts/VmIncTrait.php';
+require_once __DIR__ . '/Parts/VmControlTrait.php';
 require_once __DIR__ . '/Cursor.php';
 
 final class VmCompiler
@@ -111,13 +113,16 @@ final class VmCompiler
      */
     private array $natTbl = [];
 
-    // —— 编译器碎片（trait）：单文件主体按职责拆为五块 ——
-    // 声明 / 语句 / 表达式 / 字面量 / token 工具；加载见文件顶部 require_once。
+    // —— 编译器碎片（trait）：单文件主体按职责拆为七块 ——
+    // 声明 / 语句 / 表达式 / 字面量 / token 工具 / 变量自增复合发射 / 控制流；
+    // 加载见文件顶部 require_once。
     use VmDeclTrait;
     use VmStmtTrait;
     use VmExprTrait;
     use VmLitTrait;
     use VmTokTrait;
+    use VmIncTrait;
+    use VmControlTrait;
 
     /** 原生函数名 → natTbl 索引（首次登记分配 idx） */
     private function natIdx(string $name): int
@@ -203,6 +208,21 @@ final class VmCompiler
     /** @var array<int,array{idx:int,sw:int}> 待回填的 switch-break 占位 */
     private array $pendingSwBreaks = [];
     /**
+     * goto/label：当前作用域（main / 函数 / 方法各自独立）的标签表与待回填跳转。
+     * 标签表 name => ['code'=>int, 'chain'=>array<int>]：
+     *   code  = 标签绑定的指令下标（标签语句编译起点）；
+     *   chain = 登记时所处 loop/switch 上下文 id 序列（「goto 进 loop/switch
+     *          即原生致命」的判定依据）。
+     * pendingGotos 每项 ['code'=>int, 'name'=>string, 'chain'=>array<int>]：
+     *   code = JMP 占位下标，作用域结束时由 resolveGotos 统一校验回填。
+     * 进入函数/方法作用域时整体换新（外层状态由调用方保存/恢复），main 作用域
+     * 在 compile() 入口重置。
+     * @var array<string,array{code:int,chain:array<int>}>
+     */
+    private array $labelTab = [];
+    /** @var array<int,array{code:int,name:string,chain:array<int>}> */
+    private array $pendingGotos = [];
+    /**
      * 当前正在编译的函数/方法作用域内、已登记的静态局部变量：
      * 用户变量名(含$) => 共享帧槽位名（mangled）。作用域结束后由 compileFunctionCode 重置。
      * @var array<string,string>
@@ -259,6 +279,9 @@ final class VmCompiler
         }
         $this->tokens = $body;
         $this->pos = 0;
+        // main 作用域的 goto/label 状态（函数/方法作用域在各自入口换新）
+        $this->labelTab = [];
+        $this->pendingGotos = [];
 
         $stmts = StatementSplitter::split($this->tokens);
         // 预扫描：收集全程序 const 声明的常量名，使标识符解析能识别「运行期定义的常量」
@@ -335,9 +358,18 @@ final class VmCompiler
             // 函数，但同文件内方法互调极常见），故必须与顶层函数一并预登记。
             $this->prescanClassSignatures($s);
         }
+        // 预扫描：重复标签检测（原生 parse 期即致命：Label 'x' already defined）。
+        // 深度感知地找「T_STRING ':'」标签声明（排除三元冒号 / case 值冒号 /
+        // 返回类型冒号 / 可空标记），跳过函数/类/闭包体（独立标签作用域）。
+        // 记录期校验（compileStatementInner 内）覆盖常规路径；此处兜底
+        // 「标签所在外层语句被 EVAL_STMT 化、记录期校验不可达」的角落。
+        $this->prescanDuplicateLabels($this->tokens);
         foreach ($stmts as $stmt) {
             $this->compileTopStatement($stmt);
         }
+        // main 作用域收尾：校验并回填全部 goto（未定义标签 / 进 loop / 跳出
+        // try-finally 均抛 fileLevel，由壳层整文件回退、原生产出真实错误）
+        $this->resolveGotos($this->main, $this->mainET);
         // 静态属性初始化前导段拼到 main 最前：PHP 在类声明时即设好静态属性默认值，
         // VM 类全部前置编译，最早安全点是 main 开头（类声明前使用该类本就非法）。
         // 前置只平移绝对下标，语句内 JZ/JMP 均为相对偏移，不受影响。

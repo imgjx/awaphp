@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '0.1.8');
+define('OBFUSCATOR_VERSION', '1.0.0');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -166,6 +166,8 @@ function obf_help(): string
       --goto=         GOTO 混淆嵌套层数（>0 生效）
       --goto-cpx=      GOTO 每分发器最大语句数（>0 生效）
       --vm             VM 虚拟机壳（自定义指令集 + 解释器）
+      --vm-layers=      VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层 VM 产物再喂给 VM 编译，
+                       逐层叠加多层 VM 壳（默认 1，单层）
       --vm-link-modules 启用内置模块（默认开）：自动加载包内置模块目录，将 base64_encode/
                        base64_decode 等原生函数替换为内置自定义实现并内联进字节码
       --vm-linker=     ModuleLinker 模块目录（JSON 清单）：命中清单的函数调用

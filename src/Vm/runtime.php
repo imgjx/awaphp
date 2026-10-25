@@ -32,7 +32,7 @@ function __VMRUN__($__P)
     $BOOL_AND=40;$BOOL_OR=41;$BOOL_NOT=42;$BOOL_XOR=43;
     $JMP=50;$JZ=51;$JNZ=52;$CALL=53;$MECALL=54;$NEW=55;$PROPGET=56;$PROPSET=57;$RET=58;$RET_VOID=59;$ECHO=60;$HALT=61;
     $ARRAY_MAKE=70;$ARRAY_KV=71;$INDEX_GET=72;$INDEX_SET=73;$COUNT=74;$ARRAY_PUSH=75;
-    $PRE_INC=80;$PRE_DEC=81;$POST_INC=82;$POST_DEC=83;$CALL_VAR=90;
+    $CALL_VAR=90;
     $JMP_B=62;$SET_ST=63;$DISPATCH=64;
     $SCALL=91;$SPROP=92;$ISSET_=93;$EMPTY_=94;$UNSET_=95;$EXIT_=96;$EXIT_VOID=97;$PRINT_=98;$PHPRUN=99;
     $CAST_INT=100;$CAST_FLOAT=101;$CAST_STRING=102;$CAST_BOOL=103;$CAST_ARRAY=104;$CAST_OBJECT=105;
@@ -735,7 +735,7 @@ function __VMRUN__($__P)
         $BOOL_AND,$BOOL_OR,$BOOL_NOT,
         $JMP,$JZ,$JNZ,$CALL,$MECALL,$NEW,$PROPGET,$PROPSET,$RET,$RET_VOID,$ECHO,$HALT,
         $ARRAY_MAKE,$ARRAY_KV,$INDEX_GET,$INDEX_SET,$COUNT,$ARRAY_PUSH,
-        $PRE_INC,$PRE_DEC,$POST_INC,$POST_DEC,$CALL_VAR,
+        $CALL_VAR,
         $JMP_B,$SET_ST,$DISPATCH,
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
@@ -1434,26 +1434,10 @@ function __VMRUN__($__P)
                     }
                     $__stack[] = $__arr; // 写回（数组为值类型，本地更新需回存）
                     break;
-                case $PRE_INC:
-                    // PHP 语义自增（字符串字母进位 / null / bool / 数组 TypeError），
-                    // 见 $__inc 定义处注释。帧变量若经 GLOBAL_REF 绑为共享帧引用
-                    // （类静态属性），写操作自动穿透。
-                    $__cur = $__inc($__vars[$__ins[1]] ?? null, 1);
-                    $__vars[$__ins[1]] = $__cur; $__stack[] = $__cur;
-                    break;
-                case $PRE_DEC:
-                    $__cur = $__inc($__vars[$__ins[1]] ?? null, -1);
-                    $__vars[$__ins[1]] = $__cur; $__stack[] = $__cur;
-                    break;
-                case $POST_INC:
-                    $__old = $__vars[$__ins[1]] ?? null;
-                    $__vars[$__ins[1]] = $__inc($__old, 1); $__stack[] = $__old;
-                    break;
-                case $POST_DEC:
-                    $__old = $__vars[$__ins[1]] ?? null;
-                    $__vars[$__ins[1]] = $__inc($__old, -1); $__stack[] = $__old;
-                    break;
                 // —— 属性/数组元素的自增自减（$o->p++ / ++$a[$k] 等）——
+                // 说明：旧版变量专用自增码 PRE_INC/PRE_DEC/POST_INC/POST_DEC（80–83）
+                // 已精简移除，编译器改用基础栈指令的复合序列（见 VmIncTrait::emitIncDec），
+                // 故此处不再有对应 case。
                 case $PROP_POST_INC: case $PROP_POST_DEC:
                     // 栈 [obj, old]（PROPGET 刚执行）→ 弹 [old, obj]，原地写穿属性，压回旧值
                     $__d = ($__op === $PROP_POST_DEC) ? -1 : 1;

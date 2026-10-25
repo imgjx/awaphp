@@ -1,0 +1,7 @@
+{
+  "name": "regexmod",
+  "match_regex": ["/^rx_/"],
+  "entry": "regexmod.php",
+  "replace": true,
+  "priority": 1
+}

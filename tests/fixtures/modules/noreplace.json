@@ -1,0 +1,7 @@
+{
+  "name": "noreplace",
+  "match": ["nr_square"],
+  "entry": "noreplace.php",
+  "replace": false,
+  "priority": 1
+}

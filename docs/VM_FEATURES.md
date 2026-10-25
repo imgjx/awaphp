@@ -24,7 +24,7 @@
 
 | 类别 | 支持的写法 | 说明 / 备注 |
 |------|-----------|-------------|
-| **变量** | `$x = 1; $x; $arr[$k]; $this->prop` | 标量、数组、对象属性均可读写 |
+| **变量** | `$x = 1; $x; $arr[$k]; $this->prop`；实例方法内 `$this` | 标量、数组、对象属性均可读写；实例方法序章发 `LOAD_THIS` 把对象注入 `$this` 帧槽（见 §11.1），静态方法内 `$this` 触发整文件回退 |
 | **复合赋值** | `$x += 1; $x -= ; *= /= %= .=` | 仅**简单变量**支持；数组/属性的复合赋值会回退 |
 | **数组** | `[1,2,3]`、`array(1,2)`、`['k'=>v]`、`$a[]=v`、`$a[$k]=v`、`$a[$k]` | 索引数组 / 关联数组 / push / 下标读写 |
 | **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
@@ -42,7 +42,7 @@
 | **位运算** | `~ & \| ^ << >>` | `&` 与 `&&`、`<<` 与 `<` 已正确区分 |
 | **比较** | `== != === !== < > <= >=`、**太空船 `<=>`** | `<=>` 返回 -1/0/1，已支持 |
 | **逻辑** | `&& || !`、**空合并 `??`** | `??` 等价于 `isset(lhs) ? lhs : rhs` |
-| **自增/自减** | `++$x` / `--$x`（前缀）、`x++` / `x--`（后缀） | 仅**简单变量**；复杂表达式上的后缀 `++` 会回退 |
+| **自增/自减** | `++$x` / `--$x`（前缀）、`x++` / `x--`（后缀） | 变量自增经**复合指令序列**发射（`PUSH_V/PUSH_C/ADD/SUB/DUP/POP_V`，专用码已精简移除，见 §11.2）；属性/下标自增仍走 `INC_OP` 族专用码。仅**简单变量**；复杂表达式上的后缀 `++` 会回退。已知限制：字符串字母进位 / 布尔自增无法由通用算术表达（见 §11.2） |
 | **常量** | `true / false / null`、整型/浮点/字符串字面量（含 `\n \t \r \xNN \u{NNNN}` 转义）、编译期常量（`PHP_VERSION` 等） | 双引号插值**支持**（`"a{$x}b"`、`"{$arr['k']}"`、`"${x}"` 三种形态均已修复） |
 | **输出** | `echo $a, $b;` | 多参数逗号分隔 |
 | **异常** | `throw` / `try-catch` / `try-finally` / `try-catch-finally`（含多 catch、`catch (A\|B)`、`catch (E)` 无变量） | 编译为**异常表**（`[tryStart,end,handlerPc,kind,type,varName]`），运行期按最内层区间优先分发：先 catch 后 finally；含异常表的段整段跳过 flatten / stateMachine（避免绝对 pc 失真） |
@@ -266,7 +266,8 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
   - 另修复参考运行期 `ARG_NAMED` 常量漏定义（handler 成死代码）与 `SCALL` 原生类路径漏绑定（标记泄漏给原生方法）两处双运行期不一致。
 - ✅ **CALL_VAR 产物语法缺陷（v0.1.7 修复）**：生成运行期 `caseBody(CALL_VAR)` 曾把「绑定实参 + 调用」写成 `([$a,] = f(), g())` 逗号表达式——PHP 无逗号运算符，凡使用变量函数调用（`$f(...)`，含 FCC 创建后调用）的产物全部 `php -l` 失败（运行期表现为 `ParseError: Unclosed '{' ... does not match ')'`）。已改为 if/else 结构（与参考运行期逐行对齐）。
 - ✅ **FCC 双运行期一致性（v0.1.7 新增）**：`$___FCC___` / `$__fcc` 建闭包函数初版漏抄了「VM 类名 FCC 分支的闭合括号 + `if(isset(...))` 块后的 stray `;`」，导致原生对象 FCC 路径被嵌进 VM 分支永远不可达、函数体括号不平衡——生成产物整体语法错误。修复后 FCC 探针三模式（flat_off/flat_on/sm_on）19 例、P8 特性矩阵 10×6 全绿。
-- ✅ **trait 适配块 `insteadof` / `as`（v0.1.8 新增）**：编译期完成冲突消解与别名注册。规则按「先 insteadof 后 as」应用（与声明顺序无关）；冲突判重按**根 trait**（trait 内 `use` 的递归展开），同一 trait 经不同路径引入不冲突；未限定 `as` 用**规则应用前**的根集合判歧义（与是否有 insteadof 消解无关，对齐原生两种规则顺序均致命的语义）。以下场景由 `VmUnsupported` 触发整文件回退、交还原生产出真实致命错误：未消解方法冲突、未限定 `as` 歧义、`as` 别名撞名、insteadof 保留方/排除方不存在或自排除、trait 属性/常量/静态属性定义不一致、常量上的 `as`（原生视为方法别名而致命）、`as static` 等非法形态。已知缺口：VM 不记录方法可见性（`as protected pm` 的别名越权调用不抛错，原生会抛）；VM 类非真实 PHP 类，`ReflectionMethod` 不可见（与 trait 无关的存量架构限制）。探针：trait 语义 44 例（35 原生基线 + 9 追加）× 4 驱动（参考运行期 + 生成运行期三模式）全绿；真实管线 trait 重文件 `--vm` / `--vm --vm-p8` 输出与原生逐字节一致。
+- ✅ **trait 适配块 `insteadof` / `as`（v1.0.0 新增）**：编译期完成冲突消解与别名注册。规则按「先 insteadof 后 as」应用（与声明顺序无关）；冲突判重按**根 trait**（trait 内 `use` 的递归展开），同一 trait 经不同路径引入不冲突；未限定 `as` 用**规则应用前**的根集合判歧义（与是否有 insteadof 消解无关，对齐原生两种规则顺序均致命的语义）。以下场景由 `VmUnsupported` 触发整文件回退、交还原生产出真实致命错误：未消解方法冲突、未限定 `as` 歧义、`as` 别名撞名、insteadof 保留方/排除方不存在或自排除、trait 属性/常量/静态属性定义不一致、常量上的 `as`（原生视为方法别名而致命）、`as static` 等非法形态。已知缺口：VM 不记录方法可见性（`as protected pm` 的别名越权调用不抛错，原生会抛）；VM 类非真实 PHP 类，`ReflectionMethod` 不可见（与 trait 无关的存量架构限制）。探针：trait 语义 44 例（35 原生基线 + 9 追加）× 4 驱动（参考运行期 + 生成运行期三模式）全绿；真实管线 trait 重文件 `--vm` / `--vm --vm-p8` 输出与原生逐字节一致。
+- ⚠️ **变量自增自减改用复合指令序列**（v1.0.0）：`++/--` 简单变量不再有专用操作码，改由 `PUSH_V/PUSH_C/ADD/SUB/DUP/POP_V` 叠加而成，对数值 / null / 数组语义与原生一致；但**字符串字母进位**（`"a"++`）与**布尔自增**（`++true`）两个 PHP 边角语义无法由通用算术表达，会分别得到 `TypeError` / `int`。详见 §11.2。
 
 ---
 
@@ -312,3 +313,70 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
 仅保留负值防御护栏（`&= PHP_INT_MAX`，防算术移位死循环，不影响任何正值路径）。
 `tests/vm_gen_probe.php` 新增 5 条大整数常量回归用例（`bigconst_*`：
 原始乘积 / 掩码运算 / 负常数 / 函数内 LCG），三态模式全覆盖。
+
+---
+
+## 11. v1.0.0 正式版：`$this` 指针 / 操作码复合化 / 编译器拆分 / VM 嵌套层数
+
+### 11.1 `$this` 指针完整 VM 实现
+
+实例方法内的 `$this` 由编译器**显式支持**，不再依赖运行期隐式注入：
+
+- `$this` 作为普通帧槽名（含 `$` 前缀的 `'$this'`）编入局部变量表；
+- 实例方法序章发射 `[LOAD_THIS] + [POP_V, '$this']`，运行期 `__callMethod` 把当前对象注入 `$this` 帧槽，随后 `$this->prop` / `$this->m()` 走常规属性读 / 方法调用路径；
+- `compileFunctionCode(array $stmt, bool $isStatic)` 依据静态上下文决定是否发序章，并用 `curMethodStatic` 守卫 `varName()`；
+- **静态方法内使用 `$this`** → `VmUnsupported::fileLevel('VM 静态方法内使用 $this')`，整文件回退（交还原生产出原生致命错误）；
+- **对 `$this` 重新赋值**（`$this = $x` / `$this = &$x`）→ 在 `compileExprOrAssign` 与引用赋值守卫处拦截，同样走整文件回退。
+
+验证：实例 `$this` 在 `--vm` / `--vm --vm-p8` 下输出与原生逐字节一致；静态误用 / 重赋值均正确回退。`cap_scan` / `p8` / `gen_probe` / `args` / `trycatch` / `ref_e2e` 全绿、零新增回退。
+
+### 11.2 操作码复合化：变量自增自减改用复合指令序列
+
+原先变量自增 / 自减有 4 条**专用操作码**（`PRE_INC=80` / `PRE_DEC=81` / `POST_INC=82` / `POST_DEC=83`）。这些本质是「取变量 + 加/减 1 + 写回」的叠加，可由更基础的栈指令表达，故**已从 ISA 中移除**（`Op.php` 的 `OPERANDS`/`NAMES`、参考运行期 `runtime.php`、生成运行期 `RuntimeGenerator` 的对应 handler 一并删除）：
+
+```
+前缀 ++$x :  PUSH_V $x; PUSH_C 1; ADD; DUP;  POP_V $x   // 栈留新值
+后缀 $x++ :  PUSH_V $x; DUP;       PUSH_C 1; ADD; POP_V $x   // 栈留旧值
+（-- 把 ADD 换成 SUB）
+```
+
+- 属性 / 下标自增族（`PROP_*_INC/DEC`、`IDX_*_INC/DEC` 共 8 条）因需对象 / 容器在栈上、干净叠加需 `SWAP` 原语，**仍保留**专用码，统一走 `INC_OP`（op 203）族分发（`VmIsa::INC` 已剔除前 4 个变量码，sub-id 0–7 对应属性 / 下标 8 条）。
+- 编译器发射逻辑集中在新碎片 `src/Vm/Parts/VmIncTrait.php::emitIncDec()`。
+- **语义边界（已知限制）**：复合序列用 `ADD/SUB` 做纯算术自增，对 `int/float/null` 与原生完全一致（`null` 经 `ADD` coercion 为 0），数组自增两者均抛 `TypeError`（一致）；但 PHP 的两个边角语义无法由通用算术表达——
+  1. **字符串字母进位**（`$x="a"; $x++;` 原生得 `"b"`）会触发 `string + int` 的 `TypeError`；
+  2. **布尔自增**（`++true` 保持 `true`）会 coercion 为 `int`。
+  
+  这两类是极罕见写法，作为复合编码的已知限制记录；主流用法（数值计数器、循环累加、静态属性 / 静态变量自增）经 `--vm` / `--vm --vm-p8` 双运行期验证与原生一致（`tests/zz_incdec_probe.php` 16/16 必须一致项通过）。
+
+### 11.3 编译器拆分多文件
+
+`VmCompiler` 主体继续按职责拆分为多个 trait 碎片（均在 `src/Vm/Parts/`，由主体顶部 `require_once` 加载、类内 `use` 组合，**同一个类体**，可直接互访 private 成员，纯源码组织、行为等价）：
+
+| 碎片 | 职责 |
+|------|------|
+| `VmDeclTrait.php` | 声明：函数 / 类 / 方法 / 属性 / trait 适配块、类型提示 |
+| `VmStmtTrait.php` | 语句派发、语句块 / 无花括号体收集、try/catch、include、echo、static 局部、控制逃逸守卫 |
+| `VmControlTrait.php` | **控制流**（v1.0.0 新增拆分）：`if/elseif/else`、`while`、`for`、`foreach`、`switch`、`do-while`，及 `break/continue` 回填、`goto/label` 校验与回填辅助 |
+| `VmExprTrait.php` | 表达式：前缀 / 后缀 / 三元 / 运算 / 属性 / 下标 / 调用 |
+| `VmLitTrait.php` | 字面量、插值、常量池 |
+| `VmTokTrait.php` | token 工具、游标辅助 |
+| `VmIncTrait.php` | **变量自增自减复合序列发射**（v1.0.0 新增拆分，见 §11.2） |
+
+拆分后全量回归（`run_tests` 32、`cap_scan` 95/18 基线、`p8` 77、`gen_probe` 120、`args` 93、`trycatch` 64、`ref_e2e` 14、`subscript`、`goto` 端到端）零差异。
+
+### 11.4 VM 嵌套层数（真·嵌套 VM）
+
+新增配置项 **`vm_layers`**（CLI `--vm-layers=N`，默认 `1`）：
+
+- `=1`：单层 VM 壳（默认行为，与旧版一致）；
+- `>=2`：**真·嵌套 VM**——把上一层 VM 产物（本身以 `<?php` 开头）再剥开 / 闭标签后喂给 VM 编译器，逐层叠加多层 VM 壳。产物体积随层数近似线性增长（实测 35KB → 80KB → 139KB），运行结果与原生逐字节一致；
+- 实现位于 `Obfuscator::shellVm()`：`for` 循环调用 `shellVmOnce()`；某层未改变内容（编译失败回退原样）时提前终止，避免无效叠加；
+- 任意层若编译失败均优雅回退到上一层产物（保留更强的那层壳），不破坏构建。
+
+```bash
+php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
+```
+
+### 11.5 测试随仓库提交
+
+自 v1.0.0 起 `tests/` 目录纳入版本控制（`.gitignore` 不再排除），随发布一并提供，便于他人复现回归（`run_tests.php` 32 项冒烟 + 集成、`vm_cap_scan.php` 能力矩阵、`vm_gen_probe.php` 120 项三态、`vm_p8.php` 77 项、`vm_args_probe.php` 93 项、`vm_trycatch_probe.php` 64 项、`vm_ref_e2e.php`、`vm_subscript.php`、`zz_incdec_probe.php` 等）。

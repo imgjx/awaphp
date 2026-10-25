@@ -36,10 +36,15 @@ final class VmIsa
         VmOp::CAST_INT, VmOp::CAST_FLOAT, VmOp::CAST_STRING,
         VmOp::CAST_BOOL, VmOp::CAST_ARRAY, VmOp::CAST_OBJECT,
     ];
-    /** 自增 / 自减（操作数：name）。PRE_INC 压新值；POST_INC 压旧值。 */
-    public const INC = [VmOp::PRE_INC, VmOp::PRE_DEC, VmOp::POST_INC, VmOp::POST_DEC,
+    /**
+     * 属性 / 下标的自增自减（操作数：sub, name）。
+     * 注意：变量的 PRE_INC/PRE_DEC/POST_INC/POST_DEC（原 80–83）已精简移除，
+     * 编译器改用基础栈指令复合序列（见 VmIncTrait::emitIncDec），故本族仅含
+     * 属性 / 下标 8 条；sub-id 与 RuntimeGenerator::INC_OP 分发表一一对应。
+     */
+    public const INC = [
         VmOp::PROP_POST_INC, VmOp::PROP_POST_DEC, VmOp::PROP_PRE_INC, VmOp::PROP_PRE_DEC,
-        VmOp::IDX_POST_INC, VmOp::IDX_POST_DEC, VmOp::IDX_PRE_INC, VmOp::IDX_PRE_DEC];
+        VmOp::IDX_POST_INC,  VmOp::IDX_POST_DEC,  VmOp::IDX_PRE_INC,  VmOp::IDX_PRE_DEC];
     /** isset / empty / unset（操作数：name, nkeys） */
     public const VAR = [VmOp::ISSET_, VmOp::EMPTY_, VmOp::UNSET_];
     /** 数组构造（操作数：n）。0=ARRAY_MAKE（索引数组），1=ARRAY_KV（关联数组） */

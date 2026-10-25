@@ -51,6 +51,7 @@ return [
     'goto'         => 0,       // GOTO 混淆嵌套层数
     'goto_cpx'     => 0,       // GOTO 混淆每分发器最大语句数（>1 生效）
     'vm'           => false,   // VM 虚拟机壳
+    'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'eval'         => false,   // EVAL 多层加壳
     'eval_layers'  => 3,       // EVAL 加壳层数
     'anti_debug'   => false,   // 反调试探针
