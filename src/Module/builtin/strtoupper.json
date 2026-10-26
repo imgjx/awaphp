@@ -1,0 +1,8 @@
+{
+  "name": "strtoupper",
+  "match": ["strtoupper"],
+  "entry": "strtoupper.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_strtoupper"
+}

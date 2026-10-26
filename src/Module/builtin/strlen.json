@@ -1,0 +1,8 @@
+{
+  "name": "strlen",
+  "match": ["strlen"],
+  "entry": "strlen.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_strlen"
+}

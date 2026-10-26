@@ -1,0 +1,8 @@
+{
+  "name": "urldecode",
+  "match": ["urldecode"],
+  "entry": "urldecode.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_urldecode"
+}

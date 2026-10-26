@@ -1,0 +1,8 @@
+{
+  "name": "array_keys",
+  "match": ["array_keys"],
+  "entry": "array_keys.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_array_keys"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "array_reverse",
+  "match": ["array_reverse"],
+  "entry": "array_reverse.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_array_reverse"
+}

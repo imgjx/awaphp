@@ -1,0 +1,8 @@
+{
+  "name": "ltrim",
+  "match": ["ltrim"],
+  "entry": "ltrim.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_ltrim"
+}

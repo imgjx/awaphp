@@ -1,0 +1,8 @@
+{
+  "name": "strrev",
+  "match": ["strrev"],
+  "entry": "strrev.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_strrev"
+}

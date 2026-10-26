@@ -1,0 +1,8 @@
+{
+  "name": "explode",
+  "match": ["explode"],
+  "entry": "explode.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_explode"
+}

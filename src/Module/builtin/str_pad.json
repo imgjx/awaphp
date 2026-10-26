@@ -1,0 +1,8 @@
+{
+  "name": "str_pad",
+  "match": ["str_pad"],
+  "entry": "str_pad.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_str_pad"
+}

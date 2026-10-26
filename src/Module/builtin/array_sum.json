@@ -1,0 +1,8 @@
+{
+  "name": "array_sum",
+  "match": ["array_sum"],
+  "entry": "array_sum.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_array_sum"
+}

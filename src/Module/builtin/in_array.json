@@ -1,0 +1,8 @@
+{
+  "name": "in_array",
+  "match": ["in_array"],
+  "entry": "in_array.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_in_array"
+}

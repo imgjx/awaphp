@@ -1,0 +1,8 @@
+{
+  "name": "strcmp",
+  "match": ["strcmp"],
+  "entry": "strcmp.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_strcmp"
+}

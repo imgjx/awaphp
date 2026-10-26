@@ -189,7 +189,23 @@ GUI（LayerDescriptor 分层参数 `modules`）与 CLI 等价：分层配置传 
 
 `tests/vm_module_link.php`（17 项）覆盖：精确 / 正则命中、多命中名复用、传递式跨模块链接、别名重写、原生兜底内嵌（`replace=false` / 链接失败）、模块内 `include` 扁平化、顶层语句忽略等。回归 `tests/run_tests.php`（32 项）、`tests/hardening_test.php`（32 项）全绿、无回退。
 
-### 6.9 字节码级真实垃圾指令（`--vm-junk`，P7）
+`tests/vm_builtin_modules.php`（96 项）覆盖：`src/Module/builtin` 下全部内置常用模块的"原生执行 vs VM 内联执行"逐字节一致性，并断言调用已被 `ModuleLinker` 命中（hits 含函数名，证明已内联而非回退原生分发）。
+
+### 6.9 内置常用模块清单（src/Module/builtin，v1.0.1 新增）
+
+默认模块目录 `src/Module/builtin`（`Config::defaultModuleDir()`）内置 30 个常用函数模块，VM 构建时若源码命中即**静态链接**进同一 `Program`（函数表 / 类表合并 + 别名重写 `_ml<sha256 前 12 位>`），产物中无模块路径、无 `include`、无原始函数名。
+
+| 类别 | 模块（match 名） |
+| --- | --- |
+| 字符串 | `strlen` `substr` `strpos` `strtolower` `strtoupper` `trim` `ltrim` `rtrim` `strrev` `str_repeat` `str_pad` `ord` `chr` `explode` `implode`（含别名 `join`）`strcmp` |
+| 数组 | `array_reverse` `array_merge` `array_keys` `array_values` `in_array` `array_sum` `array_unique` |
+| 数学 / 编码 | `abs` `round` `number_format` `base_convert` `urlencode` `urldecode` `rawurlencode` |
+
+模块实现约束（VM 可编译子集）：变量名统一 `__mod_` 前缀避免与原生冲突；`target` 把调用重定向到模块内函数；仅用 `[]` 字面量（不用 `array()`）、`foreach` 键值遍历、三元、`...$args` 变参等 VM 支持构造；模块名恰好为 `array_keys` 时，`compileForeach` 取键辅助调用改走 `CALL_NATIVE`（原生 `array_keys`）以免被 `renameCallTargets` 误改写为模块自身别名导致无限递归。
+
+> **已知 VM 限制**：数组的整数键与数值型字符串键在 VM 内部表示中分离存储（位置式 vs `['__vmnamed__', key, val]` 元组），因此 `array_keys([1,2,3,"2"=>4])` 这类【整数键与字符串键碰撞】的输入在 VM 下与原生 PHP 结果不同（原生 `"2"` 键会折叠进整数键 `2`）。该差异源于 VM 数组模型本身，属边界场景，回归测试已剔除此类碰撞用例。
+
+### 6.10 字节码级真实垃圾指令（`--vm-junk`，P7）
 
 在**编译期、字节码层面**向已编译的 VM `Program` 注入"真实执行"的垃圾指令序列（而非在原始 PHP 源码 token 层插入废代码，那是 `src/Optimize/RuntimeJunk.php` 的职责）。
 
@@ -380,3 +396,12 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 ### 11.5 测试随仓库提交
 
 自 v1.0.0 起 `tests/` 目录纳入版本控制（`.gitignore` 不再排除），随发布一并提供，便于他人复现回归（`run_tests.php` 32 项冒烟 + 集成、`vm_cap_scan.php` 能力矩阵、`vm_gen_probe.php` 120 项三态、`vm_p8.php` 77 项、`vm_args_probe.php` 93 项、`vm_trycatch_probe.php` 64 项、`vm_ref_e2e.php`、`vm_subscript.php`、`zz_incdec_probe.php` 等）。
+
+### 11.6 v1.0.1：30 个静态链接的常用模块
+
+- 新增 `src/Module/builtin/` 目录，内置 **30 个常用函数模块**（字符串 16 + 数组 7 + 数学/编码 7），JSON 清单 + `__mod_` 前缀实现，VM 构建时由 `ModuleLinker` 自动静态链接进同一 `Program`；
+- 配套 `tests/vm_builtin_modules.php`（96 项）回归：每个模块多组输入比对"原生 vs VM 内联"逐字节一致，并断言调用已被链接（hits 含函数名）；
+- 修复 `compileForeach` 两处缺陷：
+  1. **键值遍历值变量名取空白 token**——`as $k => $v`（带空格）时 `$vvar` 落到 `=>` 与值之间的 `T_WHITESPACE` token，得到空白/空变量名，导致值永远存不进（取出恒为 `null`）；改为跳过空白 token 再取值；
+  2. **foreach 取键辅助 `array_keys` 被误改写**——`compileForeach` 原先发射 `CALL 'array_keys'`，当模块名恰好为 `array_keys` 时 `renameCallTargets` 把该内部调用也改写成模块自身别名，造成无限递归（OOM / Killed）；改为 `CALL_NATIVE` 调用原生 `array_keys`（恒走原生分发，免疫重命名）；
+- 已知 VM 限制：数组整数键与数值型字符串键分离存储，碰撞类输入（`[1,2,3,"2"=>4]`）VM 与原生结果不同，回归已剔除此类用例（详见 §6.9）。

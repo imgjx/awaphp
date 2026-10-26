@@ -1,0 +1,8 @@
+{
+  "name": "implode",
+  "match": ["implode", "join"],
+  "entry": "implode.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_implode"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "array_merge",
+  "match": ["array_merge"],
+  "entry": "array_merge.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_array_merge"
+}

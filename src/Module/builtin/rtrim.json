@@ -1,0 +1,8 @@
+{
+  "name": "rtrim",
+  "match": ["rtrim"],
+  "entry": "rtrim.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_rtrim"
+}

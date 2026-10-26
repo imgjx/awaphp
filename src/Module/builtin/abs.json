@@ -1,0 +1,8 @@
+{
+  "name": "abs",
+  "match": ["abs"],
+  "entry": "abs.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_abs"
+}

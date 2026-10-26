@@ -1,0 +1,8 @@
+{
+  "name": "trim",
+  "match": ["trim"],
+  "entry": "trim.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_trim"
+}

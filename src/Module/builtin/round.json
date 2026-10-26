@@ -1,0 +1,8 @@
+{
+  "name": "round",
+  "match": ["round"],
+  "entry": "round.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_round"
+}

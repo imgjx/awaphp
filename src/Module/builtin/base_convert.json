@@ -1,0 +1,8 @@
+{
+  "name": "base_convert",
+  "match": ["base_convert"],
+  "entry": "base_convert.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_base_convert"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "chr",
+  "match": ["chr"],
+  "entry": "chr.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_chr"
+}

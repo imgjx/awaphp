@@ -189,12 +189,13 @@ trait VmControlTrait
             // 值的位置：T_DOUBLE_ARROW 是单 token → 值在 arrowAt+1；'=''>' 两 token → arrowAt+2
             $arrowTok = $rest[$arrowAt];
             $vOff = (is_array($arrowTok) && $arrowTok[0] === T_DOUBLE_ARROW) ? 1 : 2;
-            $vvar = trim($rest[$arrowAt + $vOff][1] ?? '', '$');
             $valStart = $arrowAt + $vOff;
-            // 跳过 => 与值之间的空白 token，避免把空白误判为值/解构起始
+            // 跳过 => 与值之间的空白 token（如 "$k => $v" 中 "=>" 两侧的空格）：
+            // 否则 $vvar 会落到空白 token，得到空/空白变量名，值永远存不进（取出恒为 null）。
             while (isset($rest[$valStart]) && is_array($rest[$valStart]) && $rest[$valStart][0] === T_WHITESPACE) {
                 $valStart++;
             }
+            $vvar = trim($rest[$valStart][1] ?? '', '$');
             $hasKey = true;
         } else {
             $kvar = null;
@@ -244,8 +245,11 @@ trait VmControlTrait
             $code[] = [VmOp::POP_V, '$' . $ta];
         }
         // $tk = array_keys($ta); $ti = 0;
+        // 用 CALL_NATIVE 调用 array_keys（而非 CALL）：array_keys 是编译器内部的取键辅助，
+        // 必须恒走原生分发；否则当模块名恰好为 array_keys 时，renameCallTargets 会把这条
+        // CALL 误改写成模块自身别名，造成无限递归（OOM / Killed）。
         $code[] = [VmOp::PUSH_V, '$' . $ta];
-        $code[] = [VmOp::CALL, 'array_keys', 1];
+        $code[] = [VmOp::CALL_NATIVE, $this->natIdx('array_keys'), 1, 0];
         $code[] = [VmOp::POP_V, '$' . $tk];
         $code[] = [VmOp::PUSH_C, 0];
         $code[] = [VmOp::POP_V, '$' . $ti];

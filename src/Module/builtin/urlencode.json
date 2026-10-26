@@ -1,0 +1,8 @@
+{
+  "name": "urlencode",
+  "match": ["urlencode"],
+  "entry": "urlencode.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_urlencode"
+}

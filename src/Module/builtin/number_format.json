@@ -1,0 +1,8 @@
+{
+  "name": "number_format",
+  "match": ["number_format"],
+  "entry": "number_format.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_number_format"
+}

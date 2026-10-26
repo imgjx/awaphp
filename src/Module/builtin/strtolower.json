@@ -1,0 +1,8 @@
+{
+  "name": "strtolower",
+  "match": ["strtolower"],
+  "entry": "strtolower.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_strtolower"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "substr",
+  "match": ["substr"],
+  "entry": "substr.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_substr"
+}

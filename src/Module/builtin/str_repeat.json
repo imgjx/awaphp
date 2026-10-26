@@ -1,0 +1,8 @@
+{
+  "name": "str_repeat",
+  "match": ["str_repeat"],
+  "entry": "str_repeat.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_str_repeat"
+}

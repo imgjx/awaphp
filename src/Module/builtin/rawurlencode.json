@@ -1,0 +1,8 @@
+{
+  "name": "rawurlencode",
+  "match": ["rawurlencode"],
+  "entry": "rawurlencode.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_rawurlencode"
+}
