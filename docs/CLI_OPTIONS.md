@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v1.0.2（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v1.0.3（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
 **用法**
@@ -18,8 +18,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定 JSON 配置文件（普通标量配置 / 分层 JSON 均可） |
-| `--level=` | 等级预设：`low\|mid\|high\|max`（一键切换完整方案） |
-| `-low -mid -high -max` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
+| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案；v1.0.3 起各档启用 P8 架构方向、新增最高档 ultra=真·嵌套 VM） |
+| `-low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |
 

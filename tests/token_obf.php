@@ -172,7 +172,7 @@ $broken = preg_match('/\{\$[a-zA-Z_\x80-\xff][\w\x80-\xff]*\["/', $srcDef) === 1
 ok(!$broken, '插值区间内字符串未被引号翻转（{$arr["key"]} 断裂形态不存在）');
 
 echo "\n===== [3] 等级预设（含 token 层）=====\n";
-foreach (['low', 'mid', 'high', 'max'] as $lv) {
+foreach (['low', 'mid', 'high', 'max', 'ultra'] as $lv) {
     try {
         [$file, $src] = obfuscate($php, $entry, $fixture, $tmp, "level_$lv", "--level=$lv --salt=lv$lv");
     } catch (RuntimeException $e) {

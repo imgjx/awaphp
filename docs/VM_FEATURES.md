@@ -415,3 +415,19 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **修复 by-ref 原生函数遇到属性/下标左值（如 `sort($o->items)`）引用失效**：按值压栈但 `refMask` 仍置位，运行期收到 "value given" 警告且原地修改失败。改为当引用位实参非简单变量时抛 `VmUnsupported`，整条语句走 `EVAL_STMT` 原生桥接（引用语义由桥接保真）。
 - **修复 `tests/vm_module_link.php` 的 `badmod_skip` / `stats` 两项**：原 fixture 用 `trait/insteadof` 充当「VM 不支持语法」，但 VM 现已全面支持 trait 适配，模块被整编成功而非跳过；改用 `yield` 生成器（VM 唯一可靠抛 `VmUnsupported` 的构造）使整文件编译失败、调用点保持原生函数分发（P6 前行为一致）。
 - 全测试套件保持通过：`run_tests.php` 32 项、`token_obf.php` 31 项、`vm_call_native` / `vm_module_link` 全绿，VM 综合（`vm_comprehensive`、`vm_args_probe` 93、`vm_ref_e2e` 14、`vm_gen_probe` 120、`vm_p8` 77、`vm_junk` 120、`vm_trycatch_probe` 64、`vm_subscript`、`vm_defaults`、`vm_include`、`vm_eval_stmt`、`vm_smoke` 4、`vm_builtin_modules` 96、`hardening` 32）无回归。
+
+### 11.8 v1.0.3：混淆复杂度大幅提升（等级预设全面加码 + 新增 ultra 顶档）
+
+- **五档等级预设全面加码**（`low/mid/high/max`，新增最高档 **`ultra`**），产物规模随等级指数上升（token_rich fixture：low 25KB → ultra 364KB）：
+  - `low`：由"仅 token 级混淆"升级为已含**基础 VM 壳**（chunks=3）+ 数字/字符串编码 + 轻度控制流（cfg=low, goto=1）；
+  - `mid`：VM 平坦化 + **启用 P8 架构方向**（`morph` + `keychain` 密钥链 + `builtinReplace` 内置名编码 + `fakeFog`=20 诱饵函数 + `probe`=4 探针），goto=2、eval=4；
+  - `high`：全 P8 方向拉高（`fakeFog`=80、`probe`=12）、goto_cpx=8、junk_runtime=8、eval=6、anti_debug 探针扩展至 env/sapi、新增 anti_hook + anti_tamper；
+  - `max`：单层 VM 参数顶格（chunks=12、`fakeFog`=160、`probe`=30）+ 拟真垃圾**执行缠结**（junk_runtime tangle）+ 全反检测矩阵（anti_debug 全探针 × intensity 4、anti_tamper segments=8）+ eval=8；
+  - `ultra`（新顶档）：**真·嵌套 VM**（`shell:vm` 新增 `layers` 参数，layers=2 把上一层 VM 产物再 VM 化）+ 全参数顶格（chunks=16、fakeFog=200、probe=50、cpool）+ eval=10 + dead=10 + token 诱饵 50。
+- **`shell:vm` 分层新增 `layers` 参数**（1-3）：分层模式（preset / 自定义分层 JSON）现在可启用真·嵌套 VM，此前仅散装 CLI `--vm-layers` 可用。
+- **GOTO 混淆跳过 try/catch 函数**：`GotoObfuscator::containsUnsafe()` 的跳过列表在闭包 / `match` / 插值基础上补充 `T_TRY / T_CATCH / T_FINALLY / T_THROW`，含异常处理的函数体不再参与 GOTO 状态机改写（与既有"整体跳过"策略一致）。
+- **预设稳健性验证**：每档以 `token_rich` fixture（属性 / 闭包 `use(&$x)` / match / trait / try-catch-finally / 静态变量 / heredoc）+ 独立样例各跑 **6 个盐值**逐字节比对原生输出，全部通过；`tests/token_obf.php` 等级遍历已加入 `ultra`（32 项全绿），`run_tests` 32 项、`hardening` 32 项及全部 VM 专项无回归。
+- **已知限制（记录在案）**：
+  - `--vm-junk`（VM 字节码垃圾指令）注入段落在盐值随机分布下会**间歇性破坏 VM 异常桥接**（try/catch 函数的 catch 变量绑定偶发丢失，`junk`≥40 且叠加 eval/gz 外壳时必现）；预设因此未启用该参数，散装使用请自行评估；
+  - `stateMachine` VM 模式对 try/catch/throw 的编译与 `flatten` 路径不等价（`risky(-1)` 异常捕获失效），预设统一采用经充分验证的 `flatten` 路径；
+  - `semantic` 语义等价变换对本仓库测试 fixture（含 match / 闭包 / 属性的混合构造）存在破坏性，预设未启用，散装使用请先验证产物。

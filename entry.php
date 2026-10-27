@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.2');
+define('OBFUSCATOR_VERSION', '1.0.3');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -80,7 +80,7 @@ function obf_parse_args(array $argv): array
     ];
     $out = [];
     // 等级短旗标：-low / -mid / -high / -max -> level=<name>
-    static $LEVEL_FLAGS = ['-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max'];
+    static $LEVEL_FLAGS = ['-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max', '-ultra' => 'ultra'];
     $n = count($argv);
     for ($i = 1; $i < $n; $i++) {
         $a = $argv[$i];
@@ -127,9 +127,10 @@ function obf_help(): string
   -i, --input=        输入文件或目录（必填；目录递归混淆）
   -o, --output=       输出文件或目录
   -c, --config=       指定 JSON 配置文件（普通标量配置 / 分层 JSON 均可）
-      --level=        等级预设：low|mid|high|max（一键切换完整分层方案）
-  -low -mid -high -max  等价 --level=<name> 的短旗标
-                        （等级仅作默认，散装参数如 --level high --junk_intensity 10 可叠加覆盖）
+      --level=        等级预设：low|mid|high|max|ultra（一键切换完整分层方案）
+  -low -mid -high -max -ultra  等价 --level=<name> 的短旗标
+                        （等级仅作默认，散装参数如 --level high --junk_intensity 10 可叠加覆盖；
+                         ultra 为最高强度：真·嵌套 VM（layers=2）+ 全 P8 架构方向拉满 + 全反检测矩阵）
       --salt=         混淆盐（空=不加盐，相同盐可复现）
       --repeat=        重复加密次数（默认 1）
 

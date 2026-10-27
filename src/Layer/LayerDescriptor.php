@@ -179,6 +179,7 @@ final class LayerDescriptor
                     'flatten'     => ['label' => '控制流平坦化', 'type' => self::T_BOOL, 'default' => false, 'hint' => '编译期把函数体改为状态机分发'],
                     'stateMachine' => ['label' => '状态机模式', 'type' => self::T_BOOL, 'default' => false, 'hint' => '最高强度：跳转表 + 指令重排（flatten 的超集）'],
                     'chunks'      => ['label' => '字节码分片', 'type' => self::T_INT, 'default' => 3, 'min' => 1, 'max' => 16, 'hint' => '分片数越多越难拼还原'],
+                    'layers'      => ['label' => 'VM 嵌套层数', 'type' => self::T_INT, 'default' => 1, 'min' => 1, 'max' => 3, 'hint' => '真·嵌套 VM：>=2 时把上一层 VM 产物再 VM 化，复杂度指数级上升'],
                     'modules'     => ['label' => '模块目录', 'type' => self::T_TEXT, 'default' => '', 'hint' => 'ModuleLinker JSON 清单目录：命中清单的函数调用内联进同一 Program，产物无路径痕迹'],
                     'junk'        => ['label' => '字节码垃圾指令', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 200, 'hint' => 'VM 字节码级真实垃圾指令段数（每段多字节码），栈平衡无副作用，抗静态分析'],
                     'keychain'       => ['label' => '密钥链分片加密', 'type' => self::T_BOOL, 'default' => false, 'hint' => '分片密钥哈希链派生（ki=sha256(k[i-1]‖i)），运行期顺序推导，单点密钥无法还原其它分片'],

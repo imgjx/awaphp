@@ -179,7 +179,7 @@ final class GotoObfuscator
             if (!is_array($t)) {
                 continue;
             }
-            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN], true)) {
+            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN, T_TRY, T_CATCH, T_FINALLY, T_THROW], true)) {
                 return true;
             }
             // 匿名函数：T_FUNCTION 后紧跟 '('
