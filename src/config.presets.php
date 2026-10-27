@@ -32,7 +32,7 @@ return [
             ['name' => 'controlflow',  'params' => ['cfg' => 'low', 'goto' => 1, 'goto_cpx' => 4]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => false, 'chunks' => 3]],
+            ['name' => 'shell:vm',     'params' => ['flatten' => false, 'chunks' => 3, 'morph' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 2]],
         ],
     ],
@@ -52,29 +52,30 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 4]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 5, 'morph' => true, 'fakeFog' => 20, 'probe' => 4, 'keychain' => true, 'builtinReplace' => true]],
+            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 5, 'morph' => true, 'fakeFog' => 20, 'probe' => 4, 'keychain' => true, 'builtinReplace' => true, 'junk' => 20]],
             ['name' => 'shell:eval',   'params' => ['layers' => 4]],
             ['name' => 'shell:anti_debug', 'params' => ['probes' => 'ext,func,ini', 'intensity' => 2]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 3]],
         ],
     ],
 
-    // ===================== high：VM 平坦化 + 全 P8 架构方向（morph/keychain/builtinReplace/fakeFog/probe/junk）+ 全反检测 =====================
+    // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测 =====================
     'high' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
-            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 8]],
+            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 3, 'goto_cpx' => 8]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 6, 'split' => 4]],
+            ['name' => 'semantic',     'params' => ['strength' => 2]],
             ['name' => 'junk_runtime', 'params' => ['intensity' => 8, 'fake_b64' => true, 'fake_echo' => true]],
             ['name' => 'dead',         'params' => ['density' => 3]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 6]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true, 'junk' => 80]],
             ['name' => 'shell:eval',   'params' => ['layers' => 6]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi', 'intensity' => 3]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 4]],
@@ -83,22 +84,23 @@ return [
         ],
     ],
 
-    // ===================== max：单层 VM 全参数拉满 + 拟真垃圾缠结 + 全反检测矩阵 =====================
+    // ===================== max：VM 状态机全参数拉满 + 深层 GOTO + 语义变换 + 全反检测矩阵 =====================
     'max' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
-            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 10]],
+            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 4, 'goto_cpx' => 12]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 4, 'split' => 6]],
+            ['name' => 'semantic',     'params' => ['strength' => 3]],
             ['name' => 'junk_runtime', 'params' => ['intensity' => 10, 'fake_b64' => true, 'fake_echo' => true, 'tangle' => true]],
             ['name' => 'dead',         'params' => ['density' => 5]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 10]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 12, 'morph' => true, 'fakeFog' => 160, 'probe' => 30, 'keychain' => true, 'builtinReplace' => true]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 12, 'morph' => true, 'fakeFog' => 160, 'probe' => 30, 'keychain' => true, 'builtinReplace' => true, 'junk' => 160]],
             ['name' => 'shell:eval',   'params' => ['layers' => 8]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,trace', 'intensity' => 4]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 5]],
@@ -107,22 +109,23 @@ return [
         ],
     ],
 
-    // ===================== ultra：真·嵌套 VM（layers=2） + 全参数顶格 + 最高反检测 =====================
+    // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
     'ultra' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
-            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 10]],
+            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 5, 'goto_cpx' => 16]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 4, 'split' => 8]],
+            ['name' => 'semantic',     'params' => ['strength' => 3]],
             ['name' => 'junk_runtime', 'params' => ['intensity' => 10, 'fake_b64' => true, 'fake_echo' => true, 'tangle' => true]],
             ['name' => 'dead',         'params' => ['density' => 10]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 50]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'cpool' => true]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true]],
             ['name' => 'shell:eval',   'params' => ['layers' => 10]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,trace', 'intensity' => 4]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 6]],

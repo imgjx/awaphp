@@ -1,0 +1,91 @@
+{
+    "layers": [
+        {
+            "name": "var",
+            "params": {
+                "length": 24
+            }
+        },
+        {
+            "name": "func",
+            "params": {
+                "length": 28,
+                "call": true,
+                "enc": true
+            }
+        },
+        {
+            "name": "class",
+            "params": []
+        },
+        {
+            "name": "number",
+            "params": []
+        },
+        {
+            "name": "string",
+            "params": {
+                "xor": true,
+                "split": 8
+            }
+        },
+        {
+            "name": "semantic",
+            "params": {
+                "strength": 3
+            }
+        },
+        {
+            "name": "junk_runtime",
+            "params": {
+                "intensity": 10
+            }
+        },
+        {
+            "name": "dead",
+            "params": {
+                "density": 10
+            }
+        },
+        {
+            "name": "comment",
+            "params": []
+        },
+        {
+            "name": "stat",
+            "params": []
+        },
+        {
+            "name": "token",
+            "params": {
+                "decoy": 20
+            }
+        },
+        {
+            "name": "ws",
+            "params": []
+        },
+        {
+            "name": "controlflow",
+            "params": {
+                "cfg": "high",
+                "goto": 5,
+                "goto_cpx": 16
+            }
+        },
+        {
+            "name": "shell:vm",
+            "params": {
+                "stateMachine": true,
+                "chunks": 16,
+                "morph": true,
+                "fakeFog": 200,
+                "probe": 50,
+                "keychain": true,
+                "builtinReplace": true,
+                "junk": 200,
+                "cpool": true
+            }
+        }
+    ]
+}

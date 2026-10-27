@@ -286,5 +286,49 @@ final class VmJunk
                 $seg[$jNew][1] = $newOffset;
             }
         }
+        // 4) 异常表同步：每条 ET 表项 [tryStart, tryEnd, handlerPc, ...] 的三个 pc 边界与
+        //    段指令下标一一对应，插入片段后须按同一规则整体平移（pc >= at 则 +len）。
+        //    漏做会使 try 保护区错位——抛出的异常路由不到 catch/finally（表现为
+        //    "Uncaught Exception" / catch 返回错误值），且随盐值随机分布间歇性复现。
+        //    插入点落在 try 区间内部时 start 不动、end 右移，区间扩为含垃圾片段：
+        //    垃圾片段栈平衡无副作用、不抛异常，保护区语义不受影响。
+        $etPath = $this->etPathOf($path);
+        if ($etPath !== null) {
+            $et = &$this->deref($program, $etPath);
+            if (is_array($et)) {
+                foreach ($et as &$entry) {
+                    if (!is_array($entry) || count($entry) < 3) {
+                        continue;
+                    }
+                    for ($i = 0; $i < 3; $i++) {
+                        if (is_int($entry[$i]) && $entry[$i] >= $at) {
+                            $entry[$i] += $len;
+                        }
+                    }
+                }
+                unset($entry);
+            }
+        }
+    }
+
+    /**
+     * 段路径 → 对应异常表路径（段与异常表平行存储，键结构同构）。
+     * ['main'] → ['mainET']；['funcs',$n] → ['funcET',$n]；
+     * ['classes',$c,'methods',$m] → ['classET',$c,$m]。其余（不存在 ET 的路径）返回 null。
+     * @param array<int,string|int> $path
+     * @return array<int,string|int>|null
+     */
+    private function etPathOf(array $path): ?array
+    {
+        if ($path === ['main']) {
+            return ['mainET'];
+        }
+        if (count($path) === 2 && $path[0] === 'funcs') {
+            return ['funcET', $path[1]];
+        }
+        if (count($path) === 4 && $path[0] === 'classes' && $path[2] === 'methods') {
+            return ['classET', $path[1], $path[3]];
+        }
+        return null;
     }
 }

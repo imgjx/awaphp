@@ -428,6 +428,20 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **GOTO 混淆跳过 try/catch 函数**：`GotoObfuscator::containsUnsafe()` 的跳过列表在闭包 / `match` / 插值基础上补充 `T_TRY / T_CATCH / T_FINALLY / T_THROW`，含异常处理的函数体不再参与 GOTO 状态机改写（与既有"整体跳过"策略一致）。
 - **预设稳健性验证**：每档以 `token_rich` fixture（属性 / 闭包 `use(&$x)` / match / trait / try-catch-finally / 静态变量 / heredoc）+ 独立样例各跑 **6 个盐值**逐字节比对原生输出，全部通过；`tests/token_obf.php` 等级遍历已加入 `ultra`（32 项全绿），`run_tests` 32 项、`hardening` 32 项及全部 VM 专项无回归。
 - **已知限制（记录在案）**：
-  - `--vm-junk`（VM 字节码垃圾指令）注入段落在盐值随机分布下会**间歇性破坏 VM 异常桥接**（try/catch 函数的 catch 变量绑定偶发丢失，`junk`≥40 且叠加 eval/gz 外壳时必现）；预设因此未启用该参数，散装使用请自行评估；
-  - `stateMachine` VM 模式对 try/catch/throw 的编译与 `flatten` 路径不等价（`risky(-1)` 异常捕获失效），预设统一采用经充分验证的 `flatten` 路径；
-  - `semantic` 语义等价变换对本仓库测试 fixture（含 match / 闭包 / 属性的混合构造）存在破坏性，预设未启用，散装使用请先验证产物。
+  - ~~`--vm-junk`（VM 字节码垃圾指令）注入段落在盐值随机分布下会**间歇性破坏 VM 异常桥接**~~（v1.0.5 已修复，见 §11.9——根因是垃圾注入未同步异常表）；
+  - ~~`stateMachine` VM 模式对 try/catch/throw 的编译与 `flatten` 路径不等价~~（v1.0.5 已澄清：stateMachine 从未损坏，当时失败同为 VmJunk 缺陷连带）；
+  - ~~`semantic` 语义等价变换对本仓库测试 fixture 存在破坏性~~（v1.0.5 已澄清：同上，语义变换本身无缺陷，预设已重新启用）。
+
+### 11.9 v1.0.5：修复 VmJunk 异常表不同步（问题功能修复）+ 混淆引擎全量加强
+
+- **修复「vm-junk 间歇性破坏异常桥接」根因**（v1.0.3 遗留的已知限制）：
+  - 根因：VM 的异常表（`mainET` / `funcET` / `classET`，表项 `[tryStart, tryEnd, handlerPc, ...]`）与指令段**平行存储**，而 `VmJunk::spliceSeg()` 向段内插入垃圾片段后只修正了相对跳转偏移、**从未平移异常表的 pc 边界**——try 保护区整体错位，抛出的异常路由不到 catch/finally（表现为 `Uncaught Exception` 逃逸、catch 返回错误值或空）。由于垃圾插入点由盐值确定性随机选取，故障随盐值**间歇性复现**（junk=1 即可触发，junk≥20 高频复现）。
+  - 修复：`spliceSeg()` 末尾按与跳转目标相同的平移规则同步调整对应段异常表的三个 pc 边界（`pc >= 插入点则 +片段长度`）；插入点落在 try 区间内部时区间自动扩为含垃圾片段（垃圾片段栈平衡、不抛异常，保护区语义不受影响）。
+  - 连带澄清：v1.0.3 时误判为独立缺陷的 **`stateMachine` 模式 try/catch 失效**与 **`semantic` 变换破坏 fixture**，实为同一 VmJunk 缺陷的连带表现（当时的隔离配置均含 junk，个别"通过"组系盐值运气）。两者本身从未损坏。
+- **混淆引擎全量加强**（基于修复后的安全顶格，五档预设再次全面加码）：
+  - `high`：VM 由 flatten 升级为 **stateMachine** + junk=80，GOTO 2→3 层，新增 semantic（强度 2）；
+  - `max`：stateMachine + junk=160，GOTO 2→4 层（cpx=12），新增 semantic（强度 3）；
+  - `ultra`：stateMachine + junk=200 + 真·嵌套 VM（layers=2），GOTO 2→5 层（cpx=16 顶格），新增 semantic（强度 3）；
+  - `mid`：VM 加 junk=20；`low`：VM 加 morph（消除固定指纹）。
+- **语法兼容性验证**：新增覆盖 PHP 8.x 语法广度的测试样例（enum / readonly 属性 / 构造器属性提升 / 一等可调用语法 `strlen(...)` / `never` 返回 / 生成器 / union 类型 / 变长参数 / 引用传参 / 命名参数 / 展开运算符 / nullsafe 等），在 ultra 顶格配置下多盐值逐字节比对原生输出全部一致；token_rich fixture（属性 / 闭包 / match / trait / try-catch-finally / 静态变量 / heredoc）5 档 × 4 盐 × 3 样例矩阵全绿。
+- **回归**：`run_tests` 32、`token_obf` 32、`hardening` 32、`vm_junk` 120、`vm_trycatch_probe` 64、`vm_p8` 77、`vm_gen_probe` 120、`vm_args_probe` 93、`vm_comprehensive` 28、`vm_ref_e2e` 14、`vm_builtin_modules` 96、`vm_call_native` / `vm_module_link` / `vm_smoke` 全部通过，无回归。
