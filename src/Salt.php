@@ -23,6 +23,17 @@ final class Salt
     }
 
     /**
+     * 实例级派生缓存：derive/deriveInt 在相同 (label, 参数) 下结果恒定，而混淆过程
+     * 中它们被海量调用（每个变量名、每个 GOTO 标签、每次洗牌交换都走一遍 sha256）。
+     * 缓存把重复派生从 O(调用次数) 降到 O(不同标签数)，在大型输入 / 多层壳防护下
+     * 显著降低构建开销，且完全不改变任何输出（纯确定性）。
+     * @var array<string,string>
+     */
+    private array $cacheDerive = [];
+    /** @var array<string,int> */
+    private array $cacheInt = [];
+
+    /**
      * 由原始名字生成加盐后的短标识符（形如 _a1b2c3）。
      * 长度不足时以 hex 字符填充，始终返回合法 PHP 标识符。
      */
@@ -63,13 +74,19 @@ final class Salt
     public function derive(string $label, int $bytes = 8): string
     {
         $bytes = max(1, (int) $bytes);
+        $key = $label . "\0" . $bytes;
+        if (isset($this->cacheDerive[$key])) {
+            return $this->cacheDerive[$key];
+        }
         $out = '';
         $counter = 0;
         while (strlen($out) < $bytes) {
             $out .= hash('sha256', $this->salt . '|' . $label . '|' . $counter, true);
             $counter++;
         }
-        return substr($out, 0, $bytes);
+        $out = substr($out, 0, $bytes);
+        $this->cacheDerive[$key] = $out;
+        return $out;
     }
 
     /**
@@ -116,12 +133,18 @@ final class Salt
         if ($max <= $min) {
             return $min;
         }
+        $key = $label . "\0" . $min . "\0" . $max;
+        if (isset($this->cacheInt[$key])) {
+            return $this->cacheInt[$key];
+        }
         // 注意：unpack('J') 在 64 位 PHP 上返回**有符号**整数，直接取模会得到负数
         // （曾导致 NameStyle::pick() 下标为负 -> 返回 null -> 防篡改守卫静默回滚）。
         // 这里取前 4 字节按无符号 32 位解析，恒为正数。
         $raw = $this->derive($label, 8);
         $val = unpack('N', substr($raw, 0, 4));
         $n = $val === false ? 0 : $val[1];
-        return $min + (int) ($n % ($max - $min + 1));
+        $r = $min + (int) ($n % ($max - $min + 1));
+        $this->cacheInt[$key] = $r;
+        return $r;
     }
 }

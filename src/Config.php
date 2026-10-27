@@ -122,6 +122,9 @@ final class Config
         $this->data['struct_poison']  = $b($this->data['struct_poison'] ?? false) ?? false;
         // 蜜罐函数：拟真高价值命名的钓鱼假函数，被调用即拖慢调试并返回诱饵密钥
         $this->data['honeypot']       = max(0, $i($this->data['honeypot'] ?? 0));
+        // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住；强度 1-3 控制语义变换激进度
+        $this->data['shell_shield']          = $b($this->data['shell_shield'] ?? true) ?? true;
+        $this->data['shell_shield_intensity'] = max(1, min(3, $i($this->data['shell_shield_intensity'] ?? 2)));
         $this->data['level']          = (string) ($this->data['level'] ?? '');
         // layers：分层执行模型的核心。存在时 Obfuscator::run() 走分层分支。
         $this->data['layers']         = is_array($this->data['layers'] ?? null) ? $this->data['layers'] : [];

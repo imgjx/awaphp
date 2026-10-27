@@ -24,6 +24,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../ShellProtector.php';
+
 final class AntiTamper
 {
     /**
@@ -52,7 +54,7 @@ final class AntiTamper
      *   shutdown: 是否注册 shutdown 二次校验
      * @return array{code:string, ok:bool}
      */
-    public function wrap(string $code, array $opts = []): array
+    public function wrap(string $code, array $opts = [], array $shieldOpts = []): array
     {
         $segCount  = max(2, min(8, (int) ($opts['segments'] ?? 4)));
         $shutdown  = (bool) ($opts['shutdown'] ?? true);
@@ -142,6 +144,15 @@ final class AntiTamper
 
         // ---- 3) 守卫行：自身哈希以"占位符参与哈希"嵌入 ----
         $tpl = $mName . '=__FILE__;' . $eName . "='" . $zeros . "';\$g=@eval(gzinflate(base64_decode('" . $blob . "')));";
+        // 逐层壳自保护：对守卫行施加混淆。必须【不动变量名】（用 norename 模式），
+        // 否则运行时 $needle = $mName.'=__FILE__;' 的自匹配会失配、自校验误报篡改。
+        // token 大小写 + 语义变换足以藏匿明文守卫逻辑（核心校验逻辑已 gz 编码进 blob）。
+        if (!empty($shieldOpts['shield'])) {
+            $tpl = ShellProtector::protect(
+                $tpl, $this->salt, $this->logger, 'norename',
+                max(1, min(3, (int) ($shieldOpts['intensity'] ?? 2)))
+            );
+        }
         $selfHash = sha1($tpl);
         $line = str_replace("'" . $zeros . "'", "'" . $selfHash . "'", $tpl);
 

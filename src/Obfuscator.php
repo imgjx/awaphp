@@ -99,7 +99,7 @@ final class Obfuscator
         // ===== 字符串级外壳（依次包裹；每步 php -l 校验，失败回滚） =====
         $phpVer = new PhpVersion($this->logger, $this->salt);
         $phpVer->setTarget((string) $this->config->get('php_version'));
-        $current = $this->shell($current, '目标PHP版本外壳', fn ($c) => $phpVer->wrap($c));
+        $current = $this->shell($current, '目标PHP版本外壳', fn ($c) => $phpVer->wrap($c), 'phpver');
 
         // 反调试 / 防 hook eval：置于编码壳之前（最内层），被 vm/eval/gz 裹入密文，
         // 攻击者须先破壳才能看到、更无从"整段删除代码块"让保护蒸发。
@@ -108,11 +108,11 @@ final class Obfuscator
                 'probes'    => (string) $this->config->get('ad_probes'),
                 'intensity' => (int) $this->config->get('ad_intensity'),
             ];
-            $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts));
+            $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts), 'anti_debug');
         }
         if ($this->config->get('anti_hook')) {
             $ahOpts = ['strict' => (bool) $this->config->get('ah_strict')];
-            $current = $this->shell($current, '防hook eval守卫', fn ($c) => (new AntiHookEval($this->salt, $this->logger))->wrap($c, $ahOpts)['code']);
+            $current = $this->shell($current, '防hook eval守卫', fn ($c) => (new AntiHookEval($this->salt, $this->logger))->wrap($c, $ahOpts)['code'], 'anti_hook');
         }
         if ($this->config->get('vm')) {
             // 新方案：统一走自定义指令集 VM（VmRuntimeGenerator），替代旧版 XOR+eval 壳。
@@ -138,23 +138,23 @@ final class Obfuscator
                 // 默认 1（单层）；>=2 时逐层回灌自己，每层先剥 PHP 开闭标签。
                 'layers'         => max(1, (int) $this->config->get('vm_layers')),
             ];
-            $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c));
+            $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
         }
         if ($this->config->get('eval')) {
-            $current = $this->shell($current, 'EVAL加壳', fn ($c) => (new EvalShell($this->salt, $this->logger))->wrap($c, (int) $this->config->get('eval_layers')));
+            $current = $this->shell($current, 'EVAL加壳', fn ($c) => (new EvalShell($this->salt, $this->logger))->wrap($c, (int) $this->config->get('eval_layers')), 'eval');
         }
         if ($this->config->get('gz')) {
             $gzOpts = [
                 'decoy'  => (bool) $this->config->get('gz_decoy'),
                 'chunks' => (int) $this->config->get('gz_chunks'),
             ];
-            $current = $this->shell($current, 'GZ压缩加壳', fn ($c) => (new GzEncoder($this->logger, $this->salt))->wrap($c, $gzOpts));
+            $current = $this->shell($current, 'GZ压缩加壳', fn ($c) => (new GzEncoder($this->logger, $this->salt))->wrap($c, $gzOpts), 'gz');
         }
         // 诱饵函数：拟真命名 + 拟真函数体，整体编码进 gzinflate/base64 壳（不暴露明文），
         // 永不调用、零运行期开销；追加在加壳之后、自校验之前，使防篡改基线包含该壳行。
         $junk = (int) $this->config->get('junk_funcs');
         if ($junk > 0) {
-            $current = $this->shell($current, '诱饵函数', fn ($c) => (new JunkFunctions($this->salt, $this->logger))->inject($c, $junk));
+            $current = $this->shell($current, '诱饵函数', fn ($c) => (new JunkFunctions($this->salt, $this->logger))->inject($c, $junk), 'junk');
         }
 
         // 文件头引擎信息：须在自校验前注入，使防篡改基线包含该头注释，
@@ -171,7 +171,7 @@ final class Obfuscator
             if (!class_exists(Honeypot::class, false)) {
                 require_once __DIR__ . '/ControlFlow/Honeypot.php';
             }
-            $current = $this->shell($current, '蜜罐函数', fn ($c) => (new Honeypot($this->logger, $this->salt))->inject($c, $hp));
+            $current = $this->shell($current, '蜜罐函数', fn ($c) => (new Honeypot($this->logger, $this->salt))->inject($c, $hp), 'honeypot');
         }
 
         // 结构指纹毒化壳（真最外层）：指纹对象 = 除自身载荷外的完整最终文件，
@@ -180,7 +180,7 @@ final class Obfuscator
             if (!class_exists(StructPoison::class, false)) {
                 require_once __DIR__ . '/Encode/StructPoison.php';
             }
-            $current = $this->shell($current, '结构指纹毒化壳', fn ($c) => (new StructPoison($this->logger, $this->salt))->wrap($c));
+            $current = $this->shell($current, '结构指纹毒化壳', fn ($c) => (new StructPoison($this->logger, $this->salt))->wrap($c, ['shield' => true, 'intensity' => (int) $this->config->get('shell_shield_intensity')]), 'structpoison');
         }
 
         // 自校验防篡改置于最外层：掩码自校验 + 分段哈希 + shutdown 二次校验（逻辑全部编码）
@@ -189,14 +189,14 @@ final class Obfuscator
                 'segments' => (int) $this->config->get('at_segments'),
                 'shutdown' => (bool) $this->config->get('at_shutdown'),
             ];
-            $current = $this->shell($current, '自校验防篡改', fn ($c) => (new AntiTamper($this->salt, $this->logger))->wrap($c, $atOpts)['code']);
+            $current = $this->shell($current, '自校验防篡改', fn ($c) => (new AntiTamper($this->salt, $this->logger))->wrap($c, $atOpts, $this->shieldOpts())['code'], 'anti_tamper');
         }
 
         // 授权绑定守卫（域名 + 有效期）：置于最外层（anti_tamper 之外），未配置时完全不注入
         $dom = (string) $this->config->get('license_domain');
         $exp = (string) $this->config->get('license_expire');
         if ($dom !== '' || $exp !== '') {
-            $current = $this->shell($current, '授权绑定守卫', fn ($c) => (new LicenseGuard($this->salt, $this->logger))->wrap($c, $dom, $exp)['code']);
+            $current = $this->shell($current, '授权绑定守卫', fn ($c) => (new LicenseGuard($this->salt, $this->logger))->wrap($c, $dom, $exp)['code'], 'license');
         }
 
         return $current;
@@ -333,6 +333,8 @@ final class Obfuscator
             }
             if ($kind === 'shell') {
                 $code = $this->applyShellLayer($name, $params, $code);
+                // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住（破解需先破外层混淆）
+                $code = $this->shieldIfNeeded($code, $name);
             }
             $code = $this->applyInject($inject, $code);
         } catch (Throwable $e) {
@@ -498,7 +500,7 @@ final class Obfuscator
                 return (new AntiTamper($this->salt, $this->logger))->wrap($code, [
                     'segments' => (int) ($params['segments'] ?? 4),
                     'shutdown' => (bool) ($params['shutdown'] ?? true),
-                ])['code'];
+                ], $this->shieldOpts())['code'];
             case 'license':
                 $dom = (string) ($params['domain'] ?? '');
                 $exp = (string) ($params['expire'] ?? '');
@@ -510,9 +512,11 @@ final class Obfuscator
                 if (!class_exists(StructPoison::class, false)) {
                     require_once __DIR__ . '/Encode/StructPoison.php';
                 }
-                return (new StructPoison($this->logger, $this->salt))->wrap($code, [
-                    'rounds' => (int) ($params['rounds'] ?? 3),
-                ]);
+            return (new StructPoison($this->logger, $this->salt))->wrap($code, [
+                'rounds'    => (int) ($params['rounds'] ?? 3),
+                'shield'    => (bool) $this->config->get('shell_shield'),
+                'intensity' => (int) $this->config->get('shell_shield_intensity'),
+            ]);
             case 'honeypot':
                 $hpCount = (int) ($params['count'] ?? 0);
                 if ($hpCount <= 0) {
@@ -670,7 +674,7 @@ final class Obfuscator
     /**
      * 应用一个字符串级外壳；失败时回滚到传入的 $code（上一安全态）。
      */
-    private function shell(string $code, string $label, callable $fn): string
+    private function shell(string $code, string $label, callable $fn, string $layerKey = ''): string
     {
         try {
             $next = $fn($code);
@@ -683,8 +687,61 @@ final class Obfuscator
             $this->logger->warn("{$label}产物未通过 php -l，回滚");
             return $code;
         }
+        // 逐层壳自保护：对刚包裹好的壳解码逻辑再施加混淆
+        $next = $this->shieldIfNeeded($next, $layerKey);
         $this->logger->debug("已应用{$label}");
         return $next;
+    }
+
+    /**
+     * 逐层壳自保护：把刚包裹好的一层壳的解码逻辑再施加一层混淆（ShellProtector），
+     * 使攻击者必须先解开【外层壳的混淆】才能读到【内层壳的明文解码逻辑】——
+     * 而不是"破一层就直接拿到下一层的源码"。
+     *
+     * 跳过 / 模式规则（避免破坏自校验）：
+     *   - structpoison：壳内自行保护（指纹计算前对自身施保护，见 StructPoison），此处不二次处理；
+     *   - anti_tamper：自带区段哈希 + needle 变量名自匹配，禁用"变量重命名"模式，
+     *     改用 norename（仅 token 形态 + 语义变换，不动变量名），否则守卫行自定位失配。
+     *
+     * @param string $layerKey 分层层名（shell:xxx）或散装键（vm/gz/...）
+     */
+    private function shieldIfNeeded(string $code, string $layerKey): string
+    {
+        if (!$this->config->get('shell_shield')) {
+            return $code;
+        }
+        // phpver 是"运行时版本守卫"，并非解码壳——它把【整段载荷】裹在最外层，
+        // 对其施加 ShellProtector 等于把用户整段源码再混淆一遍（既无意义、又拖慢、且风险高），
+        // 故跳过。真正需要"破一层先被恶心一层"的是各解码壳（vm/eval/gz/anti_*/...）。
+        if ($layerKey === 'phpver') {
+            return $code;
+        }
+        if ($layerKey === 'shell:structpoison' || $layerKey === 'structpoison') {
+            return $code; // 自行保护，跳过
+        }
+        // anti_tamper 自带区段哈希（构建期已对【整段主体】求哈希写入守卫），若在封装后再对
+        // 整段施加 ShellProtector，主体字节会变 → 运行期区段哈希失配误报篡改。其守卫行已由
+        // AntiTamper 内部以 norename 模式自保护，故此处跳过整段保护。
+        if ($layerKey === 'shell:anti_tamper' || $layerKey === 'anti_tamper') {
+            return $code;
+        }
+        $mode = ($layerKey === 'shell:anti_tamper' || $layerKey === 'anti_tamper')
+            ? 'norename' : 'full';
+        $strength = (int) $this->config->get('shell_shield_intensity');
+        return ShellProtector::protect($code, $this->salt, $this->logger, $mode, $strength);
+    }
+
+    /**
+     * 供自保护性壳（StructPoison / AntiTamper）读取"是否对自身施保护 + 强度"的配置，
+     * 与 shieldIfNeeded 共享同一组开关，保证行为一致。
+     * @return array{shield:bool,intensity:int}
+     */
+    private function shieldOpts(): array
+    {
+        return [
+            'shield'    => (bool) $this->config->get('shell_shield'),
+            'intensity' => (int) $this->config->get('shell_shield_intensity'),
+        ];
     }
 
     private function pipelineOnce(string $code, bool $isLast): string
@@ -787,6 +844,12 @@ final class Obfuscator
         // 新的 T_LNUMBER，同样落入该陷阱，必须补空格。
         if ($text[0] === '.' && is_array($prevTok)
             && in_array($prevTok[0], [T_LNUMBER, T_DNUMBER], true)) {
+            return true;
+        }
+        // 词素单词后紧跟 `\` 起头的命名空间名（如 `new \stdClass()`）：压缩去空白后
+        // 变成 `new\stdClass`，PHP 词法器误判为函数调用而报
+        // "Call to undefined function new\stdClass()"，必须补空格。
+        if ($wordy($prevChar) && $text[0] === '\\') {
             return true;
         }
         return false;

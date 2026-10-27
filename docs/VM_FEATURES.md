@@ -469,3 +469,19 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - `VmJunk::spliceSeg()` 经 `deref()` 隐式建出 `funcET[fn] = null`，`bWriteExTab()` 收到 null 抛 `TypeError` → **整个 VM 层静默回退为普通加壳**（max/ultra 上 `--vm-junk` 一开即触发）；现先把 null 归一为空表；
   - 分层顺序：`honeypot` / `structpoison` 移入"次外层"（`anti_tamper` 之内）。蜜罐若在 anti_tamper 之后注入，其追加的函数会落在受护尾区之外被判定为"篡改"；毒化壳若在 anti_tamper 之外，则 anti_tamper 的明文锚点被吞进密文。同时 `runLayered` 的 banner 注入点前移到毒化壳之前，避免 banner 追加破坏毒化壳指纹。
 - **回归**：`run_tests` 32、`syntax_compat` 7（含 ultra 双盐）、`vm_builtin_modules` 205、`vm_junk` 120、`vm_p8` 77、`vm_args_probe` 93、`token_obf` 32、`hardening` 32、`vm_comprehensive` / `vm_call_native` / `vm_module_link` / `vm_include` / `vm_defaults` 全绿；五档预设 + 毒化壳三态（未篡改/美化/篡改）人工验证通过。
+
+### 11.11 v1.0.6：逐层壳自保护（破一层先被恶心一层）+ 性能优化
+
+- **`ShellProtector` 逐层壳自保护（核心新增，`--shell-shield-intensity=N`，默认随等级 1-3）**：
+  - 设计动机：旧版各解码壳是「平铺」的——攻击者破掉最外层壳即可直接看到内层壳的**明文解码逻辑**，等于「破一层拿一层」。v1.0.6 让**每一层壳解码逻辑本身再被外层混淆护住**：在 `Obfuscator::shell()` / `applyLayer()` 每层包裹完成后，对该层产物施加一次 `ShellProtector` 变换（变量重命名 + 语义等价变换 + token 形态 + 压缩）。于是要读到第 N 层的解码逻辑，必须先解开第 N+1 层套在外面的混淆——**破一层要先被恶心一层**，攻击者无法「破一个是一个」。
+  - 黑盒性保证：GZ / EVAL / VM / License 等壳把内层裹成字符串 / 字节码黑盒，承载内层密文的 base64 串是单 token，`ShellProtector` **永不触碰字符串字面量内容**（`token_quote` / `token_heredoc` 恒关），逐层套用不会改写内层载荷，自然形成「解一层先被恶心一层」的递归保护。
+  - 三种模式：`full`（变量重命名 + token 形态 + 语义变换 + 压缩，供普通壳）、`norename`（仅 token 形态 + 语义变换，供 `anti_tamper` 等「靠变量名自匹配 needle / 自带区段哈希」的壳，避免破坏其自校验）、`caseonly`（仅 token 大小写随机，兜底）。强度 N 仅控制语义变换激进度，变量重命名始终开启。
+  - 自参照壳特殊处理：`StructPoison` 在**指纹计算前**对自身施保护（受护区标记是注释、占位串是字符串字面量，均不被改写）；`AntiTamper` 的守卫行以 `norename` 模式自保护（保留变量名保证 needle 自匹配），且二者在 `shieldIfNeeded` 中跳过外层重复保护，避免整段字节改变导致运行期哈希失配误报篡改。
+  - 排除项：目标 PHP 版本守卫（`phpver`）是运行时兼容校验、并非解码壳，对其施加保护等于把整段载荷再混淆一遍（无意义、拖慢、风险高），故跳过——真正需要「破一层先被恶心一层」的是各解码壳（vm / eval / gz / anti_debug / anti_hook / …）。
+- **性能优化（`Salt` 记忆化）**：`Salt::derive()` / `deriveInt()` 增加实例级缓存（按 `(label,bytes)` / `(label,min,max)` 短路），纯确定性、不改变任何输出。被逐层壳保护放大的重复 `sha256` 调用得到削减，顶格等级构建耗时无退化。
+- **新增 CLI**：`--shell-shield-intensity=N`（自保护语义变换强度 1-3）、`--no-shell-shield`（关闭逐层壳自保护，破解更易）。
+- **修复（`ShellProtector` 压缩安全性）**：
+  - 压缩去换行后，`//` 与 `#` 行注释会「吞掉」紧随其后的整段代码，导致产物运行期静默无输出——统一在压缩前把行注释改写为块注释（`/* … */`），块注释不依赖尾随换行；
+  - `emit` 在 `<?php` 开标签后补边界空格，避免 `<?phpfunction` 粘连被误判；
+  - `needsSpace` 在「词素单词后紧跟 `\` 起头的命名空间名」（`new \stdClass()`）处补空格，否则压缩成 `new\stdClass` 被 PHP 词法器误判为函数调用而报 `Call to undefined function new\stdClass()`。该规则同步修到 `Obfuscator::emit`，覆盖分层 `ws` 层的同等隐患。
+- **回归**：`run_tests` 32、`syntax_compat` 7、`vm_builtin_modules` 205、`hardening_v105` 14、`hardening_v106` 29 全绿；五档预设（low/mid/high/max/ultra）产物运行输出与原文逐字节一致；`--no-shell-shield` 开关、`anti_tamper` 单字节篡改检测、结构毒化壳三态（未篡改/美化/篡改）均通过专项验证。

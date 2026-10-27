@@ -31,6 +31,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../ShellProtector.php';
+
 final class StructPoison
 {
     public function __construct(
@@ -42,6 +44,10 @@ final class StructPoison
     public function wrap(string $code, array $opts = []): string
     {
         $rounds = max(1, min(8, (int) ($opts['rounds'] ?? 3)));
+        // 逐层壳自保护：在【指纹计算前】对本壳整段（占位骨架 + 运行期解码逻辑）施加混淆，
+        // 保证运行期 __FILE__ 重算指纹与构建期一致（被保护后的整段字节即指纹对象）。
+        $shield    = (bool) ($opts['shield'] ?? false);
+        $intensity = max(1, min(3, (int) ($opts['shield_intensity'] ?? 2)));
 
         // eval() 不解析 <?php 标签，剥离外层开/闭标签得到纯 PHP 语句
         $inner = preg_replace('/^\s*<\?(php)?\s*/i', '', $code);
@@ -79,14 +85,22 @@ final class StructPoison
         // ---- 骨架：载荷位置为占位串 ----
         // 注意：$vLoad 的值本身已带 '$' 前缀，这里绝不能写成 "\${$vLoad}"
         // （会拼出 $$__spXXX 可变变量 → 壳体变量永不赋值）
-        $skel = "<?php {$sm}{$vLoad}='{$placeholder}';" . $this->runtime($rounds, $v, $sm, $em) . $em;
+        $body = "{$sm}{$vLoad}='{$placeholder}';" . $this->runtime($rounds, $v, $sm, $em) . $em;
+        $full = "<?php " . $body;
+
+        // ---- 逐层壳自保护：在指纹计算前对整段施加混淆（变量重命名 + token 形态 + 语义）----
+        // 受护区标记是注释，不会被触碰；占位串 'AAAA' 是字符串字面量，不会被改写；
+        // 变量名在整段内一致重命名，因此"占位赋值行"与"运行期引用"保持对齐。
+        if ($shield) {
+            $full = ShellProtector::protect($full, $this->salt, $this->logger, 'full', $intensity);
+        }
 
         // ---- 构建期指纹与密钥流（probe 恒为 0）----
-        $bp = (int) strpos($skel, $sm);
+        $bp = (int) strpos($full, $sm);
         // 终点标记在运行期代码里也以字符串字面量出现一次，必须取【最后一次】出现，
         // 否则受护区会被截断到字面量处（后半段解码逻辑不受保护）。
-        $bq = (int) strrpos($skel, $em);
-        $h = hash('sha256', substr($skel, $bp, $bq - $bp + strlen($em)));
+        $bq = (int) strrpos($full, $em);
+        $h = hash('sha256', substr($full, $bp, $bq - $bp + strlen($em)));
         $seed = hash('sha256', $h . $h . '0');
         for ($i = 1; $i < $rounds; $i++) {
             $seed = hash('sha256', $seed . $h . $i . '0');
@@ -100,7 +114,7 @@ final class StructPoison
         $payload = base64_encode($cipher);
 
         // ---- 定长替换：骨架其余部分逐字节不变，指纹恒等式成立 ----
-        $out = str_replace($placeholder, $payload, $skel);
+        $out = str_replace($placeholder, $payload, $full);
 
         $this->logger->debug('已应用结构指纹毒化壳（KDF 轮数=' . $rounds . ' 载荷=' . strlen($payload) . 'B）');
         return $out;

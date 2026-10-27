@@ -35,6 +35,8 @@ return [
             ['name' => 'shell:vm',     'params' => ['flatten' => false, 'chunks' => 3, 'morph' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 2]],
         ],
+        'shell_shield' => true,
+        'shell_shield_intensity' => 1,
     ],
 
     // ===================== mid：VM 平坦化 + P8 架构方向（morph/keychain/builtinReplace/fakeFog/probe）+ 动态垃圾 =====================
@@ -57,6 +59,8 @@ return [
             ['name' => 'shell:anti_debug', 'params' => ['probes' => 'ext,func,ini', 'intensity' => 2]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 3]],
         ],
+        'shell_shield' => true,
+        'shell_shield_intensity' => 2,
     ],
 
     // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测 =====================
@@ -82,6 +86,8 @@ return [
             ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
             ['name' => 'shell:anti_tamper', 'params' => ['segments' => 6, 'shutdown' => true]],
         ],
+        'shell_shield' => true,
+        'shell_shield_intensity' => 2,
     ],
 
     // ===================== max：VM 状态机全参数拉满 + 深层 GOTO + 语义变换 + 全反检测矩阵 =====================
@@ -109,6 +115,8 @@ return [
             ['name' => 'shell:honeypot',    'params' => ['count' => 4]],
             ['name' => 'shell:structpoison','params' => ['rounds' => 3]],
         ],
+        'shell_shield' => true,
+        'shell_shield_intensity' => 3,
     ],
 
     // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
@@ -136,5 +144,7 @@ return [
             ['name' => 'shell:honeypot',    'params' => ['count' => 6]],
             ['name' => 'shell:structpoison','params' => ['rounds' => 5]],
         ],
+        'shell_shield' => true,
+        'shell_shield_intensity' => 3,
     ],
 ];

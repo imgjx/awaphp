@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.5');
+define('OBFUSCATOR_VERSION', '1.0.6');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -26,6 +26,7 @@ foreach ([
     'src/Config.php',
     'src/Parser.php',
     'src/Validator.php',
+    'src/ShellProtector.php',
     'src/Obfuscator.php',
     'src/Variable/VariableObfuscator.php',
     'src/Function_/FunctionObfuscator.php',
@@ -95,6 +96,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-cpool') {
             $out['vm_cpool'] = false;
+            continue;
+        }
+        if ($a === '--no-shell-shield') {
+            $out['shell_shield'] = false;
             continue;
         }
         if (str_starts_with($a, '--')) {
@@ -199,6 +204,9 @@ function obf_help(): string
       --honeypot=N     蜜罐函数数量（拟真高价值命名，正常永不调用；被调即拖住调试
                        1.4s 并返回伪密钥）
       --goto-trap=N    GOTO 诱饵死状态数（每个分派器 0-4 个不可达分支，强跳即自锁）
+      --shell-shield-intensity= 逐层壳自保护强度 1-3（默认随等级：low=1/mid,high=2/max,ultra=3；
+                       仅控制语义变换激进度，变量重命名始终开启）
+      --no-shell-shield  关闭逐层壳自保护（每层壳解码逻辑不再被外层混淆护住，破解更易）
       --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3（默认 8.1）
       --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
                        EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）
