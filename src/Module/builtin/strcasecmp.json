@@ -1,0 +1,10 @@
+{
+    "name": "strcasecmp",
+    "match": [
+        "strcasecmp"
+    ],
+    "entry": "strcasecmp.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_strcasecmp"
+}

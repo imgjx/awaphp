@@ -1,0 +1,10 @@
+{
+    "name": "strrpos",
+    "match": [
+        "strrpos"
+    ],
+    "entry": "strrpos.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_strrpos"
+}

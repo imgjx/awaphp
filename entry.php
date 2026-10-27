@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.4');
+define('OBFUSCATOR_VERSION', '1.0.5');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -194,6 +194,11 @@ function obf_help(): string
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）
       --anti-hook      防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测）
       --anti-tamper    自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验）
+      --struct-poison  结构指纹毒化壳：文件指纹参与解密密钥派生（美化/篡改/插桩 →
+                       解出乱码，无比较分支可 hook）；自带 uopz/runkit 插桩探针
+      --honeypot=N     蜜罐函数数量（拟真高价值命名，正常永不调用；被调即拖住调试
+                       1.4s 并返回伪密钥）
+      --goto-trap=N    GOTO 诱饵死状态数（每个分派器 0-4 个不可达分支，强跳即自锁）
       --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3（默认 8.1）
       --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
                        EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）

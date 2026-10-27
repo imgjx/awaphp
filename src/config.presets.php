@@ -106,6 +106,8 @@ return [
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 5]],
             ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
             ['name' => 'shell:anti_tamper', 'params' => ['segments' => 8, 'shutdown' => true]],
+            ['name' => 'shell:honeypot',    'params' => ['count' => 4]],
+            ['name' => 'shell:structpoison','params' => ['rounds' => 3]],
         ],
     ],
 
@@ -131,6 +133,8 @@ return [
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 6]],
             ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
             ['name' => 'shell:anti_tamper', 'params' => ['segments' => 8, 'shutdown' => true]],
+            ['name' => 'shell:honeypot',    'params' => ['count' => 6]],
+            ['name' => 'shell:structpoison','params' => ['rounds' => 5]],
         ],
     ],
 ];

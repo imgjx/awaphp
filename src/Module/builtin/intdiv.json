@@ -1,0 +1,10 @@
+{
+    "name": "intdiv",
+    "match": [
+        "intdiv"
+    ],
+    "entry": "intdiv.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_intdiv"
+}

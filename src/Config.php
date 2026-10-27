@@ -80,6 +80,8 @@ final class Config
         $this->data['no_banner']     = $b($this->data['no_banner']) ?? false;
         $this->data['goto']          = max(0, $i($this->data['goto']));
         $this->data['goto_cpx']      = max(0, $i($this->data['goto_cpx']));
+        // GOTO 诱饵死状态数：每个分派器注入 N 个不可达 case（调试器强跳即自锁），默认 2
+        $this->data['goto_trap']     = max(0, min(4, $i($this->data['goto_trap'] ?? 2)));
         $this->data['eval_layers']   = max(1, $i($this->data['eval_layers']));
         $this->data['junk_funcs']    = max(0, $i($this->data['junk_funcs']));
         $this->data['cfg']           = in_array($this->data['cfg'], ['low', 'medium', 'high'], true) ? $this->data['cfg'] : '';
@@ -116,6 +118,10 @@ final class Config
         $this->data['at_shutdown']    = $b($this->data['at_shutdown'] ?? true) ?? true;
         $this->data['gz_decoy']       = $b($this->data['gz_decoy'] ?? true) ?? true;
         $this->data['gz_chunks']      = max(1, min(6, $i($this->data['gz_chunks'] ?? 3)));
+        // 结构指纹毒化壳：文件指纹参与解密密钥派生（美化/篡改 → 解出乱码，无分支可绕）
+        $this->data['struct_poison']  = $b($this->data['struct_poison'] ?? false) ?? false;
+        // 蜜罐函数：拟真高价值命名的钓鱼假函数，被调用即拖慢调试并返回诱饵密钥
+        $this->data['honeypot']       = max(0, $i($this->data['honeypot'] ?? 0));
         $this->data['level']          = (string) ($this->data['level'] ?? '');
         // layers：分层执行模型的核心。存在时 Obfuscator::run() 走分层分支。
         $this->data['layers']         = is_array($this->data['layers'] ?? null) ? $this->data['layers'] : [];

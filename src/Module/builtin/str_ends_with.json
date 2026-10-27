@@ -1,0 +1,10 @@
+{
+    "name": "str_ends_with",
+    "match": [
+        "str_ends_with"
+    ],
+    "entry": "str_ends_with.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_str_ends_with"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "strstr",
+    "match": [
+        "strstr"
+    ],
+    "entry": "strstr.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_strstr"
+}

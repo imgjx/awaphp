@@ -1,0 +1,10 @@
+{
+    "name": "quotemeta",
+    "match": [
+        "quotemeta"
+    ],
+    "entry": "quotemeta.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_quotemeta"
+}

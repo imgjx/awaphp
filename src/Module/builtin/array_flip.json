@@ -1,0 +1,10 @@
+{
+    "name": "array_flip",
+    "match": [
+        "array_flip"
+    ],
+    "entry": "array_flip.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_flip"
+}

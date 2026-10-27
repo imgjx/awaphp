@@ -1,0 +1,10 @@
+{
+    "name": "array_count_values",
+    "match": [
+        "array_count_values"
+    ],
+    "entry": "array_count_values.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_count_values"
+}

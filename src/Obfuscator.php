@@ -24,9 +24,11 @@
  *   - GZ 压缩加壳（最终外壳）
  *   - 诱饵函数（整体编码进 gzinflate/base64 壳，不暴露明文，永不调用、零运行期开销）
  *   - 文件头版权注释（须在自校验前，使基线包含该注释）
+ *   - 蜜罐函数（钓鱼假函数，落在毒化壳受护区内）
+ *   - 结构指纹毒化壳（受护区指纹进密钥派生；美化/篡改/插桩 → 解出乱码）
  *   - 自校验防篡改（守卫逻辑本身编码进 gzinflate/base64 壳，不再明文暴露，且无忙等开销）
  *
- * 最外层：注入文件头"混淆引擎名 + 引擎版本号"。
+ * 最外层：授权绑定守卫（如配置）。文件头"引擎名 + 版本号"注入在毒化壳之内。
  */
 
 declare(strict_types=1);
@@ -162,6 +164,25 @@ final class Obfuscator
         // 防 hook eval 守卫已在编码壳之前（最内层）注入，此处不再单独处理；
         // 其行被 vm/eval/gz 裹入密文，自校验防篡改的分段哈希覆盖的是该密文区段。
 
+        // 蜜罐函数（钓鱼陷阱）：拟真高价值命名，正常永不调用（零影响）；
+        // 必须注入在毒化壳【之前】：毒化壳只对自己标记区段做指纹，蜜罐落在区内。
+        $hp = (int) $this->config->get('honeypot');
+        if ($hp > 0) {
+            if (!class_exists(Honeypot::class, false)) {
+                require_once __DIR__ . '/ControlFlow/Honeypot.php';
+            }
+            $current = $this->shell($current, '蜜罐函数', fn ($c) => (new Honeypot($this->logger, $this->salt))->inject($c, $hp));
+        }
+
+        // 结构指纹毒化壳（真最外层）：指纹对象 = 除自身载荷外的完整最终文件，
+        // 文件被美化/篡改 → 密钥错位解出乱码（校验结果进数据流，无分支可绕）。
+        if ($this->config->get('struct_poison')) {
+            if (!class_exists(StructPoison::class, false)) {
+                require_once __DIR__ . '/Encode/StructPoison.php';
+            }
+            $current = $this->shell($current, '结构指纹毒化壳', fn ($c) => (new StructPoison($this->logger, $this->salt))->wrap($c));
+        }
+
         // 自校验防篡改置于最外层：掩码自校验 + 分段哈希 + shutdown 二次校验（逻辑全部编码）
         if ($this->config->get('anti_tamper')) {
             $atOpts = [
@@ -171,7 +192,7 @@ final class Obfuscator
             $current = $this->shell($current, '自校验防篡改', fn ($c) => (new AntiTamper($this->salt, $this->logger))->wrap($c, $atOpts)['code']);
         }
 
-        // 授权绑定守卫（域名 + 有效期）：置于最后，未配置时完全不注入
+        // 授权绑定守卫（域名 + 有效期）：置于最外层（anti_tamper 之外），未配置时完全不注入
         $dom = (string) $this->config->get('license_domain');
         $exp = (string) $this->config->get('license_expire');
         if ($dom !== '' || $exp !== '') {
@@ -198,14 +219,34 @@ final class Obfuscator
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
 
+        // 文件头 banner 必须位于【毒化壳之内】：毒化壳的指纹对象是除载荷外的完整最终
+        // 文件，若 banner 在壳之后追加，构建期骨架与运行期 __FILE__ 永久不等 → 全量毒化。
+        $needBanner = !$this->config->get('no_banner');
+        $hasPoison = false;
+        foreach ($layers as $l) {
+            if (($l['name'] ?? '') === 'shell:structpoison') {
+                $hasPoison = true;
+                break;
+            }
+        }
+        $bannerDone = false;
+
         foreach ($layers as $layer) {
+            if ($needBanner && !$bannerDone && $hasPoison && ($layer['name'] ?? '') === 'shell:structpoison') {
+                if ($tokens !== null) {
+                    $current = $this->emit($tokens);
+                    $tokens = null;
+                }
+                $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
+                $bannerDone = true;
+            }
             $current = $this->applyLayer($layer, $tokens, $current);
         }
         if ($tokens !== null) {
             $current = $this->emit($tokens);
         }
         // 文件头引擎信息（除非关闭）—— 与旧管线一致
-        if (!$this->config->get('no_banner')) {
+        if ($needBanner && !$bannerDone) {
             $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
         }
         return $current;
@@ -232,10 +273,16 @@ final class Obfuscator
     {
         // 最内层（最先应用，被后续编码壳包裹藏入密文）
         $innermost = ['shell:anti_debug' => true, 'shell:anti_hook' => true];
-        // 最外层（最后应用，明文锚点须可见）
+        // 次外层：蜜罐钓鱼区 + 结构毒化壳。二者必须在 anti_tamper【之内】：
+        //  - anti_tamper 的守卫行以明文锚点自定位，必须位于文件最外层；
+        //  - 毒化壳只对自己标记区段做指纹（见 StructPoison），anti_tamper 前置的
+        //    守卫行 / 尾部终结符落在标记之外，因此两层可叠加互不破坏。
+        $preTail = ['shell:honeypot' => true, 'shell:structpoison' => true];
+        // 最外层（最后应用）：anti_tamper/license 明文锚点须在文件里可见
         $outermost = ['shell:anti_tamper' => true, 'shell:license' => true];
         $head = [];
         $keep = [];
+        $pre = [];
         $tail = [];
         foreach ($layers as $layer) {
             $name = $layer['name'] ?? '';
@@ -243,11 +290,13 @@ final class Obfuscator
                 $head[] = $layer;
             } elseif (isset($outermost[$name])) {
                 $tail[] = $layer;
+            } elseif (isset($preTail[$name])) {
+                $pre[] = $layer;
             } else {
                 $keep[] = $layer;
             }
         }
-        return array_merge($head, $keep, $tail);
+        return array_merge($head, $keep, $pre, $tail);
     }
 
     /**
@@ -378,6 +427,7 @@ final class Obfuscator
                 $map['cfg'] = $params['cfg'] ?? 'medium';
                 $map['goto'] = (int) ($params['goto'] ?? 0);
                 $map['goto_cpx'] = (int) ($params['goto_cpx'] ?? 0);
+                $map['goto_trap'] = (int) ($params['trap'] ?? 2);
                 break;
             case 'number':
                 $map['num_enc'] = (bool) ($params['on'] ?? false);
@@ -456,6 +506,22 @@ final class Obfuscator
                     return $code;
                 }
                 return (new LicenseGuard($this->salt, $this->logger))->wrap($code, $dom, $exp)['code'];
+            case 'structpoison':
+                if (!class_exists(StructPoison::class, false)) {
+                    require_once __DIR__ . '/Encode/StructPoison.php';
+                }
+                return (new StructPoison($this->logger, $this->salt))->wrap($code, [
+                    'rounds' => (int) ($params['rounds'] ?? 3),
+                ]);
+            case 'honeypot':
+                $hpCount = (int) ($params['count'] ?? 0);
+                if ($hpCount <= 0) {
+                    return $code;
+                }
+                if (!class_exists(Honeypot::class, false)) {
+                    require_once __DIR__ . '/ControlFlow/Honeypot.php';
+                }
+                return (new Honeypot($this->logger, $this->salt))->inject($code, $hpCount);
             default:
                 return $code;
         }

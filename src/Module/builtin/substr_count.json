@@ -1,0 +1,10 @@
+{
+    "name": "substr_count",
+    "match": [
+        "substr_count"
+    ],
+    "entry": "substr_count.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_substr_count"
+}

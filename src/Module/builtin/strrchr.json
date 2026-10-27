@@ -1,0 +1,10 @@
+{
+    "name": "strrchr",
+    "match": [
+        "strrchr"
+    ],
+    "entry": "strrchr.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_strrchr"
+}

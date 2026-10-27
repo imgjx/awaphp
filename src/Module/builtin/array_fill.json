@@ -1,0 +1,10 @@
+{
+    "name": "array_fill",
+    "match": [
+        "array_fill"
+    ],
+    "entry": "array_fill.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_fill"
+}

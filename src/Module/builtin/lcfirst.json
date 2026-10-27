@@ -1,0 +1,10 @@
+{
+    "name": "lcfirst",
+    "match": [
+        "lcfirst"
+    ],
+    "entry": "lcfirst.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_lcfirst"
+}

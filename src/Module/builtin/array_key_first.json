@@ -1,0 +1,10 @@
+{
+    "name": "array_key_first",
+    "match": [
+        "array_key_first"
+    ],
+    "entry": "array_key_first.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_key_first"
+}

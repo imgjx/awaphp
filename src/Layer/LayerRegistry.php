@@ -22,7 +22,9 @@ final class LayerRegistry
     private const SHELL = [
         'shell:anti_debug', 'shell:anti_hook',   // 最内层：被后续编码壳裹入密文藏匿
         'shell:vm', 'shell:eval', 'shell:gz',
-        'shell:anti_tamper', 'shell:license',     // 最外层：明文锚点须可见
+        'shell:honeypot',                         // 次外层：钓鱼区，须在毒化壳之前注入（落在受护区内）
+        'shell:structpoison',                     // 次外层：受护区指纹进密钥派生（篡改即解出乱码）
+        'shell:anti_tamper', 'shell:license',     // 最外层：明文锚点须可见（毒化壳在内侧，互不破坏）
     ];
 
     /** 特殊层：仅做注入，不改变主流程逻辑 */

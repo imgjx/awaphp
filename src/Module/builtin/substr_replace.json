@@ -1,0 +1,10 @@
+{
+    "name": "substr_replace",
+    "match": [
+        "substr_replace"
+    ],
+    "entry": "substr_replace.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_substr_replace"
+}

@@ -445,3 +445,27 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - `mid`：VM 加 junk=20；`low`：VM 加 morph（消除固定指纹）。
 - **语法兼容性验证**：新增覆盖 PHP 8.x 语法广度的测试样例（enum / readonly 属性 / 构造器属性提升 / 一等可调用语法 `strlen(...)` / `never` 返回 / 生成器 / union 类型 / 变长参数 / 引用传参 / 命名参数 / 展开运算符 / nullsafe 等），在 ultra 顶格配置下多盐值逐字节比对原生输出全部一致；token_rich fixture（属性 / 闭包 / match / trait / try-catch-finally / 静态变量 / heredoc）5 档 × 4 盐 × 3 样例矩阵全绿。
 - **回归**：`run_tests` 32、`token_obf` 32、`hardening` 32、`vm_junk` 120、`vm_trycatch_probe` 64、`vm_p8` 77、`vm_gen_probe` 120、`vm_args_probe` 93、`vm_comprehensive` 28、`vm_ref_e2e` 14、`vm_builtin_modules` 96、`vm_call_native` / `vm_module_link` / `vm_smoke` 全部通过，无回归。
+
+### 11.10 v1.0.5：38 个新内联模块 + 三类"坑人"级反分析（毒化壳 / 蜜罐 / GOTO 死状态）
+
+- **内置模块 30 → 68 个**（`src/Module/builtin/`，JSON 清单 + `__mod_` 实现，`ModuleLinker` 静态链接进同一 `Program`）：
+  - 字符串 18：`ucfirst` `lcfirst` `ucwords` `str_contains` `str_starts_with` `str_ends_with` `strrpos` `stripos` `strstr` `strrchr` `substr_count` `chunk_split` `addslashes` `stripslashes` `quotemeta` `strcasecmp` `strncmp` `substr_replace`；
+  - 数组 12：`array_fill` `array_flip` `array_product` `array_pad` `array_slice` `array_search` `array_key_exists` `array_combine` `array_count_values` `array_diff` `array_intersect` `array_key_first`；
+  - 数学/进制 8：`intdiv` `ceil` `dechex` `decbin` `decoct` `hexdec` `bindec` `octdec`。
+  - 语义对齐原生实现细节：`strncmp` / `strcasecmp` 返回**原始字节差**（PHP 8.3 实测 `-2` 而非 `-1`）；`chunk_split('')` 返回终止符；`array_pad` 保持"字符串键保留、数字键重排"；`ucwords` 支持自定义分隔符集。
+  - 回归 `tests/vm_builtin_modules.php` 由 96 项扩到 **205 项**，全部逐字节一致且 68 个模块均被命中链接。
+- **`StructPoison` 结构指纹毒化壳（`--struct-poison`，max/ultra 默认）**——把"文件是否被改动"从**控制流**搬到**数据流**：
+  - 构建期把载荷区替换为定长占位串得到骨架，`sha256(骨架受护区)` 经 1-8 轮 KDF 派生出 32 字节密钥流，`payload = base64(gzdeflate(inner) XOR keystream)`；
+  - 运行期读 `__FILE__`、把载荷换回占位串、重算指纹、同路径派生密钥再解码。文件未改动时逐字节一致；**任何字节改动 → 密钥错位 → 解出乱码**，全程**无比较、无分支、无退出点**，hook 掉 `exit` / NOP 掉跳转这类传统绕过手段全部失效；
+  - **插桩探针并入密钥**：`uopz_*` / `runkit7_*` / `override_function` 的在场计数直接进 KDF 参数——不修改文件、仅靠运行期 hook `gzinflate`/`eval` 抓明文的路径，拿到的是乱码而非明文；
+  - 受护区用盐派生的起止标记圈定（`/*sp…*/` … `/*sx…*/`），因此可与 `anti_tamper` **叠加**：外层 anti_tamper 负责明文锚点与全文件分段校验，内层毒化壳负责自身解码链，互不破坏；
+  - 另有死代码诱饵（`crc32` 伪校验值）与三种随机化的解码形态，消除固定指纹。
+- **`Honeypot` 蜜罐函数（`--honeypot=N`，max=4 / ultra=6）**：
+  - 注入 `deriveMasterKey` / `verifyLicense` / `unpackPayload` 等 16 个"逆向上最值得怀疑"的拟真命名函数（名字按盐洗牌，`function_exists` 防撞）；
+  - 正常执行**永不调用**（零开销）；一旦被破解者主动调用/桩掉：首调用进入**时间上界 1.4s** 的确定性深循环（单步调试直接卡死），并在 shutdown 吐出一段"看似解密成功"的伪密钥污染自动化比对；返回值本身是输入参与哈希的拟真密钥串，误导其继续沿假线索逆向。
+- **GOTO 诱饵死状态（`--goto-trap=N`，默认 2）**：每个分派器额外生成 1-4 个 `case`/`elseif` 分支，标签**从不被任何赋值产生**（正常执行永不可达），分支体把状态写回自身——分析者强行用调试器改状态变量跳进去即**自锁死循环**；静态上与真实分支外观完全一致，无法凭"有无跳入边"一眼判定死代码。
+- **修复**：
+  - `SemanticRewriter` 引用不存在的常量 `T_COLON`（PHP 8 下抛 `Error`），导致 semantic 层**每次构建都静默回滚**（`[层 semantic] 执行异常` 警告后整层失效）；改为字符 token `':'`；
+  - `VmJunk::spliceSeg()` 经 `deref()` 隐式建出 `funcET[fn] = null`，`bWriteExTab()` 收到 null 抛 `TypeError` → **整个 VM 层静默回退为普通加壳**（max/ultra 上 `--vm-junk` 一开即触发）；现先把 null 归一为空表；
+  - 分层顺序：`honeypot` / `structpoison` 移入"次外层"（`anti_tamper` 之内）。蜜罐若在 anti_tamper 之后注入，其追加的函数会落在受护尾区之外被判定为"篡改"；毒化壳若在 anti_tamper 之外，则 anti_tamper 的明文锚点被吞进密文。同时 `runLayered` 的 banner 注入点前移到毒化壳之前，避免 banner 追加破坏毒化壳指纹。
+- **回归**：`run_tests` 32、`syntax_compat` 7（含 ultra 双盐）、`vm_builtin_modules` 205、`vm_junk` 120、`vm_p8` 77、`vm_args_probe` 93、`token_obf` 32、`hardening` 32、`vm_comprehensive` / `vm_call_native` / `vm_module_link` / `vm_include` / `vm_defaults` 全绿；五档预设 + 毒化壳三态（未篡改/美化/篡改）人工验证通过。

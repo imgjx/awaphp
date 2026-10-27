@@ -1,0 +1,10 @@
+{
+    "name": "octdec",
+    "match": [
+        "octdec"
+    ],
+    "entry": "octdec.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_octdec"
+}

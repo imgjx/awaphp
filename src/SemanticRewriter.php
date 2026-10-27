@@ -559,7 +559,7 @@ final class SemanticRewriter
             if (is_string($t) && in_array($t, $bounds, true)) {
                 return $j + 1;
             }
-            if (is_array($t) && in_array($t[0], [T_RETURN, T_ECHO, T_PRINT, T_EXIT, T_THROW, T_ELSE, T_IF, T_FOR, T_FOREACH, T_WHILE, T_CASE, T_COLON], true)) {
+            if (is_array($t) && in_array($t[0], [T_RETURN, T_ECHO, T_PRINT, T_EXIT, T_THROW, T_ELSE, T_IF, T_FOR, T_FOREACH, T_WHILE, T_CASE, ':'], true)) {
                 return $j + 1;
             }
         }

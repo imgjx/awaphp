@@ -81,6 +81,7 @@ final class LayerDescriptor
                                    'options' => ['' => '关闭', 'low' => 'low', 'medium' => 'medium', 'high' => 'high']],
                     'goto'     => ['label' => 'GOTO 层数', 'type' => self::T_INT, 'default' => 1, 'min' => 0, 'max' => 5, 'hint' => '0=关闭'],
                     'goto_cpx' => ['label' => 'GOTO 复杂度', 'type' => self::T_INT, 'default' => 4, 'min' => 0, 'max' => 16, 'hint' => '每个函数的迷宫跳转密度'],
+                    'trap'     => ['label' => '诱饵死状态', 'type' => self::T_INT, 'default' => 2, 'min' => 0, 'max' => 4, 'hint' => '每个分派器注入的不可达分支数（0=关闭），强行跳入即自锁'],
                 ],
                 'tags' => ['控制流'],
             ],
@@ -251,6 +252,24 @@ final class LayerDescriptor
                     'expire' => ['label' => '到期日期', 'type' => self::T_TEXT, 'default' => '', 'hint' => 'YYYY-MM-DD（留空永不过期）'],
                 ],
                 'tags' => ['授权'],
+            ],
+            'shell:structpoison' => [
+                'kind'  => 'shell',
+                'label' => '结构指纹毒化壳',
+                'desc'  => '文件结构指纹参与解密密钥派生：美化/篡改产物 → 密钥错位解出乱码，无可绕过校验分支（毒化而非退出）',
+                'params' => [
+                    'rounds' => ['label' => 'KDF 轮数', 'type' => self::T_INT, 'default' => 3, 'min' => 1, 'max' => 8, 'hint' => '指纹密钥派生迭代轮数'],
+                ],
+                'tags' => ['反分析'],
+            ],
+            'shell:honeypot' => [
+                'kind'  => 'shell',
+                'label' => '蜜罐函数（钓鱼陷阱）',
+                'desc'  => '拟真高价值命名假函数（deriveMasterKey 类），正常永不调用；破解者调用/插桩即触发拖慢 + 返回钓鱼假密钥',
+                'params' => [
+                    'count' => ['label' => '蜜罐数量', 'type' => self::T_INT, 'default' => 4, 'min' => 0, 'max' => 16, 'hint' => '注入的钓鱼函数个数（0=关闭）'],
+                ],
+                'tags' => ['反分析'],
             ],
 
             // ===================== 特殊层 =====================

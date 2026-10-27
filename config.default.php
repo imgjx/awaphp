@@ -61,6 +61,9 @@ return [
     'opcache'      => false,   // OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如 EP 支持）
     'str_xor'      => false,   // 字符串运行时异或装配（替代 base64）
     'junk_funcs'   => 0,       // 诱饵函数数量（>0 生效）
+    'goto_trap'    => 2,       // GOTO 诱饵死状态数（0-4，每个分派器注入不可达分支）
+    'struct_poison' => false,  // 结构指纹毒化壳（指纹进密钥派生；篡改即解出乱码）
+    'honeypot'     => 0,       // 蜜罐函数数量（拟真高价值命名 + 深循环拖慢 + 伪密钥）
 
     // 运行时垃圾指令（RuntimeJunk）：真实执行、无副作用、由 salt 确定性复现
     'junk_runtime'   => false, // 启用运行时垃圾指令插入（顶层 flag，旧管线直接调用）

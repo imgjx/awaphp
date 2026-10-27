@@ -1,0 +1,10 @@
+{
+    "name": "array_slice",
+    "match": [
+        "array_slice"
+    ],
+    "entry": "array_slice.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_slice"
+}

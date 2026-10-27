@@ -1,0 +1,10 @@
+{
+    "name": "bindec",
+    "match": [
+        "bindec"
+    ],
+    "entry": "bindec.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_bindec"
+}

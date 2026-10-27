@@ -1,0 +1,10 @@
+{
+    "name": "ucfirst",
+    "match": [
+        "ucfirst"
+    ],
+    "entry": "ucfirst.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_ucfirst"
+}

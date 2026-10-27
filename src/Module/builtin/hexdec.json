@@ -1,0 +1,10 @@
+{
+    "name": "hexdec",
+    "match": [
+        "hexdec"
+    ],
+    "entry": "hexdec.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_hexdec"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "array_intersect",
+    "match": [
+        "array_intersect"
+    ],
+    "entry": "array_intersect.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_intersect"
+}

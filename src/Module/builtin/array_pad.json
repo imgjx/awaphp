@@ -1,0 +1,10 @@
+{
+    "name": "array_pad",
+    "match": [
+        "array_pad"
+    ],
+    "entry": "array_pad.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_pad"
+}

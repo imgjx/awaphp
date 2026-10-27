@@ -1,0 +1,10 @@
+{
+    "name": "str_contains",
+    "match": [
+        "str_contains"
+    ],
+    "entry": "str_contains.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_str_contains"
+}

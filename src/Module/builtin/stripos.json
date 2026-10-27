@@ -1,0 +1,10 @@
+{
+    "name": "stripos",
+    "match": [
+        "stripos"
+    ],
+    "entry": "stripos.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_stripos"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "addslashes",
+    "match": [
+        "addslashes"
+    ],
+    "entry": "addslashes.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_addslashes"
+}

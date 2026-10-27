@@ -1,0 +1,10 @@
+{
+    "name": "str_starts_with",
+    "match": [
+        "str_starts_with"
+    ],
+    "entry": "str_starts_with.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_str_starts_with"
+}

@@ -295,6 +295,10 @@ final class VmJunk
         $etPath = $this->etPathOf($path);
         if ($etPath !== null) {
             $et = &$this->deref($program, $etPath);
+            // deref 用 "=& $seg[$k]" 逐级取引用：该段当前没有异常表时会【隐式建出
+            // null 键】（funcET[fn] = null），后续 bWriteExTab 收到 null 即抛
+            // TypeError → 整个 VM 层静默回退。这里先把 null 归一为空表。
+            if ($et === null) { $et = []; }
             if (is_array($et)) {
                 foreach ($et as &$entry) {
                     if (!is_array($entry) || count($entry) < 3) {

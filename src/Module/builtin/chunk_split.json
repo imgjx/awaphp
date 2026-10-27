@@ -1,0 +1,10 @@
+{
+    "name": "chunk_split",
+    "match": [
+        "chunk_split"
+    ],
+    "entry": "chunk_split.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_chunk_split"
+}

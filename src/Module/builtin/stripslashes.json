@@ -1,0 +1,10 @@
+{
+    "name": "stripslashes",
+    "match": [
+        "stripslashes"
+    ],
+    "entry": "stripslashes.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_stripslashes"
+}

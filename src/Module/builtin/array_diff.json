@@ -1,0 +1,10 @@
+{
+    "name": "array_diff",
+    "match": [
+        "array_diff"
+    ],
+    "entry": "array_diff.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_diff"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "dechex",
+    "match": [
+        "dechex"
+    ],
+    "entry": "dechex.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_dechex"
+}

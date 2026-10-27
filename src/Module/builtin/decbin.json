@@ -1,0 +1,10 @@
+{
+    "name": "decbin",
+    "match": [
+        "decbin"
+    ],
+    "entry": "decbin.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_decbin"
+}

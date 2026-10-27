@@ -25,6 +25,8 @@ final class GotoObfuscator
     private NameStyle $style;
     private Salt $salt;
     private int $seq = 0;
+    /** 每个分派器注入的诱饵状态数（0=关闭）：不可达的死状态，被调试器强行跳入即自锁 */
+    private int $traps = 2;
 
     public function __construct(private Logger $logger, ?Salt $salt = null)
     {
@@ -49,6 +51,7 @@ final class GotoObfuscator
         }
         $passes = max(1, $count);
         $maxBlock = max(2, $cpx);
+        $this->traps = max(0, min(4, (int) $config->get('goto_trap')));
 
         $n = count($tokens);
         $result = [];
@@ -298,6 +301,32 @@ final class GotoObfuscator
         // 打乱输出顺序（scramble）：同 salt 复现同一顺序，保证可复现构建
         $order = $this->salt->shuffle(range(0, $k - 1), 'goto-order-' . $seq);
 
+        // ---- 诱饵状态（死状态）----
+        // 这些标签【从不被任何赋值语句产生】，正常执行永不可达；一旦分析者用调试器
+        // 强改状态变量跳进来，分支体把状态写回自身 → while(true) 自锁死循环。
+        // 静态看只是一批普通 case 分支，无法从"是否存在跳入边"直接判定死代码。
+        $trapLabels = [];
+        for ($d = 0; $d < $this->traps; $d++) {
+            $guard = 0;
+            do {
+                $lv = $this->salt->isEmpty()
+                    ? random_int(2, 0x7fffffff)
+                    : $this->salt->deriveInt('goto-trap-' . $seq . '-' . $d . '-' . $guard, 2, 0x7fffffff);
+                $guard++;
+            } while (isset($used[$lv]) && $guard < 32);
+            while (isset($used[$lv])) { $lv++; }
+            $used[$lv] = true;
+            $trapLabels[] = $lv;
+        }
+        $trapBody = function (int $tl) use ($s, $fmt, $seq): array {
+            $tmp = $this->style->varName('goto-d-' . $seq . '-' . $tl);
+            return [
+                [T_VARIABLE, $tmp, 0], '=', [T_LNUMBER, $fmt($tl), 0], '*', [T_LNUMBER, '3', 0], ';',
+                [T_VARIABLE, $s, 0], '=', [T_LNUMBER, $fmt($tl), 0], ';',
+            ];
+        };
+        $trapIdx = 0;
+
         $form   = $this->salt->deriveInt('goto-form-' . $seq, 0, 1);      // 0=switch 1=if 链
         $loop   = $this->salt->deriveInt('goto-loop-' . $seq, 0, 2);      // 0/1/2 三种循环头
         $strict = $this->salt->deriveInt('goto-cmp-' . $seq, 0, 1) === 1; // === / ==
@@ -332,6 +361,25 @@ final class GotoObfuscator
                 array_push($out, '=');
                 $out[] = [T_LNUMBER, $fmt($idx + 1 < $k ? $labels[$idx + 1] : $sentinel), 0];
                 array_push($out, ';', 'break', ';');
+                // 诱饵分支就地插入（概率性，salt 决定），与真实分支外观完全一致
+                if ($trapIdx < count($trapLabels)
+                    && $this->salt->deriveInt('goto-trap-at-' . $seq . '-' . $idx, 0, 2) === 0) {
+                    $tl = $trapLabels[$trapIdx++];
+                    array_push($out, 'case');
+                    $out[] = [T_LNUMBER, $fmt($tl), 0];
+                    array_push($out, ':');
+                    foreach ($trapBody($tl) as $t) { $out[] = $t; }
+                    array_push($out, 'break', ';');
+                }
+            }
+            // 剩余诱饵分支补在 default 之前
+            while ($trapIdx < count($trapLabels)) {
+                $tl = $trapLabels[$trapIdx++];
+                array_push($out, 'case');
+                $out[] = [T_LNUMBER, $fmt($tl), 0];
+                array_push($out, ':');
+                foreach ($trapBody($tl) as $t) { $out[] = $t; }
+                array_push($out, 'break', ';');
             }
             array_push($out, 'default', ':', 'break', '2', ';', '}', '}');
         } else {
@@ -351,6 +399,17 @@ final class GotoObfuscator
                 $out[] = [T_LNUMBER, $fmt($idx + 1 < $k ? $labels[$idx + 1] : $sentinel), 0];
                 array_push($out, ';', '}');
                 $first = false;
+            }
+            // 诱饵分支：与真实分支同形，状态写回自身 → 被强行跳入即自锁
+            while ($trapIdx < count($trapLabels)) {
+                $tl = $trapLabels[$trapIdx++];
+                array_push($out, 'elseif', '(');
+                $out[] = [T_VARIABLE, $s, 0];
+                array_push($out, '===');
+                $out[] = [T_LNUMBER, $fmt($tl), 0];
+                array_push($out, ')', '{');
+                foreach ($trapBody($tl) as $t) { $out[] = $t; }
+                array_push($out, '}');
             }
             // 哨兵：落到不存在的状态 -> 退出循环（if 链只有一层可 break 结构，用 break 1）
             array_push($out, 'else', '{', 'break', ';', '}', '}');

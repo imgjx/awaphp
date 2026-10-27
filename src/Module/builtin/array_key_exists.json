@@ -1,0 +1,10 @@
+{
+    "name": "array_key_exists",
+    "match": [
+        "array_key_exists"
+    ],
+    "entry": "array_key_exists.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_array_key_exists"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "ceil",
+    "match": [
+        "ceil"
+    ],
+    "entry": "ceil.php",
+    "replace": true,
+    "priority": 10,
+    "target": "__mod_ceil"
+}
