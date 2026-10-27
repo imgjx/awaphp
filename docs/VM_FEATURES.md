@@ -448,12 +448,12 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 
 ### 11.10 v1.0.5：38 个新内联模块 + 三类"坑人"级反分析（毒化壳 / 蜜罐 / GOTO 死状态）
 
-- **内置模块 30 → 68 个**（`src/Module/builtin/`，JSON 清单 + `__mod_` 实现，`ModuleLinker` 静态链接进同一 `Program`）：
+- **内置模块 32 → 70 个**（`src/Module/builtin/`，JSON 清单 + `__mod_` 实现，`ModuleLinker` 静态链接进同一 `Program`）：
   - 字符串 18：`ucfirst` `lcfirst` `ucwords` `str_contains` `str_starts_with` `str_ends_with` `strrpos` `stripos` `strstr` `strrchr` `substr_count` `chunk_split` `addslashes` `stripslashes` `quotemeta` `strcasecmp` `strncmp` `substr_replace`；
   - 数组 12：`array_fill` `array_flip` `array_product` `array_pad` `array_slice` `array_search` `array_key_exists` `array_combine` `array_count_values` `array_diff` `array_intersect` `array_key_first`；
   - 数学/进制 8：`intdiv` `ceil` `dechex` `decbin` `decoct` `hexdec` `bindec` `octdec`。
   - 语义对齐原生实现细节：`strncmp` / `strcasecmp` 返回**原始字节差**（PHP 8.3 实测 `-2` 而非 `-1`）；`chunk_split('')` 返回终止符；`array_pad` 保持"字符串键保留、数字键重排"；`ucwords` 支持自定义分隔符集。
-  - 回归 `tests/vm_builtin_modules.php` 由 96 项扩到 **205 项**，全部逐字节一致且 68 个模块均被命中链接。
+  - 回归 `tests/vm_builtin_modules.php` 由 96 项扩到 **205 项**，全部逐字节一致且新增模块均被命中链接。
 - **`StructPoison` 结构指纹毒化壳（`--struct-poison`，max/ultra 默认）**——把"文件是否被改动"从**控制流**搬到**数据流**：
   - 构建期把载荷区替换为定长占位串得到骨架，`sha256(骨架受护区)` 经 1-8 轮 KDF 派生出 32 字节密钥流，`payload = base64(gzdeflate(inner) XOR keystream)`；
   - 运行期读 `__FILE__`、把载荷换回占位串、重算指纹、同路径派生密钥再解码。文件未改动时逐字节一致；**任何字节改动 → 密钥错位 → 解出乱码**，全程**无比较、无分支、无退出点**，hook 掉 `exit` / NOP 掉跳转这类传统绕过手段全部失效；
