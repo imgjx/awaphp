@@ -428,11 +428,11 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **GOTO 混淆跳过 try/catch 函数**：`GotoObfuscator::containsUnsafe()` 的跳过列表在闭包 / `match` / 插值基础上补充 `T_TRY / T_CATCH / T_FINALLY / T_THROW`，含异常处理的函数体不再参与 GOTO 状态机改写（与既有"整体跳过"策略一致）。
 - **预设稳健性验证**：每档以 `token_rich` fixture（属性 / 闭包 `use(&$x)` / match / trait / try-catch-finally / 静态变量 / heredoc）+ 独立样例各跑 **6 个盐值**逐字节比对原生输出，全部通过；`tests/token_obf.php` 等级遍历已加入 `ultra`（32 项全绿），`run_tests` 32 项、`hardening` 32 项及全部 VM 专项无回归。
 - **已知限制（记录在案）**：
-  - ~~`--vm-junk`（VM 字节码垃圾指令）注入段落在盐值随机分布下会**间歇性破坏 VM 异常桥接**~~（v1.0.5 已修复，见 §11.9——根因是垃圾注入未同步异常表）；
-  - ~~`stateMachine` VM 模式对 try/catch/throw 的编译与 `flatten` 路径不等价~~（v1.0.5 已澄清：stateMachine 从未损坏，当时失败同为 VmJunk 缺陷连带）；
-  - ~~`semantic` 语义等价变换对本仓库测试 fixture 存在破坏性~~（v1.0.5 已澄清：同上，语义变换本身无缺陷，预设已重新启用）。
+  - ~~`--vm-junk`（VM 字节码垃圾指令）注入段落在盐值随机分布下会**间歇性破坏 VM 异常桥接**~~（v1.0.4 已修复，见 §11.9——根因是垃圾注入未同步异常表）；
+  - ~~`stateMachine` VM 模式对 try/catch/throw 的编译与 `flatten` 路径不等价~~（v1.0.4 已澄清：stateMachine 从未损坏，当时失败同为 VmJunk 缺陷连带）；
+  - ~~`semantic` 语义等价变换对本仓库测试 fixture 存在破坏性~~（v1.0.4 已澄清：同上，语义变换本身无缺陷，预设已重新启用）。
 
-### 11.9 v1.0.5：修复 VmJunk 异常表不同步（问题功能修复）+ 混淆引擎全量加强
+### 11.9 v1.0.4：修复 VmJunk 异常表不同步（问题功能修复）+ 混淆引擎全量加强
 
 - **修复「vm-junk 间歇性破坏异常桥接」根因**（v1.0.3 遗留的已知限制）：
   - 根因：VM 的异常表（`mainET` / `funcET` / `classET`，表项 `[tryStart, tryEnd, handlerPc, ...]`）与指令段**平行存储**，而 `VmJunk::spliceSeg()` 向段内插入垃圾片段后只修正了相对跳转偏移、**从未平移异常表的 pc 边界**——try 保护区整体错位，抛出的异常路由不到 catch/finally（表现为 `Uncaught Exception` 逃逸、catch 返回错误值或空）。由于垃圾插入点由盐值确定性随机选取，故障随盐值**间歇性复现**（junk=1 即可触发，junk≥20 高频复现）。
