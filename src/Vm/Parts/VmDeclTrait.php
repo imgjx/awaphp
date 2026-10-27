@@ -67,6 +67,9 @@ trait VmDeclTrait
         $this->pendingGotos = [];
         $code = [];
         $this->bindParams($code, $params);
+        // 预扫描并预绑定静态局部变量（详见 emitStaticPreamble）：必须在 compileBlock
+        // 之前，使任何使用点（含 GOTO 重排到声明之前的增量）都路由到同一共享帧槽位。
+        $this->emitStaticPreamble($body, $code);
         $this->compileBlock($body, $code);
         // 函数作用域收尾：校验并回填本函数全部 goto
         $this->resolveGotos($code, $this->funcET[$name] ?? []);
@@ -1076,6 +1079,8 @@ trait VmDeclTrait
             $code[] = [VmOp::LOAD_THIS];
             $code[] = [VmOp::POP_V, '$this'];
         }
+        // 预扫描并预绑定静态局部变量（详见 emitStaticPreamble），须在 compileBlock 之前
+        $this->emitStaticPreamble($body, $code);
         $this->compileBlock($body, $code);
         // 方法作用域收尾：校验并回填本方法全部 goto
         // （curSegET 此刻正指向本方法异常表引用）

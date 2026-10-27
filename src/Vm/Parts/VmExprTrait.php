@@ -1537,7 +1537,13 @@ trait VmExprTrait
                 continue;
             }
             // 位置实参：简单变量 → PUSH_REF 引用句柄（携带值快照）；
-            // 其余表达式原样编译
+            // 其余表达式原样编译。
+            // by-ref 位若实参不是简单变量（属性/下标左值 $o->p / $a['k']），VM 栈
+            // 无法为其取真实引用；抛 VmUnsupported 让整条语句走 EVAL_STMT 原生兜底
+            // （引用语义由 eval 桥接保真，见 NATIVE_REF_POS 注释）。
+            if (in_array($argc, $refPos, true) && !$this->argIsPlainVar($a)) {
+                throw new VmUnsupported('VM：by-ref 原生函数的引用位必须是简单变量（属性/下标左值已回退 EVAL_STMT）');
+            }
             if (!$this->tryCompileSimpleRefArg($a, $code)) {
                 $this->parseExpr($a, $code);
             }
@@ -1613,8 +1619,28 @@ trait VmExprTrait
      * @param array<int,mixed> $tokens
      * @param array<int,array<int,mixed>> $code
      */
+    /**
+     * 实参是否为「纯简单变量」（$name，无下标/属性等后缀）。
+     * by-ref 原生函数的引用位引用句柄（PUSH_REF）只能绑定到帧槽变量，
+     * 复杂左值（$o->p / $a['k']）无法取引用——调用方据此决定回退 EVAL_STMT。
+     */
+    private function argIsPlainVar(array $tokens): bool
+    {
+        $sig = [];
+        foreach ($tokens as $t) {
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            $sig[] = $t;
+        }
+        return count($sig) === 1 && is_array($sig[0]) && $sig[0][0] === T_VARIABLE;
+    }
+
     private function tryCompileSimpleRefArg(array $tokens, array &$code): bool
     {
+        if (!$this->argIsPlainVar($tokens)) {
+            return false;
+        }
         $sig = [];
         foreach ($tokens as $t) {
             if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {

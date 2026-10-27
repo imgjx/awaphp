@@ -405,3 +405,13 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   1. **键值遍历值变量名取空白 token**——`as $k => $v`（带空格）时 `$vvar` 落到 `=>` 与值之间的 `T_WHITESPACE` token，得到空白/空变量名，导致值永远存不进（取出恒为 `null`）；改为跳过空白 token 再取值；
   2. **foreach 取键辅助 `array_keys` 被误改写**——`compileForeach` 原先发射 `CALL 'array_keys'`，当模块名恰好为 `array_keys` 时 `renameCallTargets` 把该内部调用也改写成模块自身别名，造成无限递归（OOM / Killed）；改为 `CALL_NATIVE` 调用原生 `array_keys`（恒走原生分发，免疫重命名）；
 - 已知 VM 限制：数组整数键与数值型字符串键分离存储，碰撞类输入（`[1,2,3,"2"=>4]`）VM 与原生结果不同，回归已剔除此类用例（详见 §6.9）。
+
+### 11.7 v1.0.2：静态局部变量 + 既有测试修复
+
+- **修复 VM 静态局部变量在「GOTO 控制流混淆 + VM-P8」组合下丢失持久化**：`static $x` 计数器在混淆产物中恒为 0（原生 `1,2`）。
+  - 根因：VM 原在「编译到 `static` 声明处」才登记 `curStatic` 并发射 `GLOBAL_REF` 绑定。GOTO 混淆把函数体改写成交错状态机，使 `$x++` 等使用点出现在 `static $x` 声明之前；此时使用点已被编译为普通局部槽位，与静态共享槽位断开，导致每次调用重置。
+  - 修复：在 `compileFunction` / `compileFunctionCode` 进入函数体（`compileBlock`）前新增 `emitStaticPreamble` 预扫描——登记全部静态局部变量并按声明顺序在函数入口预绑定共享帧槽位（`GLOBAL_REF`），`varName()` 据此把任意使用点统一路由到同一持久槽位，与声明顺序无关，亦对齐 PHP 原生「声明前可用」的提升语义。预扫描对嵌套 `function/class/trait/interface/fn` 定义体整体跳过，避免串作用域。
+  - 配套 `tests/token_obf.php` 三处组合（`token_full` / `level=mid` / `level=max`）回归由红转绿。
+- **修复 by-ref 原生函数遇到属性/下标左值（如 `sort($o->items)`）引用失效**：按值压栈但 `refMask` 仍置位，运行期收到 "value given" 警告且原地修改失败。改为当引用位实参非简单变量时抛 `VmUnsupported`，整条语句走 `EVAL_STMT` 原生桥接（引用语义由桥接保真）。
+- **修复 `tests/vm_module_link.php` 的 `badmod_skip` / `stats` 两项**：原 fixture 用 `trait/insteadof` 充当「VM 不支持语法」，但 VM 现已全面支持 trait 适配，模块被整编成功而非跳过；改用 `yield` 生成器（VM 唯一可靠抛 `VmUnsupported` 的构造）使整文件编译失败、调用点保持原生函数分发（P6 前行为一致）。
+- 全测试套件保持通过：`run_tests.php` 32 项、`token_obf.php` 31 项、`vm_call_native` / `vm_module_link` 全绿，VM 综合（`vm_comprehensive`、`vm_args_probe` 93、`vm_ref_e2e` 14、`vm_gen_probe` 120、`vm_p8` 77、`vm_junk` 120、`vm_trycatch_probe` 64、`vm_subscript`、`vm_defaults`、`vm_include`、`vm_eval_stmt`、`vm_smoke` 4、`vm_builtin_modules` 96、`hardening` 32）无回归。

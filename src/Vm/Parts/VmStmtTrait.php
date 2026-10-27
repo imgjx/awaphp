@@ -572,6 +572,111 @@ trait VmStmtTrait
     }
 
     /**
+     * 预扫描函数/方法体，登记全部静态局部变量（static $x / static $x = expr），
+     * 并在函数入口处预绑定共享帧槽位（GLOBAL_REF）。
+     *
+     * 必要性（根因）：VM 原实现在「编译到 static 声明处」才登记 $this->curStatic
+     * 并发射 GLOBAL_REF 绑定。但 GOTO 控制流混淆会把函数体改写成交错的状态机，
+     * 使 `$x++` 等使用点出现在 `static $x` 声明之前（PHP 原生允许通过静态局部变量
+     * 提升在声明前使用，保真必须一致）。若等到声明点才登记，使用点会被编译为普通
+     * 局部槽位，造成「每次调用重置」的错误语义（表现为计数器恒为 0）。
+     *
+     * 此预扫描保证：无论声明顺序如何，读写/自增都路由到同一持久共享槽位。它只登记
+     * 当前函数作用域内的 static 声明——嵌套 function/class/trait/interface/fn 体内的
+     * static 由各自的编译作用域处理，此处整体跳过其函数体。
+     *
+     * @param array<int,mixed> $body
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function emitStaticPreamble(array $body, array &$code): void
+    {
+        if ($this->curScopeId === '') {
+            return;
+        }
+        $n = count($body);
+        $i = 0;
+        $skipDepth = 0;   // >0：位于嵌套 function/class 等定义体内，跳过
+        $stmtStart = true; // 当前是否处于「语句起始」位置（static 须为语句首关键字）
+        while ($i < $n) {
+            $t = $body[$i];
+            $isArr = is_array($t);
+            if ($skipDepth > 0) {
+                if ($t === '{') {
+                    $skipDepth++;
+                } elseif ($t === '}') {
+                    $skipDepth--;
+                }
+                $i++;
+                continue;
+            }
+            if ($isArr) {
+                $tk = $t[0];
+                if ($tk === T_WHITESPACE || $tk === T_COMMENT || $tk === T_DOC_COMMENT) {
+                    $i++;
+                    continue;
+                }
+                if ($tk === ';' || $tk === '{' || $tk === '}' || $tk === ':') {
+                    $stmtStart = true;
+                    $i++;
+                    continue;
+                }
+                if ($tk === T_STATIC && $stmtStart) {
+                    // 仅处理 simple 变量形式（与 compileStaticLocal 一致：下个有效 token 为 T_VARIABLE）
+                    $j = $i + 1;
+                    while ($j < $n && is_array($body[$j]) && in_array($body[$j][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                        $j++;
+                    }
+                    if ($j < $n && is_array($body[$j]) && $body[$j][0] === T_VARIABLE) {
+                        $var = $body[$j][1];
+                        if (!isset($this->curStatic[$var])) {
+                            $mangled = $this->staticLocalName($this->curScopeId, $var);
+                            $this->curStatic[$var] = $mangled;
+                            // 探测是否存在默认值（= expr）
+                            $k = $j + 1;
+                            while ($k < $n && is_array($body[$k]) && in_array($body[$k][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                                $k++;
+                            }
+                            $hasDefault = ($k < $n && $body[$k] === '=');
+                            // 函数入口预绑定共享帧槽位（值槽 + 初始化守卫槽）
+                            $code[] = [VmOp::GLOBAL_REF, $mangled];
+                            if ($hasDefault) {
+                                $code[] = [VmOp::GLOBAL_REF, $mangled . "\x01i"];
+                            }
+                        }
+                    }
+                }
+                // 嵌套定义（function/class/interface/trait/fn）：定位其开大括号后整体跳过函数体
+                if (in_array($tk, [T_FUNCTION, T_CLASS, T_INTERFACE, T_TRAIT, T_FN], true)) {
+                    $j = $i + 1;
+                    while ($j < $n) {
+                        $tt = $body[$j];
+                        if ($tt === '{') {
+                            break;
+                        }
+                        if ($tt === ';' && $tk !== T_FN) {
+                            break; // 无函数体的接口/抽象声明，不进入跳过模式
+                        }
+                        $j++;
+                    }
+                    if ($j < $n && $body[$j] === '{') {
+                        $i = $j + 1;   // 跳过开括号本身
+                        $skipDepth = 1; // 进入嵌套定义体
+                        continue;
+                    }
+                }
+                $stmtStart = false;
+                $i++;
+                continue;
+            }
+            // 非数组 token（标点/括号）
+            if ($t === '{' || $t === '}' || $t === ';' || $t === ':') {
+                $stmtStart = true;
+            }
+            $i++;
+        }
+    }
+
+    /**
      * 编译 `static $x = expr;`（可多个，逗号分隔）静态局部变量声明。
      *
      * PHP 语义：static 局部变量跨函数调用保持值——首次执行到声明时求值一次并保存，
