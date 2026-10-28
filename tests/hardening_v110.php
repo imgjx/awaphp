@@ -90,5 +90,39 @@ if ($okU) {
     ok(trim(run($o3)) === $native, "ultra 运行输出一致", 'got=' . substr(trim(run($o3)), 0, 60));
 }
 
+echo "===== [4] 换行缠绕壳（--newline-poison，配合结构毒化壳）=====\n";
+$npSrc = (string) file_get_contents($fixture);
+$npNeed = max((int) ceil((substr_count($npSrc, "\n") + 1) * 0.1), 2000);
+
+// [4a] 独立模式（非分层）：换行在最终文件中可见
+$o4 = "$tmp/newline.php";
+$okN = build($entry, $fixture, $o4, "--newline-poison --salt=np110");
+ok($okN, "构建 --newline-poison（独立）");
+if ($okN) {
+    $lint = (string) shell_exec('php -l ' . escapeshellarg($o4) . ' 2>&1');
+    ok(str_contains($lint, 'No syntax errors'), "newline php -l 通过");
+    ok(trim(run($o4)) === $native, "newline 运行输出一致", 'got=' . substr(trim(run($o4)), 0, 60));
+    $nl = substr_count((string) file_get_contents($o4), "\n");
+    ok($nl >= $npNeed, "newline 数量达标（{$nl} >= {$npNeed}）");
+}
+
+// [4b] 分层 mid + 换行缠绕：换行落在编码壳之后 → 最终文件可见
+$o5 = "$tmp/newline_mid.php";
+$okN2 = build($entry, $fixture, $o5, "--level=mid --newline-poison --salt=np110m");
+ok($okN2, "构建 --level=mid --newline-poison");
+if ($okN2) {
+    ok(trim(run($o5)) === $native, "newline+mid 运行输出一致", 'got=' . substr(trim(run($o5)), 0, 60));
+    $nl2 = substr_count((string) file_get_contents($o5), "\n");
+    ok($nl2 >= $npNeed, "newline+mid 数量达标（{$nl2} >= {$npNeed}）");
+}
+
+// [4c] 分层 max + 换行缠绕：换行随内层一同被结构毒化壳加密进密文（仍须正确运行）
+$o6 = "$tmp/newline_max.php";
+$okN3 = build($entry, $fixture, $o6, "--level=max --newline-poison --salt=np110x");
+ok($okN3, "构建 --level=max --newline-poison（配合结构毒化壳）");
+if ($okN3) {
+    ok(trim(run($o6)) === $native, "newline+max 运行输出一致", 'got=' . substr(trim(run($o6)), 0, 60));
+}
+
 echo "\n===== 结果：通过 {$pass} / 失败 {$fail} =====\n";
 exit($fail === 0 ? 0 : 1);

@@ -185,6 +185,19 @@ final class Obfuscator
             $current = $this->shell($current, '蜜罐函数', fn ($c) => (new Honeypot($this->logger, $this->salt))->inject($c, $hp), 'honeypot');
         }
 
+        // 换行缠绕壳：须在结构毒化壳【之前】注入，使换行随内层代码一同被加密进密文
+        // （配合毒化壳：删除空白 → 密文错位解出乱码）。壳内仅换行符，跳过自保护以免换新行被抹平。
+        if ($this->config->get('newline_poison')) {
+            if (!class_exists(NewlinePoison::class, false)) {
+                require_once __DIR__ . '/Encode/NewlinePoison.php';
+            }
+            $current = $this->shell($current, '换行缠绕壳', fn ($c) => (new NewlinePoison($this->logger, $this->salt))->wrap($c, [
+                'ratio'        => (float) $this->config->get('newline_poison_ratio'),
+                'min'          => (int) $this->config->get('newline_poison_min'),
+                'string_ratio' => 0.4,
+            ]), 'newline_poison');
+        }
+
         // 结构指纹毒化壳（真最外层）：指纹对象 = 除自身载荷外的完整最终文件，
         // 文件被美化/篡改 → 密钥错位解出乱码（校验结果进数据流，无分支可绕）。
         if ($this->config->get('struct_poison')) {
@@ -226,7 +239,45 @@ final class Obfuscator
         foreach ((array) $this->config->get('layer_warnings', []) as $w) {
             $this->logger->warn((string) $w);
         }
-        $layers = $this->orderShellLayers($this->config->getLayers());
+        $rawLayers = $this->config->getLayers();
+        // --newline-poison 在分层/预设模式下按需注入换行缠绕层：
+        // 插在 shell:structpoison 之前（有则紧邻，无则追加）。orderShellLayers 会把它归入
+        // preTail，与 honeypot/structpoison 同级——在无 structpoison 的等级（mid/high）里它
+        // 落在所有编码壳之后，换行在最终文件中【可见】；在 max/ultra（含 structpoison）里
+        // 换行随内层代码被加密进密文（配合毒化壳）。
+        if ($this->config->get('newline_poison')) {
+            $hasNp = false;
+            foreach ($rawLayers as $l) {
+                if (($l['name'] ?? '') === 'shell:newline_poison') {
+                    $hasNp = true;
+                    break;
+                }
+            }
+            if (!$hasNp) {
+                $npLayer = [
+                    'name'   => 'shell:newline_poison',
+                    'params' => [
+                        'ratio'        => (float) $this->config->get('newline_poison_ratio'),
+                        'min'          => (int) $this->config->get('newline_poison_min'),
+                        'string_ratio' => 0.4,
+                    ],
+                    'inject' => [],
+                ];
+                $at = null;
+                foreach ($rawLayers as $i => $l) {
+                    if (($l['name'] ?? '') === 'shell:structpoison') {
+                        $at = $i;
+                        break;
+                    }
+                }
+                if ($at === null) {
+                    $rawLayers[] = $npLayer;
+                } else {
+                    array_splice($rawLayers, $at, 0, [$npLayer]);
+                }
+            }
+        }
+        $layers = $this->orderShellLayers($rawLayers);
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
 
@@ -532,6 +583,15 @@ final class Obfuscator
                     return $code;
                 }
                 return (new LicenseGuard($this->salt, $this->logger))->wrap($code, $dom, $exp)['code'];
+            case 'newline_poison':
+                if (!class_exists(NewlinePoison::class, false)) {
+                    require_once __DIR__ . '/Encode/NewlinePoison.php';
+                }
+                return (new NewlinePoison($this->logger, $this->salt))->wrap($code, [
+                    'ratio'        => (float) ($params['ratio'] ?? 0.1),
+                    'min'          => (int) ($params['min'] ?? 2000),
+                    'string_ratio' => (float) ($params['string_ratio'] ?? 0.4),
+                ]);
             case 'structpoison':
                 if (!class_exists(StructPoison::class, false)) {
                     require_once __DIR__ . '/Encode/StructPoison.php';
@@ -744,6 +804,10 @@ final class Obfuscator
         }
         if ($layerKey === 'shell:structpoison' || $layerKey === 'structpoison') {
             return $code; // 自行保护，跳过
+        }
+        // newline_poison：壳内仅是换行符，无意义再施保护；且必须保留已注入的换行（否则特征被抹平）
+        if ($layerKey === 'shell:newline_poison' || $layerKey === 'newline_poison') {
+            return $code;
         }
         // anti_tamper 自带区段哈希（构建期已对【整段主体】求哈希写入守卫），若在封装后再对
         // 整段施加 ShellProtector，主体字节会变 → 运行期区段哈希失配误报篡改。其守卫行已由

@@ -110,6 +110,10 @@ function obf_parse_args(array $argv): array
             $out['confrontation_llm'] = false;
             continue;
         }
+        if ($a === '--no-newline-poison') {
+            $out['newline_poison'] = false;
+            continue;
+        }
         if (str_starts_with($a, '--')) {
             $body = substr($a, 2);
             if (str_contains($body, '=')) {
@@ -228,6 +232,11 @@ function obf_help(): string
                        实际仍在执行）并向壳内层散布生僻 CJK 注释，误导 LLM 优先级判断。
                        配合 --confrontation-intensity=N（1~3，默认 2）调节密度；
                        --no-confrontation-llm 关闭
+      --newline-poison  开启换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符
+                       （数量 = max(原始行数 × 1/10, 2000)）纠缠进代码与字符串载荷，
+                       与 --struct-poison 配合 —— 逆向者"下意识删空格/美化去换行"会改动密文 → 解密错位。
+                       可用 --newline-poison-min=N 改最少数量（默认 2000）、
+                       --newline-poison-ratio=F 改比例（默认 0.1）；--no-newline-poison 关闭
 
 授权绑定（第四阶段）
       --license-domain= 授权域名，逗号分隔（如 a.com,b.com）；仅 Web SAPI 下校验

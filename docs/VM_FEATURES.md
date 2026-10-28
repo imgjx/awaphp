@@ -509,7 +509,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - **数组展开**（`[...$a, 3]`）：`emitArray` 检测到元素首项为 `...`/`T_ELLIPSIS` 时走 `emitArraySpread`，先行 `ARRAY_MAKE` N 个非展开元素，再对后续展开项 `ARRAY_SPREAD`、非展开项 `ARRAY_PUSH`（展开后接键名元素显式抛错以保正确）。
   - **`empty(任意表达式)`**（`empty(0)` / `empty(f())`）：`T_EMPTY` 对无法静态判定的目标 `try/catch` 回退到「编译实参 + `EMPTY_ANY` opcode」真编译（此前整体回退）。
   - **动态属性读写**（`$o->$p` / `$o->$p = v`）：`parsePostfix` 读 `$o->$p` 改发 `PROPGET_DYN`（弹属性名 + 对象再取值）；`matchLvalueSpan`/`compileLVResolve`/`compileLVStore` 接受 `T_VARIABLE` 型属性名左值，落 `PROPSET_DYN`。新增 `ARRAY_SPREAD=153` / `EMPTY_ANY=154` / `PROPGET_DYN=155` / `PROPSET_DYN=156` 四个 opcode，参考运行期 `runtime.php` 与产物运行期 `RuntimeGenerator` 双轨同步。
-  - **回归**：语法探针 `vm_syntax_probe` 真编译 592 → **601**（新增 heredoc 插值 / nowdoc / 数组展开 / empty(任意) / 动态属性读写 / nullsafe / `??=` / list 解构 / clone 共 9 例全数「真编译」零回退），回退维持 20，失败维持 35（生成器/`yield`、闭包、一等可调用等既有深度项）；生成器探针 `vm_gen_probe` 扩至 **290** 例（含新语法 × 多模式 + combo 多强度）全绿 `FAIL=0`；新增 `hardening_v110` 26 项（五等级功能保真 + combo 等价性 + confrontation 注入校验 + ultra 全开管线）全绿。
+  - **回归**：语法探针 `vm_syntax_probe` 真编译 592 → **601**（新增 heredoc 插值 / nowdoc / 数组展开 / empty(任意) / 动态属性读写 / nullsafe / `??=` / list 解构 / clone 共 9 例全数「真编译」零回退），回退维持 20，失败维持 35（生成器/`yield`、闭包、一等可调用等既有深度项）；生成器探针 `vm_gen_probe` 扩至 **290** 例（含新语法 × 多模式 + combo 多强度）全绿 `FAIL=0`；新增 `hardening_v110` 35 项（五等级功能保真 + combo 等价性 + confrontation 注入校验 + newline-poison 独立/分层可见性 + ultra 全开管线）全绿。
 
 - **VM opcode 组合执行（抗反编译，`--vm-combo[=N]`，N=1~3）**：
   - 动机：单条 opcode 与原始语义存在 1:1 映射，反编译工具可据 opcode 直接还原意图。把单 opcode 拆成等价多指令序列，可打散该映射。
@@ -522,6 +522,13 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - 两类注入：① **误导性注释**——假 `@deprecated`（「自 v2.1 起不再使用，保留仅为向后兼容」）、`@see`（「`CoreCrypto::decryptPayload()` 替代实现」）、`@todo`、`@fixme`（「临时调试用，上线前需删除」），以及伪造 `/** CHANGELOG … */` 注释块声称某些「legacy 解密入口」已被移除（实际仍在执行）；② **生僻 CJK 散布**——随机生僻汉字作为 `//` 注释碎片散布到壳内层，制造「含中文业务注释」假象。
   - 注入点位于 `Obfuscator` 的 `Copyright::inject` 之后、自校验/毒化壳之前，伪造注释与生僻 CJK 一并纳入防篡改指纹；max/ultra 预设默认开启（ultra 强度拉满 + `vm_combo=3`）。
 
-- **CLI / 预设 / 配置集成**：新增 `--vm-combo[=N]` / `--no-vm-combo`、`--confrontation-llm` / `--no-confrontation-llm` / `--confrontation-intensity=N`；`config.default.php` 与 `src/Config.php` 归一化补齐 `vm_combo`(0-3)、`confrontation_llm`(bool)、`confrontation_intensity`(1-3)；max/ultra 预设启用 confrontation（ultra 另开 `vm_combo=3`）。
+- **换行缠绕壳（结构指纹毒化壳配套，`--newline-poison`）**：
+  - 动机：逆向 / 审计人员拿到混淆产物，常「下意识」整理一下——删空行、去换行、跑格式化把「没用的空白」清掉。本模块让产物遍布换行，且一部分换行**是数据本身**（嵌在 base64 载荷串里），诱导这类清理动作。
+  - 数量：`目标 = max(原始行数 × ratio, min)`，默认 `ratio=0.1`（原始代码 1/10）、`min=2000`（保底）；`--newline-poison-min=N` / `--newline-poison-ratio=F` 可调。
+  - 落点（`src/Encode/NewlinePoison.php`，`token_get_all` 驱动）：① **语句间空行**——在 `; } ) , ]` 等语句结束符后按 salt 确定性随机插入，分散全程、绝非堆在尾部；② **串内缠绕**——仅对**纯 base64 字符集且足够长（≥256）**的字面量做串内插入（`base64_decode` 默认忽略空白，插换行不改解码字节 → 运行行为不变）；短串（常量名 / 函数名 / 错误文案 / 正则）一律跳过，避免破坏 `constant('PHP_VERSION_ID')` 这类承载语义的串（早期版本曾因此把常量名拆断而报错）。
+  - 与结构毒化壳的顺序（关键）：换行缠绕层排在 `shell:structpoison` **之前**。`mid`/`high`/独立模式下它落在所有编码壳之后，换行在最终文件中**可见**；`max`/`ultra` 含结构毒化壳时，换行随内层代码被 gz+base64 加密进密文（实测：任何在毒化壳指纹区内新增的换行都会使密钥错位、运行即 `fatal: cannot continue`，故必须前置）。
+  - 实测：独立 `--newline-poison` 产物 ≈ 2039 换行、运行输出与原生逐字节一致；`--level=mid --newline-poison` ≈ 2004 换行同样一致；`--level=max --newline-poison` 换行被吸入密文、运行一致。
+
+- **CLI / 预设 / 配置集成**：新增 `--vm-combo[=N]` / `--no-vm-combo`、`--confrontation-llm` / `--no-confrontation-llm` / `--confrontation-intensity=N`、`--newline-poison` / `--no-newline-poison` / `--newline-poison-min=N` / `--newline-poison-ratio=F`；`config.default.php` 与 `src/Config.php` 归一化补齐 `vm_combo`(0-3)、`confrontation_llm`(bool)、`confrontation_intensity`(1-3)、`newline_poison`(bool)、`newline_poison_min`、`newline_poison_ratio`；max/ultra 预设启用 confrontation（ultra 另开 `vm_combo=3`）。
 
 

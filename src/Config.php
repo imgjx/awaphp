@@ -125,6 +125,11 @@ final class Config
         $this->data['gz_chunks']      = max(1, min(6, $i($this->data['gz_chunks'] ?? 3)));
         // 结构指纹毒化壳：文件指纹参与解密密钥派生（美化/篡改 → 解出乱码，无分支可绕）
         $this->data['struct_poison']  = $b($this->data['struct_poison'] ?? false) ?? false;
+        // 换行缠绕壳：注入大量换行符（原始行数 1/10，至少 min 个，默认 2000）纠缠进代码与载荷，
+        // 配合结构指纹毒化壳（删空白 → 密文错位）。默认关。
+        $this->data['newline_poison']       = $b($this->data['newline_poison'] ?? false) ?? false;
+        $this->data['newline_poison_min']   = max(1, (int) ($this->data['newline_poison_min'] ?? 2000));
+        $this->data['newline_poison_ratio'] = max(0.01, min(1.0, (float) ($this->data['newline_poison_ratio'] ?? 0.1)));
         // 蜜罐函数：拟真高价值命名的钓鱼假函数，被调用即拖慢调试并返回诱饵密钥
         $this->data['honeypot']       = max(0, $i($this->data['honeypot'] ?? 0));
         // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住；强度 1-3 控制语义变换激进度

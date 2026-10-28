@@ -97,6 +97,7 @@
 - **自校验防篡改**（`--anti-tamper`）：掩码自校验 + 分段哈希 + 总长校验 + shutdown 二次校验。
 - **授权绑定**（`--license-domain` / `--license-expire`）：域名绑定（仅 Web SAPI，支持泛子域）+ 有效期，默认关闭。
 - **结构指纹毒化壳**（`--struct-poison`，max/ultra 默认）：文件指纹（含插桩扩展在场计数）直接参与解密密钥派生——美化、插桩、hook `gzinflate`/`eval` 全部表现为「正常跑完但解出乱码」，没有可下断点的比较分支，也没有可 hook 的 exit。
+- **换行缠绕壳**（`--newline-poison`，`--newline-poison-min=N` / `--newline-poison-ratio=F` 可调）：向产物注入大量换行符（数量 = `max(原始行数 × 1/10, 上一档下限 2000)`），一部分作语句间空行、一部分直接嵌进最长的 base64 载荷串，**纠缠进代码而非堆在尾部**。它与结构毒化壳配合：在 `mid`/`high`/独立模式下换行在最终文件里**清晰可见**，逆向者若「下意识删空格 / 美化去换行」去整理产物，轻则改动密文布局、重则在 `max`/`ultra`（换行随内层一同被 `struct-poison` 加密进密文）下使载荷错位；正常运行与原生逐字节一致。
 - **蜜罐函数**（`--honeypot=N`）：`deriveMasterKey` / `verifyLicense` 这类拟真高价值命名，正常永不调用；被破解者调用即进入 1.4s 深循环并返回伪密钥，专钓「把所有函数都跑一遍」的自动化分析。
 - **GOTO 诱饵死状态**（`--goto-trap=N`，默认 2）：每个状态机分派器混入外观一致的不可达分支，调试器强行改状态跳入即自锁死循环。
 
@@ -179,7 +180,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-sa
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
 php tests/hardening_test.php    # 加固专项：32 项
-php tests/hardening_v110.php     # v1.1.0 加固：语法兼容 + combo + confrontation（26 项）
+php tests/hardening_v110.php     # v1.1.0 加固：语法兼容 + combo + confrontation + newline-poison（35 项）
 php tests/vm_syntax_probe.php    # VM 语法探测：656 例三态（真编译/回退/失败）
 php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多强度）
 ```
@@ -197,7 +198,7 @@ php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多�
 ## 更新日志
 
 - **v1.0.7**：VM 运行时内存加密 + 复杂语法兼容增强——操作数栈上的运行期值全程 XOR 加密存储（每进程随机密钥掺入内存指纹，出栈即解密；对象/资源/含闭包数组等不可序列化值走旁路标记栈，不破坏引用语义），内存转储/栈快照无法直接读到明文计算值；VM 真编译新增 `clone`、空安全 `?->`（属性/方法）、`??=` 空合并赋值、数组 / `list()` 解构赋值（含键名与跳位）。详见 `docs/VM_FEATURES.md` §11.12。
-- **v1.1.0 正式版**：VM 语法兼容性大幅拓展 + 抗反编译 / 反 LLM 分析双线增强。**语法兼容**：VM 真编译新增 heredoc 插值（`<<<EOT … $var … EOT`）、数组展开（`[...$a, 3]`）、`empty(任意表达式)`（`empty(0)`/`empty(f())`）、动态属性读写（`$o->$p` / `$o->$p = v`）、nowdoc 字面折叠；语法探测 647→656 例、新语法全数「真编译」零回退（真编译 592→601）。**opcode 组合执行**（`--vm-combo[=N]`）：单 opcode 拆等价多指令序列（`SUB→NEG+ADD` 等），打破 1:1 映射抗反编译。**Confrontation-LLM 反 LLM 分析**（`--confrontation-llm`，强度 `--confrontation-intensity=N`）：注入假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG「已被移除」注释块，并向壳内层散布生僻 CJK 注释，专门误导以 LLM 辅助的逆向 / 审计对优先级与关键路径的判断。详见 `docs/VM_FEATURES.md` §11.13。
+- **v1.1.0 正式版**：VM 语法兼容性大幅拓展 + 抗反编译 / 反 LLM 分析双线增强。**语法兼容**：VM 真编译新增 heredoc 插值（`<<<EOT … $var … EOT`）、数组展开（`[...$a, 3]`）、`empty(任意表达式)`（`empty(0)`/`empty(f())`）、动态属性读写（`$o->$p` / `$o->$p = v`）、nowdoc 字面折叠；语法探测 647→656 例、新语法全数「真编译」零回退（真编译 592→601）。**opcode 组合执行**（`--vm-combo[=N]`）：单 opcode 拆等价多指令序列（`SUB→NEG+ADD` 等），打破 1:1 映射抗反编译。**Confrontation-LLM 反 LLM 分析**（`--confrontation-llm`，强度 `--confrontation-intensity=N`）：注入假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG「已被移除」注释块，并向壳内层散布生僻 CJK 注释，专门误导以 LLM 辅助的逆向 / 审计对优先级与关键路径的判断。**换行缠绕壳**（`--newline-poison`）：注入大量换行符（`max(原始行数×1/10, 2000)`）纠缠进代码与 base64 载荷，配合结构指纹毒化壳——逆向者「下意识删空格 / 美化去换行」即改动密文布局。详见 `docs/VM_FEATURES.md` §11.13。
 - **v1.0.6**：逐层壳自保护（破一层先被恶心一层）——每一层解码壳的解码逻辑再被外层混淆护住（`ShellProtector`：变量重命名 + 语义变换 + token 形态 + 压缩），攻击者须先解开外层混淆才读得到内层解码逻辑；新增 `--shell-shield-intensity=N` 与 `--no-shell-shield`；`Salt` 记忆化削减重复哈希、优化构建性能；修复压缩去换行破坏 `//` 行注释与 `new \stdClass()` 粘连两类静默失效。详见 `docs/VM_FEATURES.md` §11.11。
 - **v1.0.5**：38 个新内联模块（内置 32 → 70）+ 三类反分析（结构指纹毒化壳 / 蜜罐函数 / GOTO 诱饵死状态），并修复 `SemanticRewriter`、`VmJunk` 两处静默回退缺陷。
 - **v1.0.4**：修复 `VmJunk` 异常表不同步导致的异常桥接破坏，混淆引擎五档预设全面加码。

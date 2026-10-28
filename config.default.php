@@ -64,6 +64,9 @@ return [
     'junk_funcs'   => 0,       // 诱饵函数数量（>0 生效）
     'goto_trap'    => 2,       // GOTO 诱饵死状态数（0-4，每个分派器注入不可达分支）
     'struct_poison' => false,  // 结构指纹毒化壳（指纹进密钥派生；篡改即解出乱码）
+    'newline_poison' => false,  // 换行缠绕壳：注入大量换行符（原始行数 1/10，至少 2000）纠缠进代码与载荷，配合结构毒化壳
+    'newline_poison_min' => 2000,    // 换行缠绕最少注入数量
+    'newline_poison_ratio' => 0.1,   // 换行缠绕数量 = max(原始行数 × ratio, min)
     'honeypot'     => 0,       // 蜜罐函数数量（拟真高价值命名 + 深循环拖慢 + 伪密钥）
     'shell_shield' => true,    // 逐层壳自保护：每层壳的解码逻辑再被外层混淆护住（破一层要先被恶心一层）
     'shell_shield_intensity' => 2, // 自保护语义变换强度 1-3（仅影响语义层；变量重命名始终开启）

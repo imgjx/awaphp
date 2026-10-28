@@ -26,6 +26,7 @@ final class LayerDescriptor
 {
     public const T_BOOL   = 'bool';
     public const T_INT    = 'int';
+    public const T_FLOAT  = 'float';
     public const T_SELECT = 'select';
     public const T_TEXT   = 'text';
     public const T_CODE   = 'code';
@@ -271,6 +272,17 @@ final class LayerDescriptor
                 ],
                 'tags' => ['反分析'],
             ],
+            'shell:newline_poison' => [
+                'kind'  => 'shell',
+                'label' => '换行缠绕壳（结构毒化配套）',
+                'desc'  => '注入大量换行符（max(原始行数×ratio, min) 个）纠缠进代码与字符串载荷；与结构指纹毒化壳配合——逆向者删空白/去换行即改动密文 → 解密错位',
+                'params' => [
+                    'ratio' => ['label' => '比例', 'type' => self::T_FLOAT, 'default' => 0.1, 'min' => 0.01, 'max' => 1.0, 'hint' => '换行数 = 原始行数 × 该比例'],
+                    'min'   => ['label' => '最少换行', 'type' => self::T_INT, 'default' => 2000, 'min' => 1, 'max' => 100000, 'hint' => '换行数下限（保底数量）'],
+                    'string_ratio' => ['label' => '串内占比', 'type' => self::T_FLOAT, 'default' => 0.4, 'min' => 0.0, 'max' => 1.0, 'hint' => '有多大比例换行嵌进字符串字面量（其余作语句间空行）'],
+                ],
+                'tags' => ['反分析'],
+            ],
 
             // ===================== 特殊层 =====================
             'inject' => [
@@ -338,6 +350,12 @@ final class LayerDescriptor
                     if (isset($p['min'])) { $i = max($p['min'], $i); }
                     if (isset($p['max'])) { $i = min($p['max'], $i); }
                     $out[$k] = $i;
+                    break;
+                case self::T_FLOAT:
+                    $f = (float) $v;
+                    if (isset($p['min'])) { $f = max((float) $p['min'], $f); }
+                    if (isset($p['max'])) { $f = min((float) $p['max'], $f); }
+                    $out[$k] = $f;
                     break;
                 case self::T_SELECT:
                     $s = (string) $v;
