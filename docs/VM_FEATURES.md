@@ -485,3 +485,20 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - `emit` 在 `<?php` 开标签后补边界空格，避免 `<?phpfunction` 粘连被误判；
   - `needsSpace` 在「词素单词后紧跟 `\` 起头的命名空间名」（`new \stdClass()`）处补空格，否则压缩成 `new\stdClass` 被 PHP 词法器误判为函数调用而报 `Call to undefined function new\stdClass()`。该规则同步修到 `Obfuscator::emit`，覆盖分层 `ws` 层的同等隐患。
 - **回归**：`run_tests` 32、`syntax_compat` 7、`vm_builtin_modules` 205、`hardening_v105` 14、`hardening_v106` 29 全绿；五档预设（low/mid/high/max/ultra）产物运行输出与原文逐字节一致；`--no-shell-shield` 开关、`anti_tamper` 单字节篡改检测、结构毒化壳三态（未篡改/美化/篡改）均通过专项验证。
+
+### 11.12 v1.0.7：VM 运行时内存加密 + 复杂语法兼容增强
+
+- **操作数栈运行期内存加密（核心新增）**：
+  - 动机：字节码虽已脱离 PHP 语句形态，但运行期操作数栈（`$__stack` / `$___STACK___`）里仍是**明文计算值**——内存转储或栈快照可直接读到中间结果（密钥串、解密后的载荷等）。
+  - 机制：每个 `__VMRUN__` 帧初始化时用 `substr(hash('sha256', microtime() . memory_get_usage(), true), 0, 16)` 派生**每进程随机**的 16 字节 XOR 密钥（掺入内存指纹，重启/换进程即不同）；所有入栈值经 `serialize()` 后逐字节 XOR 循环加密，出栈/窥栈时解密还原。栈内静置的一律是密文，明文只在“出栈瞬间”短暂存在。
+  - 旁路标记栈（不可序列化值）：对象、资源、以及**含闭包/对象的数组**无法 `serialize()`。这类值经 `try/catch` 捕获后存入独立的明文旁路表，栈上只放一个整数索引 + **并行标记栈**（`$__mcFlags` / `$___MCFLAGS___`，与值栈同压同弹保持对齐）。出栈时按标记决定解密还原还是取旁路值——因此含闭包数组、对象句柄等仍能正确往返，且不触发 `Serialization of 'Closure' is not allowed`。
+  - 只加密操作数栈、**不加密变量帧**（`$__vars` / `$___VARS___`）：帧变量被 `CALL`/引用赋值/静态属性等大量按引用绑定，加密会破坏引用语义；栈值是转瞬即逝的中间量，加密它已足以阻断对“进行中计算”的内存窥探。
+  - 双运行期同步：参考运行期 `src/Vm/runtime.php`（探针/预检用）与产物运行期 `src/Vm/RuntimeGenerator.php` 均接入同一套加解密与并行标记栈，语义逐字节一致。
+- **复杂语法真编译扩展**（此前回退 `EVAL_STMT`，现进入自定义 ISA）：
+  - `clone $obj`：新增 `CLONE` 操作码，弹对象克隆后压回（非对象与 PHP 一致抛 `TypeError`）。
+  - 空安全 `?->`：新增 `NULLSAFE_PROPGET`（属性读）与 `NULLSAFE_MECALL`（方法调用）。接收者为 `null` 时属性读压 `null`；方法调用则弹出并**丢弃已编译的实参与方法名**后压 `null`。仅 `=== null` 触发短路（`0`/`''`/`false` 不短路），与 PHP 语义一致。
+  - `??=`（空合并赋值）：语句级对简单变量按 `$a ??= rhs ≡ $a !== null ? $a : ($a = rhs)` 展开，复用 `??` 的 `DUP / PUSH_NULL / IDENT / JNZ / JMP` 跳转骨架，**仅在 `$a` 为 `null` 时求值 RHS**（短路副作用）。
+  - 数组 / `list()` 解构赋值：`[$a,$b] = ...`、`["k"=>$v] = ...`、`[, $b] = ...`（跳位）、`list($a,$b) = ...`，复用 `foreach` 已有的 `emitListDestruct` 逐元素分发（支持键名、跳位、嵌套），RHS 先求值到临时帧槽再解构。
+- **已知局限（保持回退，不保证真编译）**：空安全方法调用的实参在短路分支前已被求值（仅当“接收者为 null 且实参带副作用”时与 PHP 有细微差异）；`??=` 仅支持简单变量左值（属性/下标左值回退）；空安全 FCC（`$o?->m(...)` 的一等可调用形态）回退；生成器 / `yield`、闭包、一等可调用等结构性特性仍维持既有回退策略。
+- **回归**：语法探针 `vm_syntax_probe` 真编译 581 → **588**（新增覆盖 clone / `?->` / `??=` / 四类解构），回退 31 → 24，失败维持 35（均为生成器/闭包/字符串自增/魔术常量等既有深度项，无新增回归）；生成器探针 `vm_gen_probe` 扩至 150 例（新增 10 例新语法 × 三模式）全绿 `FAIL=0`；`run_tests` 32；新增 `hardening_v107` 23 项（五等级功能保真 + 加密 helper 接入校验 + 含对象数组旁路往返 + 生产管线）全绿。
+

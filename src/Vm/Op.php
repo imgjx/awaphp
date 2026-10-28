@@ -269,6 +269,16 @@ final class VmOp
     //   无操作数——栈[类名, 方法名]：两者依次压栈（类名在下）。
     public const SCALL_FCC_DYN = 145;
 
+    // ---- 一元 clone（PHP 8 clone 表达式，VM 真编译）----
+    // CLONE：弹出对象，克隆后压回（clone $obj 语义；非对象与 PHP 一致抛 TypeError）。
+    public const CLONE = 150;
+    // ---- 空安全属性访问 / 方法调用（PHP 8.0 ?->）----
+    // NULLSAFE_PROPGET：操作数 prop -> 弹接收者；null 则压 null，否则取属性。
+    // NULLSAFE_MECALL：操作数 argc -> 栈[对象, 参数..., 方法名]；对象为 null 时
+    //   丢弃参数与方法名并压 null（参数不参与调用），否则同 MECALL 分发。
+    public const NULLSAFE_PROPGET = 151;
+    public const NULLSAFE_MECALL  = 152;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -369,6 +379,9 @@ final class VmOp
         self::SCALL_FCC     => ['n', 'n'],
         self::SCALL_FCC_VAR => ['n'],
         self::SCALL_FCC_DYN => [],
+        self::CLONE         => [],
+        self::NULLSAFE_PROPGET => ['n'],
+        self::NULLSAFE_MECALL  => ['i'],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -483,6 +496,9 @@ final class VmOp
         self::SCALL_FCC     => 'SCALL_FCC',
         self::SCALL_FCC_VAR => 'SCALL_FCC_VAR',
         self::SCALL_FCC_DYN => 'SCALL_FCC_DYN',
+        self::CLONE         => 'CLONE',
+        self::NULLSAFE_PROPGET => 'NULLSAFE_PROPGET',
+        self::NULLSAFE_MECALL  => 'NULLSAFE_MECALL',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

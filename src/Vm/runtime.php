@@ -41,6 +41,7 @@ function __VMRUN__($__P)
     $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
     // FCC（PHP 8.1+ 一等可调用方法语法）
     $MECALL_FCC=141;$SCALL_FCC=142;$MECALL_FCC_VAR=143;$SCALL_FCC_VAR=144;$SCALL_FCC_DYN=145;
+    $CLONE=150;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;
 
     $__META = "\x01__cls";
 
@@ -740,9 +741,17 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
     ){
-        $__stack = $__init;
+        $__mcKey = substr(hash('sha256', (string)microtime(true).(string)memory_get_usage(), true), 0, 16);
+$__mcPlain=[];$__mcFlags=[];
+$__mcEnc=function($v)use(&$__mcKey,&$__mcPlain){if(is_object($v)||is_resource($v)||$v===null){$__mcPlain[]=$v;return count($__mcPlain)-1;}try{$__mcs=serialize($v);}catch(\Throwable $__e){$__mcPlain[]=$v;return count($__mcPlain)-1;}$__mcn=strlen($__mcs);$__mco='';for($__mci=0;$__mci<$__mcn;$__mci++){$__mco.=$__mcs[$__mci]^$__mcKey[$__mci%16];}return $__mco;};
+$__mcDec=function($v)use(&$__mcKey){if(is_object($v)||is_resource($v)||$v===null){return $v;}$__mcn=strlen($v);$__mco='';for($__mci=0;$__mci<$__mcn;$__mci++){$__mco.=$v[$__mci]^$__mcKey[$__mci%16];}return unserialize($__mco);};
+$__stack=[];$__mcFlags=[];
+foreach($__init as $__iv){$__e=$__mcEnc($__iv);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:0;}
+$__mcPush=function($v)use(&$__stack,&$__mcFlags,&$__mcEnc){$__e=$__mcEnc($v);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:0;};
+$__mcPop=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__f=array_pop($__mcFlags);$__s=array_pop($__stack);return $__f===1?$__mcPlain[$__s]:$__mcDec($__s);};
+$__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count($__stack);if(!$__c)return null;$__f=$__mcFlags[$__c-1];$__s=$__stack[$__c-1];return $__f===1?$__mcPlain[$__s]:$__mcDec($__s);};
         $__pc = 0;
         $__n = count($__codeArr);
         $__ret = null; $__retSet = false;
@@ -756,33 +765,34 @@ function __VMRUN__($__P)
             $__ins = $__codeArr[$__pc++];
             $__op = $__ins[0];
             switch ($__op) {
-                case $PUSH_C:   $__stack[] = $__ins[1]; break;
-                case $PUSH_V:   $__stack[] = $__vars[$__ins[1]] ?? null; break;
-                case $PUSH_REF: $__stack[] = ['__vmref__', $__ins[1], $__vars[$__ins[1]] ?? null]; break;
-                case $PUSH_REF_EL: $__stack[] = ['__vmrefel__', $__ins[1]]; break;
-                case $POP_V:    $__vars[$__ins[1]] = array_pop($__stack); break;
-                case $DUP:      $__stack[] = end($__stack); break;
-                case $DROP:     array_pop($__stack); break;
-                case $LOAD_THIS:$__stack[] = $__this; break;
-                case $PUSH_NULL:$__stack[] = null; break;
+                case $PUSH_C:   $__mcPush($__ins[1]); break;
+                case $PUSH_V:   $__mcPush($__vars[$__ins[1]] ?? null); break;
+                case $PUSH_REF: $__mcPush(['__vmref__', $__ins[1], $__vars[$__ins[1]] ?? null]); break;
+                case $PUSH_REF_EL: $__mcPush(['__vmrefel__', $__ins[1]]); break;
+                case $POP_V:    $__vars[$__ins[1]] = $__mcPop(); break;
+                case $DUP:      $__mcPush($__mcPeek()); break;
+                case $DROP:     $__mcPop(); break;
+                case $LOAD_THIS:$__mcPush($__this); break;
+                case $PUSH_NULL:$__mcPush(null); break;
                 case $ADD: case $SUB: case $MUL: case $DIV: case $MOD: case $POW:
                 case $CONCAT: case $BW_AND: case $BW_OR: case $BW_XOR: case $BW_SHL: case $BW_SHR:
                 case $EQ: case $NE: case $LT: case $GT: case $LE: case $GE:
                 case $IDENT: case $NIDENT: case $SPACESHIP: case $BOOL_AND: case $BOOL_OR:
-                    $__b = array_pop($__stack); $__a = array_pop($__stack);
-                    $__stack[] = $__bin($__op,$__a,$__b);
+                    $__b = $__mcPop(); $__a = $__mcPop();
+                    $__mcPush($__bin($__op,$__a,$__b));
                     break;
-                case $NEG: $__stack[] = -array_pop($__stack); break;
-                case $BW_NOT: $__stack[] = ~array_pop($__stack); break;
-                case $BOOL_NOT: $__stack[] = !array_pop($__stack); break;
+                case $NEG: $__mcPush(-$__mcPop()); break;
+                case $BW_NOT: $__mcPush(~$__mcPop()); break;
+                case $CLONE: $__mcPush(clone $__mcPop()); break;
+                case $BOOL_NOT: $__mcPush(!$__mcPop()); break;
                 case $BOOL_XOR:
                     // xor 非短路：两侧均求值后做布尔异或（结果恒为 bool，与 PHP 一致）
-                    $__b = array_pop($__stack); $__a = array_pop($__stack);
-                    $__stack[] = ((bool)$__a) !== ((bool)$__b);
+                    $__b = $__mcPop(); $__a = $__mcPop();
+                    $__mcPush(((bool)$__a) !== ((bool)$__b));
                     break;
                 case $JMP: $__pc += $__ins[1]; break;
-                case $JZ: $__v = array_pop($__stack); if (!$__v) { $__pc += $__ins[1]; } break;
-                case $JNZ: $__v = array_pop($__stack); if ($__v) { $__pc += $__ins[1]; } break;
+                case $JZ: $__v = $__mcPop(); if (!$__v) { $__pc += $__ins[1]; } break;
+                case $JNZ: $__v = $__mcPop(); if ($__v) { $__pc += $__ins[1]; } break;
                 case $JMP_B:
                     // 经跳转表做绝对跳转（指令重排后，块内偏移不再可信）
                     $__pc = isset($__seg['jt'][$__ins[1]]) ? $__seg['jt'][$__ins[1]] : $__n;
@@ -797,11 +807,11 @@ function __VMRUN__($__P)
                     break;
                 case $CALL:
                     $__argc = $__ins[2]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     // 传调用方帧变量表：by-ref 实参据此 copy-in / copy-out
-                    $__stack[] = $__callFunc($__ins[1], $__a, $__vars);
+                    $__mcPush($__callFunc($__ins[1], $__a, $__vars));
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $CALL_RR:
@@ -811,7 +821,7 @@ function __VMRUN__($__P)
                     // 桥接回写在 callFunc 内完成（元素级赋值才穿透帧表），
                     // 此处不再经本地变量中转（变量级重绑不传播 + 引用集污染）。
                     $__argc = $__ins[3]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     $__callFunc($__ins[1], $__a, $__vars, $__ins[2]);
@@ -819,48 +829,61 @@ function __VMRUN__($__P)
                     break;
                 case $CALL_VAR:
                     $__argc = $__ins[1]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
-                    $__fn = array_pop($__stack);
+                    $__fn = $__mcPop();
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     // 变量函数：值可能为非字符串可调用体（闭包/数组 callable，如
                     // EVAL_STMT 回退段写回的闭包）——直接调用，避免 (string) 化致命
                     if (!is_string($__fn) && is_callable($__fn)) {
                         [$__a,] = $__bindArgs($__a, null, $__vars);
-                        $__stack[] = call_user_func_array($__fn, $__a);
+                        $__mcPush(call_user_func_array($__fn, $__a));
                     } else {
-                        $__stack[] = $__callFunc((string)$__fn, $__a, $__vars);
+                        $__mcPush($__callFunc((string)$__fn, $__a, $__vars));
                     }
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $MECALL:
                     // 栈布局（底→顶）：[对象, 参数..., 方法名]
                     $__argc = $__ins[1]; $__a = [];
-                    $__m = array_pop($__stack); // 方法名（栈顶）
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    $__m = $__mcPop(); // 方法名（栈顶）
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
-                    $__obj = array_pop($__stack);
+                    $__obj = $__mcPop();
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
                     // 传调用方帧变量表：by-ref 实参据此 copy-in / copy-out
-                    $__stack[] = $__callMethod($__obj, (string)$__m, $__a, $__vars);
+                    $__mcPush($__callMethod($__obj, (string)$__m, $__a, $__vars));
+                    if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
+                    break;
+                case $NULLSAFE_MECALL:
+                    // 栈布局（底→顶）：[对象, 参数..., 方法名]；对象为 null 时
+                    // 参数已弹出丢弃、不参与调用，直接压 null（PHP ?-> 语义）。
+                    $__argc = $__ins[1]; $__a = [];
+                    $__m = $__mcPop();
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
+                    $__a = array_reverse($__a);
+                    $__obj = $__mcPop();
+                    if ($__obj === null) { $__mcPush(null); break; }
+                    if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
+                    $__mcPush($__callMethod($__obj, (string)$__m, $__a, $__vars));
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $MECALL_FCC:
                     // FCC：$o->m(...)（PHP 8.1+ 一等可调用）——弹对象压闭包。
                     // 创建期校验（方法不存在/接收者为 null）与原生一致。
-                    $__obj = array_pop($__stack);
-                    $__stack[] = $__fcc([$__obj, $__ins[1]]);
+                    $__obj = $__mcPop();
+                    $__mcPush($__fcc([$__obj, $__ins[1]]));
                     break;
                 case $MECALL_FCC_VAR:
                     // FCC：$o->$m(...)——栈[对象, 方法名]（方法名在下压入序之后）
-                    $__m = array_pop($__stack);
-                    $__obj = array_pop($__stack);
-                    $__stack[] = $__fcc([$__obj, (string)$__m]);
+                    $__m = $__mcPop();
+                    $__obj = $__mcPop();
+                    $__mcPush($__fcc([$__obj, (string)$__m]));
                     break;
                 case $SCALL:
                     // 静态 / 类方法调用：C::m(args)（方法沿继承链查找）
                     $__argc = $__ins[3]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1]; $__m = $__ins[2];
                     // LSB / 转发标记：static:: → 解析类=called 栈顶（栈空回退 FB）；
@@ -902,12 +925,12 @@ function __VMRUN__($__P)
                         foreach ($__refs as $__i => $__mm) {
                             if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
                         }
-                        $__stack[] = $__r;
+                        $__mcPush($__r);
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     } elseif (is_string($__cls) && class_exists($__cls) && method_exists($__cls, $__m)) {
                         // 原生类静态方法：同样需展平/去标记（同 SCALL_VAR / CALL_VAR 原生路径）
                         [$__a,] = $__bindArgs($__a, null, $__vars);
-                        $__stack[] = call_user_func_array([$__cls, $__m], $__a);
+                        $__mcPush(call_user_func_array([$__cls, $__m], $__a));
                     } else {
                         // __callStatic 魔术分发（PHP：调用不存在的静态方法时触发）。
                         // 仅当魔术方法存在才走——否则维持既有 null 语义。
@@ -917,12 +940,12 @@ function __VMRUN__($__P)
                             $__csargs = $__pad($__csspec, [$__m, $__a]);
                             $__calledCls[] = $__cls;
                             try {
-                                $__stack[] = $__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null);
+                                $__mcPush($__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null));
                             } finally {
                                 array_pop($__calledCls);
                             }
                         } else {
-                            $__stack[] = null;
+                            $__mcPush(null);
                         }
                     }
                     break;
@@ -930,9 +953,9 @@ function __VMRUN__($__P)
                     // 动态方法名的静态调用：C::$m() / self::$m()——方法名先压栈。
                     // 与 SCALL 同款分发，仅方法名来自运行期变量值。
                     $__argc = $__ins[2]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
-                    $__cls = $__ins[1]; $__m = array_pop($__stack);
+                    $__cls = $__ins[1]; $__m = $__mcPop();
                     // LSB / 转发标记（同 SCALL）：static::$m() / self::$m()
                     $__fwd = false;
                     if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
@@ -966,11 +989,11 @@ function __VMRUN__($__P)
                         foreach ($__refs as $__i => $__mm) {
                             if (array_key_exists($__mm[1], $__ev)) { $__vars[$__mm[0]] = $__ev[$__mm[1]]; }
                         }
-                        $__stack[] = $__r;
+                        $__mcPush($__r);
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     } elseif (is_string($__cls) && is_string($__m) && class_exists($__cls) && method_exists($__cls, $__m)) {
                         [$__a,] = $__bindArgs($__a, null, $__vars);
-                        $__stack[] = call_user_func_array([$__cls, $__m], $__a);
+                        $__mcPush(call_user_func_array([$__cls, $__m], $__a));
                     } else {
                         // __callStatic 魔术分发（同 SCALL）：仅当魔术方法存在才走
                         $__cso = is_string($__cls) ? $__methodOwner($__cls, '__callStatic') : null;
@@ -979,12 +1002,12 @@ function __VMRUN__($__P)
                             $__csargs = $__pad($__csspec, [$__m, $__a]);
                             $__calledCls[] = $__cls;
                             try {
-                                $__stack[] = $__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null);
+                                $__mcPush($__exec($__P['classes'][$__cso]['methods']['__callStatic'],[],null,$__csargs,null,false,$__P['classET'][$__cso]['__callStatic'] ?? null));
                             } finally {
                                 array_pop($__calledCls);
                             }
                         } else {
-                            $__stack[] = null;
+                            $__mcPush(null);
                         }
                     }
                     break;
@@ -999,37 +1022,37 @@ function __VMRUN__($__P)
                     } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
                         $__cls = substr($__cls, 5);
                     }
-                    $__stack[] = $__fcc($__cls . '::' . $__ins[2]);
+                    $__mcPush($__fcc($__cls . '::' . $__ins[2]));
                     break;
                 case $SCALL_FCC_VAR:
                     // FCC：C::$m(...)（动态方法名，类名为操作数）——栈[方法名]
-                    $__m = array_pop($__stack);
+                    $__m = $__mcPop();
                     $__cls = $__ins[1];
                     if (is_string($__cls) && strncmp($__cls, "\x00lsb:", 5) === 0) {
                         $__cls = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : substr($__cls, 5);
                     } elseif (is_string($__cls) && strncmp($__cls, "\x00fwd:", 5) === 0) {
                         $__cls = substr($__cls, 5);
                     }
-                    $__stack[] = $__fcc($__cls . '::' . (string)$__m);
+                    $__mcPush($__fcc($__cls . '::' . (string)$__m));
                     break;
                 case $SCALL_FCC_DYN:
                     // FCC：$cls::m(...) / $cls::$m(...)（类名与方法名均为运行期值）
                     // 栈[类名, 方法名]——类名在下先压入。
-                    $__m = array_pop($__stack);
-                    $__cls = array_pop($__stack);
-                    $__stack[] = $__fcc((is_string($__cls) ? $__cls : '') . '::' . (string)$__m);
+                    $__m = $__mcPop();
+                    $__cls = $__mcPop();
+                    $__mcPush($__fcc((is_string($__cls) ? $__cls : '') . '::' . (string)$__m));
                     break;
                 case $INSTANCEOF:
                     // 类型判定：$v instanceof C（C 为编译期常量类名）
-                    $__stack[] = $__instanceof(array_pop($__stack), $__ins[1]);
+                    $__mcPush($__instanceof($__mcPop(), $__ins[1]));
                     break;
                 case $INSTANCEOF_V:
                     // 动态类名 instanceof：$o instanceof $n（右值运行期求值）。
                     // 对象右值取其类名（PHP 语义）；非字符串/对象抛 TypeError。
-                    $__cls = array_pop($__stack);
+                    $__cls = $__mcPop();
                     if (is_object($__cls)) { $__cls = get_class($__cls); }
                     elseif (!is_string($__cls)) { throw new \TypeError('instanceof expects a string or an object'); }
-                    $__stack[] = $__instanceof(array_pop($__stack), $__cls);
+                    $__mcPush($__instanceof($__mcPop(), $__cls));
                     break;
                 case $LSB_BIND:
                     // static::$p：按 called class 解析声明该属性的类（沿继承链向上
@@ -1049,7 +1072,7 @@ function __VMRUN__($__P)
                     break;
                 case $LSB_CLASS:
                     // static::class：压入当前 called 类名（PHP: 运行期实际类）
-                    $__stack[] = ($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : '';
+                    $__mcPush(($__calledCls !== []) ? $__calledCls[count($__calledCls)-1] : '');
                     break;
                 case $SPROP:
                     // 类常量 / 静态属性：C::CONST 或 C::$p
@@ -1065,21 +1088,21 @@ function __VMRUN__($__P)
                         // VM 类的类常量：值段惰性求值
                         $__cs = $__P['classes'][$__co]['consts'][$__p];
                         $__ev = [];
-                        $__stack[] = ($__cs === null) ? null : $__exec($__code($__cs), $__ev, null, [], null);
+                        $__mcPush(($__cs === null) ? null : $__exec($__code($__cs), $__ev, null, [], null));
                     } elseif (defined($__cls . '::' . $__p)) {
-                        $__stack[] = constant($__cls . '::' . $__p);
+                        $__mcPush(constant($__cls . '::' . $__p));
                     } elseif (is_string($__cls) && class_exists($__cls)) {
                         $__rp = new \ReflectionClass($__cls);
                         $__props = $__rp->getStaticProperties();
                         $__pn = ltrim((string)$__p, '$');
-                        $__stack[] = array_key_exists($__pn, $__props) ? $__props[$__pn] : null;
+                        $__mcPush(array_key_exists($__pn, $__props) ? $__props[$__pn] : null);
                     } else {
-                        $__stack[] = null;
+                        $__mcPush(null);
                     }
                     break;
                 case $ISSET_: case $EMPTY_: case $UNSET_:
                     $__nk = $__ins[2]; $__keys = [];
-                    for ($i=0;$i<$__nk;$i++) { $__keys[] = array_pop($__stack); }
+                    for ($i=0;$i<$__nk;$i++) { $__keys[] = $__mcPop(); }
                     $__keys = array_reverse($__keys);
                     if ($__op === $UNSET_) {
                         if ($__ins[1] === '$GLOBALS') {
@@ -1105,48 +1128,52 @@ function __VMRUN__($__P)
                     }
                     $__found = false;
                     $__v = $__pathGet($__vars, $__ins[1], $__keys, $__found);
-                    if ($__op === $ISSET_) { $__stack[] = $__found && $__v !== null; }
-                    else { $__stack[] = (!$__found) || $__v == false; }
+                    if ($__op === $ISSET_) { $__mcPush($__found && $__v !== null); }
+                    else { $__mcPush((!$__found) || $__v == false); }
                     break;
                 case $NEW:
                     $__argc = $__ins[2]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     // 不再于此展平：$__newObj → $__bindArgs 内部已做（且 $__flatten 不在本闭包
                     // use 列表中，直接调用会是未定义变量）。解包标记原样传入即可。
                     $__a = array_reverse($__a);
                     $__cls = $__ins[1];
-                    if ($__cls === '__VAR__') { $__cls = array_pop($__stack); }
-                    $__stack[] = $__newObj((string)$__cls, $__a);
+                    if ($__cls === '__VAR__') { $__cls = $__mcPop(); }
+                    $__mcPush($__newObj((string)$__cls, $__a));
                     break;
                 case $PROPGET:
-                    $__o = array_pop($__stack);
-                    $__stack[] = $__propGet($__o, $__ins[1]);
+                    $__o = $__mcPop();
+                    $__mcPush($__propGet($__o, $__ins[1]));
+                    break;
+                case $NULLSAFE_PROPGET:
+                    $__o = $__mcPop();
+                    $__mcPush($__o === null ? null : $__propGet($__o, $__ins[1]));
                     break;
                 case $PROPSET:
-                    $__v = array_pop($__stack);
-                    $__o = array_pop($__stack);
+                    $__v = $__mcPop();
+                    $__o = $__mcPop();
                     $__propSet($__o, $__ins[1], $__v);
                     break;
                 case $RET:
-                    $__ret = array_pop($__stack); $__retSet = true; break 2;
+                    $__ret = $__mcPop(); $__retSet = true; break 2;
                 case $RET_VOID:
                     $__ret = null; $__retSet = true; break 2;
                 case $THROW:
                     // 弹栈顶异常对象并抛出；交由外层 try/catch 包装做异常表分发
-                    $__th = array_pop($__stack);
+                    $__th = $__mcPop();
                     throw $__th;
                 case $ARG_SPREAD:
                     // 解包实参：弹栈顶数组，压入解包标记（由随后 CALL/MECALL/SCALL 展平）
-                    $__sp = array_pop($__stack);
+                    $__sp = $__mcPop();
                     if ($__sp instanceof \Traversable) { $__sp = iterator_to_array($__sp); }
-                    $__stack[] = ['__vmspread__', is_array($__sp) ? $__sp :
-                        (is_object($__sp) ? get_object_vars($__sp) : (array) $__sp)];
+                    $__mcPush(['__vmspread__', is_array($__sp) ? $__sp :
+                        (is_object($__sp) ? get_object_vars($__sp) : (array) $__sp)]);
                     break;
                 case $ARG_NAMED:
                     // 命名实参：弹栈顶值，压入命名标记 ['__vmnamed__', 形参名, 值]
                     // （由随后 CALL/MECALL/SCALL 按被调方参数规格重排为位置实参）
-                    $__nv = array_pop($__stack);
-                    $__stack[] = ['__vmnamed__', $__ins[1], $__nv];
+                    $__nv = $__mcPop();
+                    $__mcPush(['__vmnamed__', $__ins[1], $__nv]);
                     break;
                 case $MAKE_REF:
                     // 引用赋值（整变量）：$b = &$a —— 帧槽位别名。
@@ -1160,7 +1187,7 @@ function __VMRUN__($__P)
                     // 链式形态（$b = &$a[0][0]）由编译期拆为多级：先别名为临时槽，
                     // 再别名为临时槽的元素（PHP 引用传递保证最终指向真实元素）。
                     $__dn = $__ins[1]; $__bn = $__ins[2];
-                    $__k = array_pop($__stack);
+                    $__k = $__mcPop();
                     if (!array_key_exists($__bn, $__vars) || !is_array($__vars[$__bn])) {
                         $__vars[$__bn] = []; // PHP 自动补全数组（访问 null 上的偏移量）
                     }
@@ -1170,7 +1197,7 @@ function __VMRUN__($__P)
                 case $MAKE_REF_PROP:
                     // 引用赋值（对象属性）：$b = &$this->p —— 对象弹栈，别名到属性。
                     $__dn = $__ins[1]; $__pn = $__ins[2];
-                    $__o = array_pop($__stack);
+                    $__o = $__mcPop();
                     if (!is_object($__o)) { break; }
                     if (!isset($__o->$__pn)) { $__o->$__pn = null; }
                     $__vars[$__dn] = &$__o->$__pn;
@@ -1212,44 +1239,44 @@ function __VMRUN__($__P)
                     // ctl===3/4（break/continue 延后）暂未实现，顺序落下
                     break;
                 case $ECHO:
-                    $__v = array_pop($__stack);
+                    $__v = $__mcPop();
                     echo $__toStr($__v);
                     break;
                 case $PRINT_:
-                    $__v = array_pop($__stack);
+                    $__v = $__mcPop();
                     echo $__toStr($__v);
-                    $__stack[] = 1;
+                    $__mcPush(1);
                     break;
                 case $PHPRUN:
                     $__argc = $__ins[1]; $__code2 = null;
-                    for ($i=0;$i<$__argc;$i++) { $__code2 = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__code2 = $__mcPop(); }
                     if (is_array($__vars)) { extract($__vars); }
                     eval($__code2);
                     break;
                 case $EXIT_:
-                    $__v = array_pop($__stack);
+                    $__v = $__mcPop();
                     if (is_int($__v)) { exit($__v); }
                     if (is_string($__v)) { echo $__v; }
                     exit(0);
                 case $EXIT_VOID:
                     exit(0);
                 case $CAST_INT:
-                    $__stack[] = (int)array_pop($__stack); break;
+                    $__mcPush((int)$__mcPop()); break;
                 case $CAST_FLOAT:
-                    $__stack[] = (float)array_pop($__stack); break;
+                    $__mcPush((float)$__mcPop()); break;
                 case $CAST_STRING:
-                    $__stack[] = $__toStr(array_pop($__stack)); break;
+                    $__mcPush($__toStr($__mcPop())); break;
                 case $CAST_BOOL:
-                    $__stack[] = (bool)array_pop($__stack); break;
+                    $__mcPush((bool)$__mcPop()); break;
                 case $CAST_ARRAY:
-                    $__stack[] = (array)array_pop($__stack); break;
+                    $__mcPush((array)$__mcPop()); break;
                 case $CAST_OBJECT:
-                    $__stack[] = (object)array_pop($__stack); break;
+                    $__mcPush((object)$__mcPop()); break;
                 case $PUSH_GLOBALS:
-                    $__stack[] = $GLOBALS; break;
+                    $__mcPush($GLOBALS); break;
                 case $GLOBALS_SET:
-                    $v = array_pop($__stack); $k = array_pop($__stack);
-                    $GLOBALS[$k] = $v; array_pop($__stack); break;
+                    $v = $__mcPop(); $k = $__mcPop();
+                    $GLOBALS[$k] = $v; $__mcPop(); break;
                 case $GLOBAL_REF:
                     // global $x：把帧槽位绑定为共享全局帧的引用（PHP global 语义）
                     $n = $__ins[1];
@@ -1258,22 +1285,22 @@ function __VMRUN__($__P)
                     break;
                 case $DEFINE:
                     // const NAME = expr：运行期 define（PHP 常量本就是运行期实体）
-                    $v = array_pop($__stack);
+                    $v = $__mcPop();
                     define($__ins[1], $v);
                     break;
                 case $CONST_FETCH:
                     // 引用本文件 const 声明的常量：运行期查表
-                    $__stack[] = defined($__ins[1]) ? constant($__ins[1]) : null;
+                    $__mcPush(defined($__ins[1]) ? constant($__ins[1]) : null);
                     break;
                 case $INCLUDE_EMBED:
                     // include（构建期内嵌）：嵌入段与当前帧【共享变量表】（PHP 包含作用域语义）。
                     // once=1 且同一 embed 已执行过 → 直接压 true 跳过。
                     $__e = $__ins[1];
                     if ($__ins[2] && isset($__INCTRACK[$__e])) {
-                        $__stack[] = true;
+                        $__mcPush(true);
                     } else {
                         $__INCTRACK[$__e] = true;
-                        $__stack[] = $__exec($__P['embeds'][$__e] ?? [], $__vars, $__this, [], null, $__isG, $__P['embedET'][$__e] ?? null);
+                        $__mcPush($__exec($__P['embeds'][$__e] ?? [], $__vars, $__this, [], null, $__isG, $__P['embedET'][$__e] ?? null));
                     }
                     break;
                 case $INCLUDE_RT:
@@ -1282,7 +1309,7 @@ function __VMRUN__($__P)
                     // 真实局部变量（被包含文件可见），快照后真实 include/require，再把
                     // 新增/被修改的变量差分捕获回帧表（get_defined_vars 键名无 $ 前缀）。
                     $__fl = $__ins[1];
-                    $__ipth = (string)array_pop($__stack);
+                    $__ipth = (string)$__mcPop();
                     $__rp = realpath($__ipth);
                     if ($__rp === false && !empty($__P['srcBase'])) {
                         $__cand = rtrim((string)$__P['srcBase'],'/\\') . '/' . $__ipth;
@@ -1290,7 +1317,7 @@ function __VMRUN__($__P)
                     }
                     $__k = 'r' . ($__rp !== false ? $__rp : $__ipth);
                     if (($__fl & 1) && isset($__INCTRACK[$__k])) {
-                        $__stack[] = true;
+                        $__mcPush(true);
                     } else {
                         $__INCTRACK[$__k] = true;
                         foreach ($__vars as $__ikey => $__ival) {
@@ -1305,7 +1332,7 @@ function __VMRUN__($__P)
                                 $__vars['$' . $__ikey] = $__ival;
                             }
                         }
-                        $__stack[] = $__iret;
+                        $__mcPush($__iret);
                     }
                     break;
                 case $HALT:
@@ -1319,7 +1346,7 @@ function __VMRUN__($__P)
                     // diff 只处理 eval 新建的变量（帧槽原本不存在）：帧槽绑定到
                     // 该局部变量的引用（后续 POP_V 赋值沿引用写穿）；已导出帧槽
                     // 的写已穿透，diff 若再写回反而会掐断引用链，故跳过。
-                    $__es = array_pop($__stack);
+                    $__es = $__mcPop();
                     $__eobj = (isset($__vars['$this']) && is_object($__vars['$this'])) ? $__vars['$this'] : null;
                     if ($__eobj !== null) {
                         // 类方法内的回退：eval 必须继承对象上下文（裸 eval 报
@@ -1363,17 +1390,17 @@ function __VMRUN__($__P)
                 case $CALL_NATIVE:
                     // 原生函数间接调用：nativeIdx 索引 natTbl（静态不暴露函数名）
                     $__argc = $__ins[2]; $__a = [];
-                    for ($i=0;$i<$__argc;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__argc;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
                     // 实参绑定：展平解包 + 命名重排 + refMask 位真实引用绑定
                     $__a = $__bindNative($__a, $__ins[3] ?? 0, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                    $__stack[] = $__callFn((int) $__ins[1], $__a);
+                    $__mcPush($__callFn((int) $__ins[1], $__a));
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $ARRAY_MAKE:
                     $__c = $__ins[1]; $__a = [];
-                    for ($i=0;$i<$__c;$i++) { $__a[] = array_pop($__stack); }
+                    for ($i=0;$i<$__c;$i++) { $__a[] = $__mcPop(); }
                     $__a = array_reverse($__a);
                     // 引用元素句柄（[&$x]）：构造为真实数组元素引用，写穿目标存储
                     foreach ($__a as $i => $__v) {
@@ -1383,7 +1410,7 @@ function __VMRUN__($__P)
                             $__a[$i] = &$__vars[$__rn];
                         }
                     }
-                    $__stack[] = $__a;
+                    $__mcPush($__a);
                     break;
                 case $ARRAY_KV:
                     $__c = $__ins[1]; $__a = [];
@@ -1391,8 +1418,8 @@ function __VMRUN__($__P)
                     // 由于后入先出，元素顺序与源码相反，故收集后整体 reverse 以保序。
                     $__pairs = [];
                     for ($i=0;$i<$__c;$i++) {
-                        $__k = array_pop($__stack);
-                        $__v = array_pop($__stack);
+                        $__k = $__mcPop();
+                        $__v = $__mcPop();
                         $__pairs[] = [$__k, $__v];
                     }
                     $__pairs = array_reverse($__pairs);
@@ -1406,33 +1433,33 @@ function __VMRUN__($__P)
                             $__a[$__p[0]] = $__p[1];
                         }
                     }
-                    $__stack[] = $__a;
+                    $__mcPush($__a);
                     break;
                 case $INDEX_GET:
-                    $__k = array_pop($__stack);
-                    $__arr = array_pop($__stack);
-                    $__stack[] = $__idxGet($__arr, $__k);
+                    $__k = $__mcPop();
+                    $__arr = $__mcPop();
+                    $__mcPush($__idxGet($__arr, $__k));
                     break;
                 case $INDEX_SET:
-                    $__v = array_pop($__stack);
-                    $__k = array_pop($__stack);
-                    $__arr = array_pop($__stack);
+                    $__v = $__mcPop();
+                    $__k = $__mcPop();
+                    $__arr = $__mcPop();
                     if (!is_array($__arr) && !is_object($__arr)) { $__arr = []; }
                     if (is_array($__arr)) { $__arr[$__k] = $__v; }
                     else { $__arr->$k = $__v; }
-                    $__stack[] = $__arr;
+                    $__mcPush($__arr);
                     break;
                 case $COUNT:
-                    $__arr = array_pop($__stack);
-                    $__stack[] = is_countable($__arr) ? count($__arr) : 0;
+                    $__arr = $__mcPop();
+                    $__mcPush(is_countable($__arr) ? count($__arr) : 0);
                     break;
                 case $ARRAY_PUSH:
-                    $__v = array_pop($__stack);
-                    $__arr = array_pop($__stack);
+                    $__v = $__mcPop();
+                    $__arr = $__mcPop();
                     if (is_array($__arr)) {
                         $__arr[] = $__v;
                     }
-                    $__stack[] = $__arr; // 写回（数组为值类型，本地更新需回存）
+                    $__mcPush($__arr); // 写回（数组为值类型，本地更新需回存）
                     break;
                 // —— 属性/数组元素的自增自减（$o->p++ / ++$a[$k] 等）——
                 // 说明：旧版变量专用自增码 PRE_INC/PRE_DEC/POST_INC/POST_DEC（80–83）
@@ -1441,17 +1468,17 @@ function __VMRUN__($__P)
                 case $PROP_POST_INC: case $PROP_POST_DEC:
                     // 栈 [obj, old]（PROPGET 刚执行）→ 弹 [old, obj]，原地写穿属性，压回旧值
                     $__d = ($__op === $PROP_POST_DEC) ? -1 : 1;
-                    $__old = array_pop($__stack); $__o = array_pop($__stack);
+                    $__old = $__mcPop(); $__o = $__mcPop();
                     $__propSet($__o, $__ins[1], $__inc($__old, $__d));
-                    $__stack[] = $__old;
+                    $__mcPush($__old);
                     break;
                 case $PROP_PRE_INC: case $PROP_PRE_DEC:
                     // 栈 [obj, old] → 弹 [old, obj]，原地写穿属性，压回新值
                     $__d = ($__op === $PROP_PRE_DEC) ? -1 : 1;
-                    $__old = array_pop($__stack); $__o = array_pop($__stack);
+                    $__old = $__mcPop(); $__o = $__mcPop();
                     $__new = $__inc($__old, $__d);
                     $__propSet($__o, $__ins[1], $__new);
-                    $__stack[] = $__new;
+                    $__mcPush($__new);
                     break;
                 case $IDX_POST_INC: case $IDX_POST_DEC: case $IDX_PRE_INC: case $IDX_PRE_DEC:
                     // 栈 [arr, key]（索引表达式刚求值）→ 弹 [key, arr]，自取旧值、
@@ -1459,7 +1486,7 @@ function __VMRUN__($__P)
                     // 更新后的容器写回帧变量（PHP 间接修改语义：$a[$k]++ 改变 $a
                     // 本身）。压结果值：POST 压旧值、PRE 压新值。
                     $__d = ($__op === $IDX_POST_DEC || $__op === $IDX_PRE_DEC) ? -1 : 1;
-                    $__k = array_pop($__stack); $__a = array_pop($__stack);
+                    $__k = $__mcPop(); $__a = $__mcPop();
                     if (is_array($__a)) {
                         $__old = $__idxGet($__a, $__k);
                         $__new = $__inc($__old, $__d);
@@ -1474,7 +1501,7 @@ function __VMRUN__($__P)
                     }
                     $__fn = $__ins[1] ?? '';
                     if ($__fn !== '') { $__vars[$__fn] = $__a; }
-                    $__stack[] = ($__op === $IDX_POST_INC || $__op === $IDX_POST_DEC) ? $__old : $__new;
+                    $__mcPush(($__op === $IDX_POST_INC || $__op === $IDX_POST_DEC) ? $__old : $__new);
                     break;
                 default:
                     break 2; // 未知 opcode：终止
@@ -1528,7 +1555,7 @@ function __VMRUN__($__P)
             throw $__E; // 本帧无处理器：重抛，由调用方的 CALL 等 opcode 承接
         }
     }
-        return $__retSet ? $__ret : (count($__stack) ? array_pop($__stack) : null);
+        return $__retSet ? $__ret : (count($__stack) ? $__mcPop() : null);
     };
 
     $__main = $__code($__P['main']);

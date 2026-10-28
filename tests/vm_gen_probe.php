@@ -72,6 +72,17 @@ $cases = [
     'try_method'       => 'class C { public function m($x){ try { if($x<0) throw new Exception("x"); return "ok"; } catch (Exception $e) { return "caught"; } } } $c=new C(); echo $c->m(1); echo $c->m(-1);',
     'try_finally_ret'  => 'function f(){ try { return "t"; } finally { echo "f"; } } echo f();',
     'try_finally_throw' => 'try { try { throw new Exception("x"); } finally { echo "fin"; } } catch (Exception $e) { echo "caught"; }',
+    // —— v1.0.7 新增语法：clone / 空安全 ?-> / ??= / 数组解构 ——
+    'clone'            => 'class Cl{public $v=7;} $a=new Cl(); $b=clone $a; $b->v=9; echo $a->v.$b->v;',
+    'nullsafe_prop'    => 'class NP{public $p=null;} $c=new NP(); echo $c->p?->x ?? "none";',
+    'nullsafe_prop_ok' => 'class NP2{public $x=5;} class NP3{public $p; function __construct(){ $this->p=new NP2(); }} $d=new NP3(); echo $d->p?->x;',
+    'nullsafe_method'  => 'class NM{public function m($x){return $x*2;}} $e=new NM(); echo $e?->m(3);',
+    'nullsafe_method_null' => 'class NM2{public function m($x){return $x*2;}} $e=null; echo $e?->m(3) ?? "nil";',
+    'coalesce_assign'  => '$a=null; $a ??= 5; echo $a; $a ??= 9; echo $a;',
+    'destructure'      => '$a=[1,2]; [$x,$y]=$a; echo $x.$y;',
+    'destructure_kv'   => '$a=["k"=>5]; ["k"=>$v]=$a; echo $v;',
+    'destructure_skip' => '$a=[1,2,3]; [, $b, ]=$a; echo $b;',
+    'list_destructure' => '$a=[1,2]; list($x,$y)=$a; echo $x.$y;',
 ];
 
 $gen = new VmRuntimeGenerator(new Salt('probe-seed'));

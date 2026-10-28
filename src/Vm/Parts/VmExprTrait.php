@@ -28,6 +28,10 @@ trait VmExprTrait
             $code[] = [VmOp::DROP];
             return;
         }
+        // 数组/list 解构赋值：[$a,$b] = ... / ["k"=>$v] = ... / list($a,$b) = ...
+        if ($this->tryDestructAssign($stmt, $code)) {
+            return;
+        }
         $m = $this->matchAssignStmt($stmt);
         if ($m === null) {
             // 表达式语句：编译表达式后丢弃结果
@@ -44,6 +48,33 @@ trait VmExprTrait
         $t0 = $target[0] ?? null;
         if (is_array($t0) && $t0[0] === T_VARIABLE && $t0[1] === '$this' && count($target) === 1) {
             throw VmUnsupported::fileLevel('VM 不支持对 $this 重新赋值（已回退）');
+        }
+
+        if ($compound === "\x01cq") {
+            // 空合并赋值（简单变量）：$a ??= rhs ≡ ($a 非 null ? $a : ($a = rhs))
+            // 复用 ?? 的 DUP/PUSH_NULL/IDENT 空值判定，仅 null 分支求值并写回。
+            $t0 = $target[0] ?? null;
+            if (!(is_array($t0) && $t0[0] === T_VARIABLE && count($target) === 1)
+                || $t0[1] === '$GLOBALS' || $t0[1] === '$this') {
+                throw new VmUnsupported('VM 暂不支持非简单变量的 ??= 赋值（已回退）');
+            }
+            $slot = $this->varName($t0[1]);
+            $this->emitPushVar($t0[1], $code);       // [a]
+            $code[] = [VmOp::DUP];                   // [a, a]
+            $code[] = [VmOp::PUSH_NULL];             // [a, a, null]
+            $code[] = [VmOp::IDENT];                 // [a, (a===null)]
+            $jnz = count($code);
+            $code[] = [VmOp::JNZ, 0];                // a 为 null → 赋值分支
+            $jmp = count($code);
+            $code[] = [VmOp::JMP, 0];                // a 非 null → 保留原值
+            $code[$jnz][1] = count($code) - ($jnz + 1);
+            $code[] = [VmOp::DROP];                  // 丢弃 null 占位
+            $this->compileExpr($valueTokens, $code); // [rhs]
+            $code[] = [VmOp::DUP];                   // [rhs, rhs]
+            $code[] = [VmOp::POP_V, $slot];          // a = rhs → [rhs]
+            $code[$jmp][1] = count($code) - ($jmp + 1);
+            $code[] = [VmOp::DROP];                  // 语句级丢弃结果
+            return;
         }
 
         if ($compound !== null) {
@@ -86,6 +117,68 @@ trait VmExprTrait
         $this->compileLVResolve($target, $code);
         $this->compileExpr($valueTokens, $code);
         $this->compileLVStore($target, $code);
+    }
+
+    /**
+     * 数组 / list 解构赋值（语句级）：`[$a,$b] = rhs`、`["k"=>$v] = rhs`、
+     * `list($a,$b) = rhs`、`[, $b] = rhs`（跳位）。复用 emitListDestruct 逐元素分发。
+     * 返回 true 表示已完整编译该语句。
+     *
+     * @param array<int,mixed> $stmt
+     */
+    private function tryDestructAssign(array $stmt, array &$code): bool
+    {
+        $toks = $this->trimWs($stmt);
+        if ($toks !== [] && $toks[count($toks) - 1] === ';') {
+            array_pop($toks);
+        }
+        if ($toks === []) {
+            return false;
+        }
+        $first = $toks[0];
+        $isBracket = is_string($first) && $first === '[';
+        $isListKw = is_array($first) && $first[0] === T_LIST;
+        if (!$isBracket && !$isListKw) {
+            return false;
+        }
+        // 定位解构目标区的闭合括号（跟踪 ()/[] 嵌套深度）
+        $depth = 0;
+        $end = -1;
+        $n = count($toks);
+        for ($i = 0; $i < $n; $i++) {
+            $s = is_string($toks[$i]) ? $toks[$i] : null;
+            if ($s === '[' || $s === '(') {
+                $depth++;
+            } elseif ($s === ']' || $s === ')') {
+                $depth--;
+                if ($depth === 0) {
+                    $end = $i;
+                    break;
+                }
+            }
+        }
+        if ($end < 0) {
+            return false;
+        }
+        // 目标区之后必须是赋值 '='（排除数组字面量表达式语句 / 下标访问等）
+        $j = $end + 1;
+        while ($j < $n && is_array($toks[$j]) && $toks[$j][0] === T_WHITESPACE) {
+            $j++;
+        }
+        if ($j >= $n || $toks[$j] !== '=') {
+            return false;
+        }
+        $lhsTokens = array_slice($toks, 0, $end + 1);
+        $rhsTokens = $this->trimWs(array_slice($toks, $j + 1));
+        if ($rhsTokens === []) {
+            return false;
+        }
+        // RHS 求值到临时帧槽后逐元素解构（值拷贝，与 PHP 解构取值的语义一致）
+        $temp = '__ds' . ($this->tempSeq++);
+        $this->compileExpr($rhsTokens, $code);
+        $code[] = [VmOp::POP_V, '$' . $temp];
+        $this->emitListDestruct(new Cursor($lhsTokens), '$' . $temp, $code);
+        return true;
     }
 
     /**
@@ -138,6 +231,11 @@ trait VmExprTrait
             } elseif (is_array($t)) {
                 if (in_array($t[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true)) {
                     $depth++;
+                } elseif ($t[0] === T_COALESCE_EQUAL && $depth === 0 && $pdepth === 0 && $bdepth === 0) {
+                    // 空合并赋值 ??=（等价 $x = $x ?? rhs，且 rhs 仅在 $x 为 null 时求值）
+                    $assignAt = $i;
+                    $compound = "\x01cq";
+                    break;
                 } elseif ($depth === 0 && $pdepth === 0 && $bdepth === 0 && isset($compoundOps[$t[0]])) {
                     $assignAt = $i;
                     $compound = $compoundOps[$t[0]];
@@ -1259,6 +1357,14 @@ trait VmExprTrait
             $this->parseUnary($c, $code);
             return;
         }
+        if ($c->is(T_CLONE)) {
+            // clone $obj：操作数为后缀链（$a->b / $a->b()），克隆结果压栈。
+            // 非对象与 PHP 一致在运行期抛 TypeError（CLONE handler 直接 clone）。
+            $c->next();
+            $this->parseUnary($c, $code);
+            $code[] = [VmOp::CLONE];
+            return;
+        }
         if ($c->is(T_INC) || $c->is(T_DEC)) { // ++$v / --$v（含 ++self::$s 静态属性）
             $dec = $c->is(T_DEC);
             $c->next();
@@ -1338,7 +1444,8 @@ trait VmExprTrait
         $recvIsThis = $c->is(T_VARIABLE) && (($c->peek()[1] ?? '') === 'this');
         $this->parsePrimary($c, $code);
         while (!$c->eof()) {
-            if ($c->is(T_OBJECT_OPERATOR)) {
+            if ($c->is(T_OBJECT_OPERATOR) || $c->is(T_NULLSAFE_OBJECT_OPERATOR)) {
+                $nullsafe = $c->is(T_NULLSAFE_OBJECT_OPERATOR);
                 $c->next();
                 if ($c->is(T_VARIABLE)) {
                     // 动态方法名 $o->$f()：方法名（变量值）在实参之后压栈，
@@ -1351,6 +1458,7 @@ trait VmExprTrait
                     }
                     // FCC：$o->$m(...)（PHP 8.1+ 动态方法名一等可调用）
                     if ($this->argsAreEllipsisOnly($c)) {
+                        if ($nullsafe) { throw new VmUnsupported('VM 暂不支持空安全 FCC 调用（已回退）'); }
                         $c->next(); // '('
                         $c->next(); // '...'
                         $c->expect(')');
@@ -1360,7 +1468,7 @@ trait VmExprTrait
                     }
                     $argc = $this->compileArgs($c, $code);
                     $this->emitPushVar($mv, $code);
-                    $code[] = [VmOp::MECALL, $argc];
+                    $code[] = [$nullsafe ? VmOp::NULLSAFE_MECALL : VmOp::MECALL, $argc];
                     continue;
                 }
                 $name = $c->expectText(T_STRING);
@@ -1368,6 +1476,7 @@ trait VmExprTrait
                     // FCC：$o->m(...) / $this->m(...)（PHP 8.1+ 一等可调用）——
                     // 实参恰为单个 '...' 时弹对象压闭包（创建期校验与原生一致）。
                     if ($this->argsAreEllipsisOnly($c)) {
+                        if ($nullsafe) { throw new VmUnsupported('VM 暂不支持空安全 FCC 调用（已回退）'); }
                         $c->next(); // '('
                         $c->next(); // '...'
                         $c->expect(')');
@@ -1378,7 +1487,7 @@ trait VmExprTrait
                     $callee = ($recvIsThis && $this->curClass !== '') ? $this->curClass . '::' . $name : '';
                     $argc = $this->compileArgs($c, $code, [], $callee);
                     $code[] = [VmOp::PUSH_C, $name]; // 方法名（MECALL 期望：对象, 参数..., 方法名）
-                    $code[] = [VmOp::MECALL, $argc];
+                    $code[] = [$nullsafe ? VmOp::NULLSAFE_MECALL : VmOp::MECALL, $argc];
                 } else {
                     // $o->prop 后缀 ++/--：PROPGET 弹 obj 压旧值，故先 DUP 留一份
                     // 对象在旧值之下；PROP_POST_INC/DEC 弹 [old, obj] 原地写穿属性
@@ -1387,13 +1496,14 @@ trait VmExprTrait
                     $c->skipWs();
                     $nx = $c->peek();
                     if (is_array($nx) && ($nx[0] === T_INC || $nx[0] === T_DEC)) {
+                        if ($nullsafe) { throw new VmUnsupported('VM 暂不支持空安全属性自增（已回退）'); }
                         $c->next();
                         $code[] = [VmOp::DUP];
                         $code[] = [VmOp::PROPGET, $name];
                         $code[] = [$nx[0] === T_INC ? VmOp::PROP_POST_INC : VmOp::PROP_POST_DEC, $name];
                         continue;
                     }
-                    $code[] = [VmOp::PROPGET, $name];
+                    $code[] = [$nullsafe ? VmOp::NULLSAFE_PROPGET : VmOp::PROPGET, $name];
                 }
             } elseif ($c->is(T_DOUBLE_COLON)) {
                 throw new VmUnsupported('VM 不支持静态调用（已回退）');
