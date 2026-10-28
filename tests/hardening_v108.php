@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 /**
- * v1.1.0 加固回归：VM 语法兼容性 + opcode 组合执行 + Confrontation-LLM 反分析。
+ * v1.0.8 加固回归：VM 语法兼容性 + opcode 组合执行 + Confrontation-LLM 反分析。
  *   [0] 功能保真：新增语法（heredoc 插值 / 数组展开 / empty(任意表达式) /
  *       动态属性 / ?-> / ??= / list 解构 / clone）在 VM 各等级构建后 php -l 通过、
  *       运行输出与原生一致。
@@ -14,8 +14,8 @@ declare(strict_types=1);
  */
 $root = dirname(__DIR__);
 $entry = $root . '/entry.php';
-$fixture = __DIR__ . '/fixtures/v110_syntax.php';
-$tmp = sys_get_temp_dir() . '/hv110_' . getmypid();
+$fixture = __DIR__ . '/fixtures/v108_syntax.php';
+$tmp = sys_get_temp_dir() . '/hv108_' . getmypid();
 @mkdir($tmp, 0755, true);
 
 $pass = 0;
@@ -46,7 +46,7 @@ echo "  native: {$native}\n";
 echo "===== [0] 功能保真（VM 各等级）=====\n";
 foreach (['low', 'mid', 'high', 'max', 'ultra'] as $lv) {
     $o = "$tmp/lv_$lv.php";
-    $okB = build($entry, $fixture, $o, "--level=$lv --salt=v110$lv");
+    $okB = build($entry, $fixture, $o, "--level=$lv --salt=v108$lv");
     ok($okB, "构建 level=$lv");
     if (!$okB) { continue; }
     $lint = (string) shell_exec('php -l ' . escapeshellarg($o) . ' 2>&1');

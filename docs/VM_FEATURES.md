@@ -502,14 +502,14 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **已知局限（保持回退，不保证真编译）**：空安全方法调用的实参在短路分支前已被求值（仅当“接收者为 null 且实参带副作用”时与 PHP 有细微差异）；`??=` 仅支持简单变量左值（属性/下标左值回退）；空安全 FCC（`$o?->m(...)` 的一等可调用形态）回退；生成器 / `yield`、闭包、一等可调用等结构性特性仍维持既有回退策略。
 - **回归**：语法探针 `vm_syntax_probe` 真编译 581 → **588**（新增覆盖 clone / `?->` / `??=` / 四类解构），回退 31 → 24，失败维持 35（均为生成器/闭包/字符串自增/魔术常量等既有深度项，无新增回归）；生成器探针 `vm_gen_probe` 扩至 150 例（新增 10 例新语法 × 三模式）全绿 `FAIL=0`；`run_tests` 32；新增 `hardening_v107` 23 项（五等级功能保真 + 加密 helper 接入校验 + 含对象数组旁路往返 + 生产管线）全绿。
 
-### 11.13 v1.1.0 正式版：VM 语法兼容性拓展 + 抗反编译 / 反 LLM 分析双线增强
+### 11.13 v1.0.8 正式版：VM 语法兼容性拓展 + 抗反编译 / 反 LLM 分析双线增强
 
 - **VM 语法兼容性大幅拓展**（本版主线为「兼容性」，此前回退 `EVAL_STMT`/部分表达式，现进入自定义 ISA）：
   - **heredoc 插值**（`<<<EOT … $var … EOT`）：`T_START_HEREDOC` 探测到插值 token（`T_VARIABLE`/`T_CURLY_OPEN`/`T_DOLLAR_OPEN_CURLY_BRACES`）时走 `parseInterpolatedHeredoc`，按 `PUSH_C`+`CONCAT` 链拼装；纯字面 nowdoc（`<<<'ID'`）直接字面折叠；缩进式（flexible）heredoc 插值因难以保真仍回退。
   - **数组展开**（`[...$a, 3]`）：`emitArray` 检测到元素首项为 `...`/`T_ELLIPSIS` 时走 `emitArraySpread`，先行 `ARRAY_MAKE` N 个非展开元素，再对后续展开项 `ARRAY_SPREAD`、非展开项 `ARRAY_PUSH`（展开后接键名元素显式抛错以保正确）。
   - **`empty(任意表达式)`**（`empty(0)` / `empty(f())`）：`T_EMPTY` 对无法静态判定的目标 `try/catch` 回退到「编译实参 + `EMPTY_ANY` opcode」真编译（此前整体回退）。
   - **动态属性读写**（`$o->$p` / `$o->$p = v`）：`parsePostfix` 读 `$o->$p` 改发 `PROPGET_DYN`（弹属性名 + 对象再取值）；`matchLvalueSpan`/`compileLVResolve`/`compileLVStore` 接受 `T_VARIABLE` 型属性名左值，落 `PROPSET_DYN`。新增 `ARRAY_SPREAD=153` / `EMPTY_ANY=154` / `PROPGET_DYN=155` / `PROPSET_DYN=156` 四个 opcode，参考运行期 `runtime.php` 与产物运行期 `RuntimeGenerator` 双轨同步。
-  - **回归**：语法探针 `vm_syntax_probe` 真编译 592 → **601**（新增 heredoc 插值 / nowdoc / 数组展开 / empty(任意) / 动态属性读写 / nullsafe / `??=` / list 解构 / clone 共 9 例全数「真编译」零回退），回退维持 20，失败维持 35（生成器/`yield`、闭包、一等可调用等既有深度项）；生成器探针 `vm_gen_probe` 扩至 **290** 例（含新语法 × 多模式 + combo 多强度）全绿 `FAIL=0`；新增 `hardening_v110` 35 项（五等级功能保真 + combo 等价性 + confrontation 注入校验 + newline-poison 独立/分层可见性 + ultra 全开管线）全绿。
+  - **回归**：语法探针 `vm_syntax_probe` 真编译 592 → **601**（新增 heredoc 插值 / nowdoc / 数组展开 / empty(任意) / 动态属性读写 / nullsafe / `??=` / list 解构 / clone 共 9 例全数「真编译」零回退），回退维持 20，失败维持 35（生成器/`yield`、闭包、一等可调用等既有深度项）；生成器探针 `vm_gen_probe` 扩至 **290** 例（含新语法 × 多模式 + combo 多强度）全绿 `FAIL=0`；新增 `hardening_v108` 35 项（五等级功能保真 + combo 等价性 + confrontation 注入校验 + newline-poison 独立/分层可见性 + ultra 全开管线）全绿。
 
 - **VM opcode 组合执行（抗反编译，`--vm-combo[=N]`，N=1~3）**：
   - 动机：单条 opcode 与原始语义存在 1:1 映射，反编译工具可据 opcode 直接还原意图。把单 opcode 拆成等价多指令序列，可打散该映射。
