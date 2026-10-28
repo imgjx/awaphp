@@ -117,6 +117,9 @@ return [
         ],
         'shell_shield' => true,
         'shell_shield_intensity' => 3,
+        // Confrontation-LLM：反 LLM 静态分析（误导注释 + 生僻 CJK 散布）
+        'confrontation_llm' => true,
+        'confrontation_intensity' => 2,
     ],
 
     // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
@@ -135,7 +138,7 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 50]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true, 'combo' => 3]],
             ['name' => 'shell:eval',   'params' => ['layers' => 10]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,trace', 'intensity' => 4]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 6]],
@@ -146,5 +149,10 @@ return [
         ],
         'shell_shield' => true,
         'shell_shield_intensity' => 3,
+        // Confrontation-LLM：反 LLM 静态分析（误导注释 + 生僻 CJK 散布，强度拉满）
+        'confrontation_llm' => true,
+        'confrontation_intensity' => 3,
+        // VM opcode 组合执行（抗反编译）强度 3
+        'vm_combo' => 3,
     ],
 ];

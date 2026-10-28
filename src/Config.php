@@ -105,6 +105,11 @@ final class Config
         $this->data['vm_probe']         = max(0, min(50, $i($this->data['vm_probe'] ?? ($p8 ? 4 : 0))));
         // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层 VM 产物再喂给 VM 编译。默认 1（单层）。
         $this->data['vm_layers']        = max(1, $i($this->data['vm_layers'] ?? 1));
+        // VM opcode 组合执行（--vm-combo）：把单 opcode 拆成等价多指令序列，打破 1:1 映射，
+        // 抗反编译。0=关；>0 为强度 1~3（越高等价指令序列越密）。CLI 仅给 --vm-combo 时默认 2。
+        $combo = $this->data['vm_combo'] ?? 0;
+        $combo = ($combo === true) ? 2 : (int) $combo;
+        $this->data['vm_combo']         = max(0, min(3, $combo));
         $this->data['junk_runtime']   = $b($this->data['junk_runtime'] ?? false) ?? false;
         $this->data['junk_intensity'] = max(1, min(10, $i($this->data['junk_intensity'] ?? 1)));
         $this->data['junk_fake_b64']  = $b($this->data['junk_fake_b64'] ?? true) ?? true;
@@ -125,6 +130,9 @@ final class Config
         // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住；强度 1-3 控制语义变换激进度
         $this->data['shell_shield']          = $b($this->data['shell_shield'] ?? true) ?? true;
         $this->data['shell_shield_intensity'] = max(1, min(3, $i($this->data['shell_shield_intensity'] ?? 2)));
+        // Confrontation-LLM：反 LLM 静态分析（误导性注释 + 生僻 CJK 散布）。默认关。
+        $this->data['confrontation_llm']        = $b($this->data['confrontation_llm'] ?? false) ?? false;
+        $this->data['confrontation_intensity']  = max(1, min(3, $i($this->data['confrontation_intensity'] ?? 2)));
         $this->data['level']          = (string) ($this->data['level'] ?? '');
         // layers：分层执行模型的核心。存在时 Obfuscator::run() 走分层分支。
         $this->data['layers']         = is_array($this->data['layers'] ?? null) ? $this->data['layers'] : [];

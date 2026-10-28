@@ -259,6 +259,17 @@ final class VmRuntimeGenerator
         }
         $program['natTbl'] = $natTbl;
 
+        // —— VM opcode 组合执行（combo）：把单 opcode 拆成等价多指令序列，打破 1:1 映射，抗反编译 ——
+        // 在 flatten/stateMachine/ISA 精简之前注入：展开后的 NEG/ADD/DUP/EQ/PUSH_C 会一并被平坦化
+        // 与 ISA 收口（ADD→BINOP 等），组合痕迹被进一步打散。combo=0（默认）不展开。
+        $combo = (int) ($opts['combo'] ?? 0);
+        if ($combo > 0) {
+            if (!class_exists(VmCombo::class, false)) {
+                require_once __DIR__ . '/VmCombo.php';
+            }
+            (new VmCombo($this->salt))->inject($program, $combo);
+        }
+
         // —— P7: VM 字节码级真实垃圾指令（VmJunk）——
         // 在合并完所有段之后、collectUsed/remap/控制流平坦化之前注入：这些 opcode 会被
         // 纳入"已用操作码集合"（分配随机编号 + 生成 handler），并被随后的 flatten/stateMachine
@@ -1068,6 +1079,8 @@ TPL;
             case VmOp::PROPGET:  return '$___TO___=$___MCPOP___();$___MCPUSH___($___PROPGET___($___TO___,$___INS___[1]));';
             case VmOp::NULLSAFE_PROPGET: return '$___TO___=$___MCPOP___();$___MCPUSH___($___TO___===null?null:$___PROPGET___($___TO___,$___INS___[1]));';
             case VmOp::PROPSET:  return '$___TV___=$___MCPOP___();$___TO___=$___MCPOP___();$___PROPSET___($___TO___,$___INS___[1],$___TV___);';
+            case VmOp::PROPGET_DYN: return '$___TN___=$___MCPOP___();$___TO___=$___MCPOP___();$___MCPUSH___($___PROPGET___($___TO___,$___TN___));';
+            case VmOp::PROPSET_DYN: return '$___TV___=$___MCPOP___();$___TN___=$___MCPOP___();$___TO___=$___MCPOP___();$___PROPSET___($___TO___,$___TN___,$___TV___);';
             case VmOp::RET:      return '$___RET___=$___MCPOP___();$___RETSET___=true;break 2;';
             case VmOp::RET_VOID: return '$___RET___=null;$___RETSET___=true;break 2;';
             case VmOp::ECHO:     return '$___TV___=$___MCPOP___();echo $___TOSTR___($___TV___);';
@@ -1079,6 +1092,7 @@ TPL;
             case VmOp::INDEX_SET: return '$___TV___=$___MCPOP___();$___TK___=$___MCPOP___();$___TARR___=$___MCPOP___();if(!is_array($___TARR___)&&!is_object($___TARR___)){$___TARR___=[];}if(is_array($___TARR___)){$___TARR___[$___TK___]=$___TV___;}else{$___TARR___->$___TK___=$___TV___;}$___MCPUSH___($___TARR___);';
             case VmOp::COUNT:    return '$___TARR___=$___MCPOP___();$___MCPUSH___(is_countable($___TARR___)?count($___TARR___):0);';
             case VmOp::ARRAY_PUSH:return '$___TV___=$___MCPOP___();$___TARR___=$___MCPOP___();if(is_array($___TARR___)){$___TARR___[]=$___TV___;}$___MCPUSH___($___TARR___);';
+            case VmOp::ARRAY_SPREAD: return '$___TS___=$___MCPOP___();$___TD___=$___MCPOP___();if(!is_array($___TD___)){$___TD___=[];}$___MCPUSH___(array_merge((array)$___TD___,(array)$___TS___));';
             // 变量专用自增码 PRE_INC/PRE_DEC/POST_INC/POST_DEC（80–83）已精简移除，
             // 编译器改用基础栈指令复合序列（见 VmIncTrait::emitIncDec），此处不再有对应 handler。
             // SCALL：LSB / 转发标记解析（static:: → called 栈顶；self::/parent::
@@ -1101,6 +1115,7 @@ TPL;
             case VmOp::SPROP:    return '$___TCLS___=$___INS___[1];$___TPR___=$___INS___[2];if(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00lsb:",5)===0){$___TCLS___=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($___TCLS___,5);}$___TCO___=$___CCO___($___TCLS___,$___TPR___);if($___TCO___!==null){$___TCS___=$___P___[\'classes\'][$___TCO___][\'consts\'][$___TPR___];$___EMPTYV___=[];$___MCPUSH___(($___TCS___===null)?null:$___RUN___($___TCS___,$___EMPTYV___,null,[]));}elseif(defined($___TCLS___.\'::\'.$___TPR___)){$___MCPUSH___(constant($___TCLS___.\'::\'.$___TPR___));}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)){$___TRP___=new \ReflectionClass($___TCLS___);$___TPS___=$___TRP___->getStaticProperties();$___TPN___=ltrim((string)$___TPR___,\'$\');$___MCPUSH___(array_key_exists($___TPN___,$___TPS___)?$___TPS___[$___TPN___]:null);}else{$___MCPUSH___(null);}';
             case VmOp::ISSET_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[1],$___TKEYS___,$___TFOUND___);$___MCPUSH___($___TFOUND___&&$___TV___!==null);';
             case VmOp::EMPTY_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[1],$___TKEYS___,$___TFOUND___);$___MCPUSH___((!$___TFOUND___)||$___TV___==false);';
+            case VmOp::EMPTY_ANY: return '$___EV___=$___MCPOP___();$___MCPUSH___(empty($___EV___));';
             case VmOp::UNSET_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);if($___INS___[1]===\'$GLOBALS\'){if($___TNK___===1){unset($GLOBALS[$___TKEYS___[0]]);}}elseif($___TNK___===0){unset($___VARS___[$___INS___[1]]);}else{$___TREF___=&$___VARS___[$___INS___[1]];$___TOK___=true;for($___TI___=0;$___TI___<$___TNK___-1;$___TI___++){$___TK___=$___TKEYS___[$___TI___];if(is_array($___TREF___)&&isset($___TREF___[$___TK___])){$___TREF___=&$___TREF___[$___TK___];}elseif(is_object($___TREF___)){$___TREF___=&$___TREF___->$___TK___;}else{$___TOK___=false;break;}}if($___TOK___){$___TLK___=$___TKEYS___[$___TNK___-1];if(is_array($___TREF___)){unset($___TREF___[$___TLK___]);}elseif(is_object($___TREF___)){unset($___TREF___->$___TLK___);}}}';
             case VmOp::EXIT_:     return '$___TV___=$___MCPOP___();if(is_int($___TV___)){exit($___TV___);}if(is_string($___TV___)){echo $___TV___;}exit(0);';
             case VmOp::EXIT_VOID: return 'exit(0);';

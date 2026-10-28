@@ -41,7 +41,7 @@ function __VMRUN__($__P)
     $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
     // FCC（PHP 8.1+ 一等可调用方法语法）
     $MECALL_FCC=141;$SCALL_FCC=142;$MECALL_FCC_VAR=143;$SCALL_FCC_VAR=144;$SCALL_FCC_DYN=145;
-    $CLONE=150;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;
+    $CLONE=150;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;$ARRAY_SPREAD=153;$EMPTY_ANY=154;$PROPGET_DYN=155;$PROPSET_DYN=156;
 
     $__META = "\x01__cls";
 
@@ -741,7 +741,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$ARRAY_SPREAD,$EMPTY_ANY,$PROPGET_DYN,$PROPSET_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
     ){
         $__mcKey = substr(hash('sha256', (string)microtime(true).(string)memory_get_usage(), true), 0, 16);
 $__mcPlain=[];$__mcFlags=[];
@@ -1100,6 +1100,10 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                         $__mcPush(null);
                     }
                     break;
+                case $EMPTY_ANY:
+                    $__v = $__mcPop();
+                    $__mcPush(empty($__v));
+                    break;
                 case $ISSET_: case $EMPTY_: case $UNSET_:
                     $__nk = $__ins[2]; $__keys = [];
                     for ($i=0;$i<$__nk;$i++) { $__keys[] = $__mcPop(); }
@@ -1153,6 +1157,17 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                     $__v = $__mcPop();
                     $__o = $__mcPop();
                     $__propSet($__o, $__ins[1], $__v);
+                    break;
+                case $PROPGET_DYN:
+                    $__dnn = $__mcPop();
+                    $__o = $__mcPop();
+                    $__mcPush($__propGet($__o, $__dnn));
+                    break;
+                case $PROPSET_DYN:
+                    $__v = $__mcPop();
+                    $__dnn = $__mcPop();
+                    $__o = $__mcPop();
+                    $__propSet($__o, $__dnn, $__v);
                     break;
                 case $RET:
                     $__ret = $__mcPop(); $__retSet = true; break 2;
@@ -1460,6 +1475,16 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                         $__arr[] = $__v;
                     }
                     $__mcPush($__arr); // 写回（数组为值类型，本地更新需回存）
+                    break;
+                case $ARRAY_SPREAD:
+                    $__s = $__mcPop();
+                    $__d = $__mcPop();
+                    if (!is_array($__d)) { $__d = []; }
+                    if (!is_array($__s)) { $__s = [$__s]; }
+                    foreach ($__s as $__k => $__v) {
+                        if (is_int($__k)) { $__d[] = $__v; } else { $__d[$__k] = $__v; }
+                    }
+                    $__mcPush($__d);
                     break;
                 // —— 属性/数组元素的自增自减（$o->p++ / ++$a[$k] 等）——
                 // 说明：旧版变量专用自增码 PRE_INC/PRE_DEC/POST_INC/POST_DEC（80–83）

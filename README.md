@@ -66,6 +66,15 @@
 - **解释器运行时变形**（`--vm-morph`）：派发叠加独立第二层 scramble，每构建 dispatch 数学不同，消除固定指纹。
 - **反调试 / 反篡改探针矩阵**（`--vm-probe=N`）：xdebug / phpdbg / uopz 检测 + 字节码 CRC 自校验。
 - **指令集精简**：41 条同构 opcode 合并为 6 个参数化 opcode（`BINOP` / `UNOP` / `CAST_OP` / `INC_OP` / `VAROP` / `ARRAY_BUILD`）+ 隐藏 sub-id 表，消除「每个 opcode 自报家门」的语义指纹。
+- **opcode 组合执行**（`--vm-combo[=N]`）：把单条 opcode 拆成**等价多指令序列**——`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP+ADD`、`PUSH_C 2,POW→DUP+MUL`、`BOOL_NOT→PUSH_C 0,EQ`——打破 1:1 opcode 映射，抗反编译；N=1~3 为强度（默认 2），运行时等价性经 `tests/vm_gen_probe.php` 全量回归。
+
+### 反 LLM 静态分析（Confrontation-LLM）
+现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：
+- **伪造误导注释**：在真实函数 / 类声明前注入假 `@deprecated`（「自 v2.1 起不再使用，保留仅为向后兼容」）、`@see`（指向「`CoreCrypto::decryptPayload()` 替代实现」）、`@todo`、`@fixme`（「临时调试用，上线前需删除」）等，把仍在执行的核心逻辑标记为「已废弃 / 非生产」。
+- **伪造 CHANGELOG 注释块**：文件头插入 `/** CHANGELOG … */`，声称某些「legacy 解密入口」已被移除——实际它们仍在执行，诱导 LLM 跳过对关键路径的优先级评估。
+- **生僻 CJK 散布**：把随机生僻汉字作为 `//` 注释碎片，散布到壳内层（函数 / 类 / 语句边界），制造「含中文业务注释」的假象，干扰基于英文词典 / 标记的统计分析与摘要。
+
+> 全部注入**仅产生纯注释**，绝不切入字符串 / heredoc / 已有注释内部，不影响语法与运行；随机分布由 salt 确定性派生，相同盐可复现。注入点位于自校验 / 毒化壳之内，一并纳入防篡改指纹。
 
 ### 加壳
 - GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`，支持 `7.4 / 8.0 / 8.1 / 8.2 / 8.3`，默认 `8.1`）。
@@ -170,6 +179,9 @@ php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-sa
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
 php tests/hardening_test.php    # 加固专项：32 项
+php tests/hardening_v110.php     # v1.1.0 加固：语法兼容 + combo + confrontation（26 项）
+php tests/vm_syntax_probe.php    # VM 语法探测：656 例三态（真编译/回退/失败）
+php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多强度）
 ```
 
 > 可用保护开关远多于上方示例，完整清单见 [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)。
@@ -185,6 +197,7 @@ php tests/hardening_test.php    # 加固专项：32 项
 ## 更新日志
 
 - **v1.0.7**：VM 运行时内存加密 + 复杂语法兼容增强——操作数栈上的运行期值全程 XOR 加密存储（每进程随机密钥掺入内存指纹，出栈即解密；对象/资源/含闭包数组等不可序列化值走旁路标记栈，不破坏引用语义），内存转储/栈快照无法直接读到明文计算值；VM 真编译新增 `clone`、空安全 `?->`（属性/方法）、`??=` 空合并赋值、数组 / `list()` 解构赋值（含键名与跳位）。详见 `docs/VM_FEATURES.md` §11.12。
+- **v1.1.0 正式版**：VM 语法兼容性大幅拓展 + 抗反编译 / 反 LLM 分析双线增强。**语法兼容**：VM 真编译新增 heredoc 插值（`<<<EOT … $var … EOT`）、数组展开（`[...$a, 3]`）、`empty(任意表达式)`（`empty(0)`/`empty(f())`）、动态属性读写（`$o->$p` / `$o->$p = v`）、nowdoc 字面折叠；语法探测 647→656 例、新语法全数「真编译」零回退（真编译 592→601）。**opcode 组合执行**（`--vm-combo[=N]`）：单 opcode 拆等价多指令序列（`SUB→NEG+ADD` 等），打破 1:1 映射抗反编译。**Confrontation-LLM 反 LLM 分析**（`--confrontation-llm`，强度 `--confrontation-intensity=N`）：注入假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG「已被移除」注释块，并向壳内层散布生僻 CJK 注释，专门误导以 LLM 辅助的逆向 / 审计对优先级与关键路径的判断。详见 `docs/VM_FEATURES.md` §11.13。
 - **v1.0.6**：逐层壳自保护（破一层先被恶心一层）——每一层解码壳的解码逻辑再被外层混淆护住（`ShellProtector`：变量重命名 + 语义变换 + token 形态 + 压缩），攻击者须先解开外层混淆才读得到内层解码逻辑；新增 `--shell-shield-intensity=N` 与 `--no-shell-shield`；`Salt` 记忆化削减重复哈希、优化构建性能；修复压缩去换行破坏 `//` 行注释与 `new \stdClass()` 粘连两类静默失效。详见 `docs/VM_FEATURES.md` §11.11。
 - **v1.0.5**：38 个新内联模块（内置 32 → 70）+ 三类反分析（结构指纹毒化壳 / 蜜罐函数 / GOTO 诱饵死状态），并修复 `SemanticRewriter`、`VmJunk` 两处静默回退缺陷。
 - **v1.0.4**：修复 `VmJunk` 异常表不同步导致的异常桥接破坏，混淆引擎五档预设全面加码。

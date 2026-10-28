@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.7');
+define('OBFUSCATOR_VERSION', '1.1.0');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -100,6 +100,14 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-shell-shield') {
             $out['shell_shield'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-combo') {
+            $out['vm_combo'] = 0;
+            continue;
+        }
+        if ($a === '--no-confrontation-llm') {
+            $out['confrontation_llm'] = false;
             continue;
         }
         if (str_starts_with($a, '--')) {
@@ -194,6 +202,10 @@ function obf_help(): string
                        fake-fog=6、probe=4（单项可再覆盖）
       --no-vm-cpool    关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立
                        加密常量池、指令改索引引用，静态分析看不到明文常量
+      --vm-combo[=N]   VM opcode 组合执行：把单条 opcode 拆成等价多指令序列
+                       （如 SUB→NEG+ADD、PUSH_C 2,MUL→DUP,ADD、BOOL_NOT→PUSH_C 0,EQ），
+                       打破 1:1 opcode 映射，抗反编译。N=1~3 为强度（默认 2），
+                       --no-vm-combo 关闭
       --eval           EVAL 多层加壳
       --eval-layers=   EVAL 加壳层数（默认 3）
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）
@@ -211,6 +223,11 @@ function obf_help(): string
       --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
                        EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）
       --junk-funcs=    诱饵函数数量（>0 生效，拟真命名，干扰逆向）
+      --confrontation-llm  开启 Confrontation-LLM 反 LLM 分析：注入误导性注释
+                       （假 @deprecated/@see/@todo/@fixme + 伪造 CHANGELOG 暗示"已移除"
+                       实际仍在执行）并向壳内层散布生僻 CJK 注释，误导 LLM 优先级判断。
+                       配合 --confrontation-intensity=N（1~3，默认 2）调节密度；
+                       --no-confrontation-llm 关闭
 
 授权绑定（第四阶段）
       --license-domain= 授权域名，逗号分隔（如 a.com,b.com）；仅 Web SAPI 下校验

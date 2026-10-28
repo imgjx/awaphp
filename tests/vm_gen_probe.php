@@ -83,6 +83,21 @@ $cases = [
     'destructure_kv'   => '$a=["k"=>5]; ["k"=>$v]=$a; echo $v;',
     'destructure_skip' => '$a=[1,2,3]; [, $b, ]=$a; echo $b;',
     'list_destructure' => '$a=[1,2]; list($x,$y)=$a; echo $x.$y;',
+    // —— v1.1.0 新增语法：heredoc 插值 / 数组展开 / empty(任意表达式) / 动态属性 ——
+    'spread_arr'       => '$a=[1,2];$b=[...$a,3];echo count($b);',
+    'spread_arr_kv'    => '$a=["x"=>1];$b=[...$a,"y"=>2];echo $b["y"]+$b["x"];',
+    'dynamic_prop'     => '$o=new stdClass();$p="x";$o->$p=5;echo $o->x;',
+    'dynamic_prop_rd'  => '$o=new stdClass();$o->x=5;$p="x";echo $o->$p;',
+    'empty_any'        => 'function eaf(){return 0;} echo empty(0)?"e":"f"; echo empty(eaf())?"e":"f";',
+    'empty_expr'       => '$a=[1,2]; echo empty($a[0])?"e":"f"; echo empty($a[9])?"e":"f";',
+    'heredoc_interp'   => '$n=5;$s=<<<EOT
+hello $n
+EOT;
+echo $s;',
+    'heredoc_interp_var' => '$name="世界";$s=<<<EOT
+hi $name
+EOT;
+echo $s;',
 ];
 
 $gen = new VmRuntimeGenerator(new Salt('probe-seed'));
@@ -92,6 +107,9 @@ foreach ([
     'flat_off' => ['flatten' => false, 'stateMachine' => false],
     'flat_on'  => ['flatten' => true,  'stateMachine' => false],
     'sm_on'    => ['flatten' => false, 'stateMachine' => true],
+    // —— v1.1.0 新增：opcode 组合执行（combo）与平坦化叠加 ——
+    'combo_on' => ['flatten' => false, 'stateMachine' => false, 'combo' => 3],
+    'combo_flat' => ['flatten' => true,  'stateMachine' => false, 'combo' => 3],
 ] as $mode => $opts) {
     echo "===== mode=$mode =====\n";
     foreach ($cases as $name => $code) {

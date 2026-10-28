@@ -279,6 +279,17 @@ final class VmOp
     public const NULLSAFE_PROPGET = 151;
     public const NULLSAFE_MECALL  = 152;
 
+    // ---- 数组展开合并 / 动态属性 / 任意表达式 empty（VM 真编译扩展）----
+    // ARRAY_SPREAD：弹出 src、弹出 dst，将 src 合并入 dst 压回（[...$a, ...$b]），
+    //   int 键重索引、string 键后者覆盖（与 PHP 语义一致）。
+    public const ARRAY_SPREAD = 153;
+    // EMPTY_ANY：弹出任意值 v，压入 empty(v) 的布尔结果（empty(f()) 等表达式形态）。
+    public const EMPTY_ANY    = 154;
+    // PROPGET_DYN：弹出属性名、弹出对象，压入 $obj->$name（动态属性读取）。
+    public const PROPGET_DYN  = 155;
+    // PROPSET_DYN：弹出值、弹出属性名、弹出对象，$obj->$name = 值（动态属性写入）。
+    public const PROPSET_DYN  = 156;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -382,6 +393,7 @@ final class VmOp
         self::CLONE         => [],
         self::NULLSAFE_PROPGET => ['n'],
         self::NULLSAFE_MECALL  => ['i'],
+        self::ARRAY_SPREAD => [], self::EMPTY_ANY => [], self::PROPGET_DYN => [], self::PROPSET_DYN => [],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -499,6 +511,10 @@ final class VmOp
         self::CLONE         => 'CLONE',
         self::NULLSAFE_PROPGET => 'NULLSAFE_PROPGET',
         self::NULLSAFE_MECALL  => 'NULLSAFE_MECALL',
+        self::ARRAY_SPREAD => 'ARRAY_SPREAD',
+        self::EMPTY_ANY    => 'EMPTY_ANY',
+        self::PROPGET_DYN  => 'PROPGET_DYN',
+        self::PROPSET_DYN  => 'PROPSET_DYN',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

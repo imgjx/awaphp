@@ -52,6 +52,7 @@ return [
     'goto_cpx'     => 0,       // GOTO 混淆每分发器最大语句数（>1 生效）
     'vm'           => false,   // VM 虚拟机壳
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
+    'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
     'eval'         => false,   // EVAL 多层加壳
     'eval_layers'  => 3,       // EVAL 加壳层数
     'anti_debug'   => false,   // 反调试探针
@@ -66,6 +67,10 @@ return [
     'honeypot'     => 0,       // 蜜罐函数数量（拟真高价值命名 + 深循环拖慢 + 伪密钥）
     'shell_shield' => true,    // 逐层壳自保护：每层壳的解码逻辑再被外层混淆护住（破一层要先被恶心一层）
     'shell_shield_intensity' => 2, // 自保护语义变换强度 1-3（仅影响语义层；变量重命名始终开启）
+
+    // ===== Confrontation-LLM：反 LLM 静态分析 =====
+    'confrontation_llm'       => false, // 注入误导性注释（假 @deprecated/@see/@todo/@fixme + 伪造 CHANGELOG）并散布生僻 CJK，误导 LLM 优先级判断
+    'confrontation_intensity' => 2,     // 反 LLM 注入强度 1-3（越大注释越密）
 
     // 运行时垃圾指令（RuntimeJunk）：真实执行、无副作用、由 salt 确定性复现
     'junk_runtime'   => false, // 启用运行时垃圾指令插入（顶层 flag，旧管线直接调用）

@@ -204,6 +204,128 @@ trait VmLitTrait
     }
 
     /**
+     * 含插值的 heredoc（<<<EOT ... $var ... EOT）：复用双引号插值串的 CONCAT 链机制，
+     * 把字面量片段与插值表达式编译为连接序列。无插值（纯字面量）或缩进 heredoc 不在此
+     * 处理（分别由 parseHeredoc 字面量折叠 / 回退保正确）。
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function parseInterpolatedHeredoc(Cursor $c, array &$code): void
+    {
+        $parts = [];
+        $buf = '';
+        $closed = false;
+        $endText = '';
+        while (!$c->eof()) {
+            $tk = $c->peek();
+            if (is_array($tk) && $tk[0] === T_END_HEREDOC) {
+                $closed = true;
+                $endText = $tk[1];
+                $c->next();
+                break;
+            }
+            if (is_array($tk) && $tk[0] === T_ENCAPSED_AND_WHITESPACE) {
+                $buf .= $this->decodeEncapsed($tk[1]);
+                $c->next();
+                continue;
+            }
+            if (is_array($tk) && $tk[0] === T_VARIABLE) {
+                if ($buf !== '') { $parts[] = ['lit', $buf]; $buf = ''; }
+                $c->next();
+                $expr = [$tk];
+                if ($c->is('[')) {
+                    $c->next();
+                    $keyToks = [];
+                    $bdepth = 1;
+                    while (!$c->eof()) {
+                        if ($c->is(']')) {
+                            $bdepth--;
+                            if ($bdepth === 0) { break; }
+                            $keyToks[] = $c->next();
+                            continue;
+                        }
+                        if ($c->is('[')) { $bdepth++; }
+                        $keyToks[] = $c->next();
+                    }
+                    $c->expect(']');
+                    $expr[] = '[';
+                    foreach ($this->normalizeStringKey($keyToks) as $kt) { $expr[] = $kt; }
+                    $expr[] = ']';
+                } elseif ($c->is(T_OBJECT_OPERATOR)) {
+                    $c->next();
+                    $pn = $c->peek();
+                    $pname = is_array($pn) ? $pn[1] : (string) $pn;
+                    $c->next();
+                    $expr[] = T_OBJECT_OPERATOR;
+                    $expr[] = [T_STRING, $pname];
+                }
+                $parts[] = ['expr', $expr];
+                continue;
+            }
+            if (is_array($tk) && $tk[0] === T_CURLY_OPEN) {
+                if ($buf !== '') { $parts[] = ['lit', $buf]; $buf = ''; }
+                $c->next();
+                $inner = [];
+                $depth = 0;
+                while (!$c->eof()) {
+                    $x = $c->peek();
+                    if (is_string($x)) {
+                        if ($x === '}') {
+                            if ($depth === 0) { $c->next(); break; }
+                            $depth--;
+                        } elseif ($x === '{' || $x === '(' || $x === '[') {
+                            $depth++;
+                        } elseif ($x === ')' || $x === ']') {
+                            if ($depth > 0) { $depth--; }
+                        }
+                    }
+                    $inner[] = $c->next();
+                }
+                $parts[] = ['expr', $inner];
+                continue;
+            }
+            if (is_array($tk) && $tk[0] === T_DOLLAR_OPEN_CURLY_BRACES) {
+                if ($buf !== '') { $parts[] = ['lit', $buf]; $buf = ''; }
+                $c->next();
+                $inner = [];
+                while (!$c->is('}') && !$c->eof()) { $inner[] = $c->next(); }
+                $c->expect('}');
+                $parts[] = ['expr', $inner];
+                continue;
+            }
+            // 其它（裸字符等）跳过
+            $c->next();
+        }
+        if (!$closed) {
+            throw new VmUnsupported('VM heredoc 未闭合（已回退）');
+        }
+        // 弹性缩进 heredoc：体行缩进由编译器剥离；插值路径难以复刻逐行对齐，回退保正确。
+        if (preg_match('/^[ \t]/', $endText)) {
+            throw new VmUnsupported('VM 暂不支持含插值的缩进 heredoc（已回退）');
+        }
+        // 闭合标识前的一个换行不属于串值
+        if ($parts !== [] && $parts[count($parts) - 1][0] === 'lit') {
+            $last = count($parts) - 1;
+            $s = $parts[$last][1];
+            if (str_ends_with($s, "\r\n")) { $parts[$last][1] = substr($s, 0, -2); }
+            elseif (str_ends_with($s, "\n")) { $parts[$last][1] = substr($s, 0, -1); }
+        }
+        if ($parts === []) {
+            $code[] = [VmOp::PUSH_C, ''];
+            return;
+        }
+        $emitted = 0;
+        foreach ($parts as $p) {
+            if ($p[0] === 'lit') {
+                $code[] = [VmOp::PUSH_C, $p[1]];
+            } else {
+                $this->compileExpr($p[1], $code);
+            }
+            $emitted++;
+            if ($emitted > 1) { $code[] = [VmOp::CONCAT]; }
+        }
+    }
+
+    /**
      * 插值字符串中的下标 token（T_STRING / T_NUM_STRING）转成可编译表达式 token。
      * @param array<int,mixed> $toks
      * @return array<int,mixed>
@@ -414,6 +536,19 @@ trait VmLitTrait
      */
     private function emitArray(array $elems, array &$code): void
     {
+        // 检测数组展开 [...$a, ...$b]：任一元素值以 ... / T_ELLIPSIS 起始
+        $hasSpread = false;
+        foreach ($elems as $e) {
+            $vt = $this->trimWs($e['val']);
+            if ($vt !== [] && ($vt[0] === '...' || (is_array($vt[0]) && $vt[0][0] === T_ELLIPSIS))) {
+                $hasSpread = true;
+                break;
+            }
+        }
+        if ($hasSpread) {
+            $this->emitArraySpread($elems, $code);
+            return;
+        }
         $hasKey = false;
         foreach ($elems as $e) {
             if ($e['key'] !== null) { $hasKey = true; break; }
@@ -434,6 +569,62 @@ trait VmLitTrait
             }
             $code[] = [VmOp::ARRAY_KV, count($elems)];
         }
+    }
+
+    /**
+     * 含数组展开 [...$a, ...$b] 的数组字面量构造。
+     * 前导连续非展开元素用 ARRAY_MAKE 收束为基底数组，其后每个展开元素经
+     * ARRAY_SPREAD 并入（int 键重索引 / string 键后者覆盖），非展开元素经
+     * ARRAY_PUSH 追加（仅整数键；展开后的键化元素回退保正确）。
+     * @param array<int,array{key:?array,val:array}> $elems
+     * @param array<int,array<int,mixed>> $code
+     */
+    private function emitArraySpread(array $elems, array &$code): void
+    {
+        $lead = 0;
+        foreach ($elems as $e) {
+            $vt = $this->trimWs($e['val']);
+            $isSpread = $vt !== [] && ($vt[0] === '...' || (is_array($vt[0]) && $vt[0][0] === T_ELLIPSIS));
+            if ($isSpread) { break; }
+            $lead++;
+        }
+        for ($i = 0; $i < $lead; $i++) {
+            $this->emitArrayVal($elems[$i]['val'], $code);
+        }
+        if ($lead > 0) {
+            $code[] = [VmOp::ARRAY_MAKE, $lead];
+            $start = $lead;
+        } else {
+            // 首个元素即为展开：以其求值数组作为基底（其后从第二个元素处理，避免重复并入）
+            $this->compileExpr($this->stripEllipsis($elems[0]['val']), $code);
+            $start = 1;
+        }
+        for ($i = $start; $i < count($elems); $i++) {
+            $e = $elems[$i];
+            $vt = $this->trimWs($e['val']);
+            $isSpread = $vt !== [] && ($vt[0] === '...' || (is_array($vt[0]) && $vt[0][0] === T_ELLIPSIS));
+            if ($isSpread) {
+                $this->compileExpr($this->stripEllipsis($e['val']), $code);
+                $code[] = [VmOp::ARRAY_SPREAD];
+            } else {
+                if ($e['key'] !== null) {
+                    // PHP 对展开后键化元素（["k"=>$v]）的语义复杂，VM 暂不支持
+                    throw new VmUnsupported('VM 暂不支持展开之后的键化数组元素（已回退）');
+                }
+                $this->emitArrayVal($e['val'], $code);
+                $code[] = [VmOp::ARRAY_PUSH];
+            }
+        }
+    }
+
+    /** 去掉值 token 序列首部的展开符 ... / T_ELLIPSIS，返回其余表达式 token。 */
+    private function stripEllipsis(array $val): array
+    {
+        $v = $this->trimWs($val);
+        if ($v !== [] && ($v[0] === '...' || (is_array($v[0]) && $v[0][0] === T_ELLIPSIS))) {
+            return array_slice($v, 1);
+        }
+        return $v;
     }
 
     /**

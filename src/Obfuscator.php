@@ -137,6 +137,8 @@ final class Obfuscator
                 // VM 嵌套层数（真·嵌套 VM）：把上一层产物再喂给 VM 编译，实现多层 VM 壳。
                 // 默认 1（单层）；>=2 时逐层回灌自己，每层先剥 PHP 开闭标签。
                 'layers'         => max(1, (int) $this->config->get('vm_layers')),
+                // VM opcode 组合执行（--vm-combo）：单 opcode 拆等价多指令序列，抗反编译。0=关。
+                'combo'          => (int) $this->config->get('vm_combo'),
             ];
             $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
         }
@@ -160,6 +162,15 @@ final class Obfuscator
         // 文件头引擎信息：须在自校验前注入，使防篡改基线包含该头注释，
         // 否则运行期 __FILE__ 含头注释而基线不含，会误报"被篡改"。
         $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
+
+        // Confrontation-LLM：反 LLM 静态分析。须在自校验/毒化壳之前注入（本行位于其内，
+        // 使伪造注释与生僻 CJK 一并纳入防篡改指纹），且仅产生纯注释，绝不影响运行。
+        if ($this->config->get('confrontation_llm')) {
+            if (!class_exists(LlmConfrontation::class, false)) {
+                require_once __DIR__ . '/Confrontation/LlmConfrontation.php';
+            }
+            $current = (new LlmConfrontation($this->salt))->inject($current, (int) $this->config->get('confrontation_intensity'));
+        }
 
         // 防 hook eval 守卫已在编码壳之前（最内层）注入，此处不再单独处理；
         // 其行被 vm/eval/gz 裹入密文，自校验防篡改的分段哈希覆盖的是该密文区段。
@@ -238,6 +249,13 @@ final class Obfuscator
                     $tokens = null;
                 }
                 $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
+                // Confrontation-LLM：反 LLM 注入（须位于毒化/自校验壳之内，纳入指纹）
+                if ($this->config->get('confrontation_llm')) {
+                    if (!class_exists(LlmConfrontation::class, false)) {
+                        require_once __DIR__ . '/Confrontation/LlmConfrontation.php';
+                    }
+                    $current = (new LlmConfrontation($this->salt))->inject($current, (int) $this->config->get('confrontation_intensity'));
+                }
                 $bannerDone = true;
             }
             $current = $this->applyLayer($layer, $tokens, $current);
@@ -248,6 +266,12 @@ final class Obfuscator
         // 文件头引擎信息（除非关闭）—— 与旧管线一致
         if ($needBanner && !$bannerDone) {
             $current = (new Copyright($this->logger))->inject($current, $this->config, $this->toolName, $this->toolVersion);
+            if ($this->config->get('confrontation_llm')) {
+                if (!class_exists(LlmConfrontation::class, false)) {
+                    require_once __DIR__ . '/Confrontation/LlmConfrontation.php';
+                }
+                $current = (new LlmConfrontation($this->salt))->inject($current, (int) $this->config->get('confrontation_intensity'));
+            }
         }
         return $current;
     }
@@ -582,6 +606,8 @@ final class Obfuscator
             'probe'          => (int) ($params['probe'] ?? 0),
             // VM 常量池加密（默认开；分层参数键 cpool）
             'cpool'          => (bool) ($params['cpool'] ?? true),
+            // VM opcode 组合执行（--vm-combo）：分层参数键 combo 直通；散装模式回退到全局 config
+            'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
         ];
         try {
             $art = (new VmRuntimeGenerator($this->salt))->buildArtifact($src, $opts);

@@ -391,12 +391,18 @@ trait VmExprTrait
             $span[] = $nx;
             $c->skipWs();
             $p = $c->peek();
-            if (!(is_array($p) && $p[0] === T_STRING)) {
+            if (is_array($p) && $p[0] === T_STRING) {
+                // $var->prop 静态属性名
+                $c->next();
+                $span[] = $p;
+            } elseif (is_array($p) && $p[0] === T_VARIABLE) {
+                // $var->$var 动态属性：左值形态（运行期按变量值取属性名）
+                $c->next();
+                $span[] = $p;
+            } else {
                 $c->seek($save);
                 return null;
             }
-            $c->next();
-            $span[] = $p;
         } elseif (is_string($nx) && $nx === '[') {
             // $var[key]：平衡收集到配对 ']'（插值串尾部字面量是 T_ENCAPSED_AND_WHITESPACE
             // 数组 token，不会误入 [] 深度；内层下标括号天然配对）
@@ -664,6 +670,14 @@ trait VmExprTrait
         }
         $t = $target[0] ?? null;
         if (is_array($t) && $t[0] === T_VARIABLE && count($target) >= 3 && $this->tokType($target[1]) === T_OBJECT_OPERATOR) {
+            $prop = $target[2];
+            if (is_array($prop) && $prop[0] === T_VARIABLE) {
+                // 动态属性 $o->$p：压入对象，再压属性名（变量值）。存储阶段 PROPSET_DYN
+                // 弹出序为 [value, name, obj]，故右侧值由调用方在二者之上压入。
+                $this->compileExpr([$t], $code);
+                $this->emitPushVar($prop[1], $code);
+                return;
+            }
             // $this->prop ：压入 $this
             $this->compileExpr([$t], $code);
             return;
@@ -720,6 +734,11 @@ trait VmExprTrait
         if (is_array($t) && $t[0] === T_VARIABLE && $this->tokType($target[1]) === T_OBJECT_OPERATOR
             && count($target) >= 3) {
             $prop = $target[2];
+            if (is_array($prop) && $prop[0] === T_VARIABLE) {
+                // 动态属性写入 $o->$p = v：PROPSET_DYN 弹出 [value, name, obj]
+                $code[] = [VmOp::PROPSET_DYN];
+                return;
+            }
             $pname = is_array($prop) ? $prop[1] : (string) $prop;
             $code[] = [VmOp::PROPSET, $pname];
             return;
@@ -1454,7 +1473,10 @@ trait VmExprTrait
                     // 回退处理（PROPGET 的操作数是编译期常量名）。
                     $mv = $c->expectText(T_VARIABLE);
                     if (!$c->is('(')) {
-                        throw new VmUnsupported('VM 不支持动态属性读取（已回退）');
+                        // 动态属性读取 $o->$p：对象已在栈顶，再压属性名（变量值），取动态属性
+                        $this->emitPushVar($mv, $code);
+                        $code[] = [VmOp::PROPGET_DYN];
+                        continue;
                     }
                     // FCC：$o->$m(...)（PHP 8.1+ 动态方法名一等可调用）
                     if ($this->argsAreEllipsisOnly($c)) {
@@ -1835,11 +1857,34 @@ trait VmExprTrait
                     $code[] = [VmOp::PUSH_C, $this->parseString($t[1])];
                     return;
                 case T_START_HEREDOC:
-                    // heredoc / nowdoc：无插值时编译期折值为常量（token 层
-                    // --token-heredoc 的产物与用户源码中的纯字面量 heredoc 均属此类）；
-                    // 带插值的 heredoc 抛 VmUnsupported，由语句级 EVAL_STMT 兜底。
+                    // heredoc / nowdoc：
+                    //  - nowdoc（<<<'ID'）：始终无插值，编译期折值为常量；
+                    //  - heredoc 纯字面量：编译期折值为常量（保留弹性缩进剥离）；
+                    //  - heredoc 含插值：转 CONCAT 链真编译（parseInterpolatedHeredoc）。
                     $c->next();
-                    $code[] = [VmOp::PUSH_C, $this->parseHeredoc($c, $t)];
+                    if (str_contains($t[1], "'")) {
+                        // nowdoc：全字面，同纯字面量 heredoc 处理
+                        $code[] = [VmOp::PUSH_C, $this->parseHeredoc($c, $t)];
+                        return;
+                    }
+                    // 前向探测是否含插值（克隆游标，不消费）
+                    $probe = $c->cloneThis();
+                    $hasInterp = false;
+                    while (!$probe->eof()) {
+                        $pt = $probe->next();
+                        if (is_array($pt)) {
+                            if ($pt[0] === T_END_HEREDOC) { break; }
+                            if (in_array($pt[0], [T_VARIABLE, T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true)) {
+                                $hasInterp = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!$hasInterp) {
+                        $code[] = [VmOp::PUSH_C, $this->parseHeredoc($c, $t)];
+                        return;
+                    }
+                    $this->parseInterpolatedHeredoc($c, $code);
                     return;
                 case T_INCLUDE:
                 case T_INCLUDE_ONCE:
@@ -1862,9 +1907,23 @@ trait VmExprTrait
                         throw new VmUnsupported('isset/empty 缺少参数（已回退）');
                     }
                     foreach ($args as $ai => $arg) {
+                        if ($t[0] === T_EMPTY) {
+                            // empty() 允许任意表达式（PHP 5.5+）；变量目标走 EMPTY_，
+                            // 非变量目标（empty(0) / empty(f()) / empty($a+$b) 等）编译表达式后取空。
+                            try {
+                                [$name, $keys] = $this->parseIssetTarget($this->trimWs($arg));
+                                foreach ($keys as $k) { $this->compileExpr($k, $code); }
+                                $code[] = [VmOp::EMPTY_, $name, count($keys)];
+                            } catch (VmUnsupported $ex) {
+                                $this->compileExpr($arg, $code);
+                                $code[] = [VmOp::EMPTY_ANY];
+                            }
+                            if ($ai > 0) { $code[] = [VmOp::BOOL_AND]; }
+                            continue;
+                        }
                         [$name, $keys] = $this->parseIssetTarget($this->trimWs($arg));
                         foreach ($keys as $k) { $this->compileExpr($k, $code); }
-                        $code[] = [$t[0] === T_ISSET ? VmOp::ISSET_ : VmOp::EMPTY_, $name, count($keys)];
+                        $code[] = [VmOp::ISSET_, $name, count($keys)];
                         if ($ai > 0) { $code[] = [VmOp::BOOL_AND]; }
                     }
                     return;

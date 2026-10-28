@@ -1,649 +1,2626 @@
 [
-["kw_and", "echo (true and false) ? \"t\" : \"f\";"],
-["kw_or", "echo (false or true) ? \"t\" : \"f\";"],
-["kw_xor", "echo (true xor false) ? \"t\" : \"f\";"],
-["kw_and_prec", "$x = true and false; echo $x ? \"T\" : \"F\";"],
-["kw_or_prec", "$x = false or true; echo $x ? \"T\" : \"F\";"],
-["kw_chain", "echo (true and true and false) ? \"t\" : \"f\";"],
-["kw_mixed", "echo (1 and 0 or 1) ? \"t\" : \"f\";"],
-["kw_and_in_if", "if (5 > 3 and 2 > 1) { echo \"both\"; }"],
-["kw_or_in_while", "$i=0;$s=\"\";while ($i < 3 or false) { $s .= $i; $i++; } echo $s;"],
-["kw_xor_assign", "$x = true xor true; echo $x ? \"T\" : \"F\";"],
-["not_op", "echo !0 ? \"t\" : \"f\";"],
-["bang_bang", "echo !!\"\" ? \"t\" : \"f\";"],
-["short_and", "function fa(){ echo \"X\"; return true; } false && fa(); echo \"done\";"],
-["short_or", "function fb(){ echo \"X\"; return true; } true || fb(); echo \"done\";"],
-["bw_and", "echo 6 & 3;"],
-["bw_or", "echo 6 | 3;"],
-["bw_xor", "echo 6 ^ 3;"],
-["bw_not", "echo ~0;"],
-["bw_shift", "echo (1 << 4) . (256 >> 2);"],
-["ternary_nest", "echo 1 ? 2 ? \"a\" : \"b\" : \"c\";"],
-["coalesce", "$a = null; echo $a ?? \"d\";"],
-["coalesce_chain", "$a=null;$b=null;$c=\"z\";echo $a ?? $b ?? $c;"],
-["coalesce_arr", "$a = [\"x\" => null]; echo $a[\"x\"] ?? \"d\";"],
-["coalesce_prop", "class Cc { public $p = null; } $c = new Cc(); echo $c->p ?? \"d\";"],
-["ternary_short", "echo 1 ?: \"d\";"],
-["pow_assign", "$x = 2; $x **= 3; echo $x;"],
-["mod_assign", "$x = 7; $x %= 3; echo $x;"],
-["bw_assign", "$x = 6; $x &= 3; echo $x;"],
-["shift_assign", "$x = 1; $x <<= 3; echo $x;"],
-["concat_assign", "$s = \"a\"; $s .= \"b\"; echo $s;"],
-["pre_inc", "$i = 5; echo ++$i . $i;"],
-["post_inc", "$i = 5; echo $i++ . $i;"],
-["pre_dec", "$i = 5; echo --$i . $i;"],
-["inc_str", "$s = \"a\"; $s++; echo $s;"],
-["inc_arr", "$a = [3, 1, 2]; $a[0]++; echo $a[0];"],
-["ref_assign", "$a = 1; $b = &$a; $b = 2; echo $a;"],
-["ref_param", "function fr(&$x) { $x = 9; } $a = 1; fr($a); echo $a;"],
-["ref_foreach", "$a = [1, 2]; foreach ($a as &$v) { $v *= 10; } unset($v); echo $a[0] . $a[1];"],
-["spread_arr", "$a = [1, 2]; $b = [...$a, 3]; echo count($b);"],
-["arr_destructure", "$a = [1, 2]; [$x, $y] = $a; echo $x . $y;"],
-["arr_destructure_kv", "$a = [\"k\" => 5]; [\"k\" => $v] = $a; echo $v;"],
-["arr_destructure_skip", "$a = [1, 2, 3]; [, $b, ] = $a; echo $b;"],
-["list_destructure", "$a = [1, 2]; list($x, $y) = $a; echo $x . $y;"],
-["neg_idx", "$a = [1, 2, 3]; echo $a[-1] ?? \"none\";"],
-["multi_dim", "$a = [[1, 2], [3, 4]]; echo $a[1][0];"],
-["str_idx", "$s = \"hello\"; echo $s[1];"],
-["count_func", "echo count([1, 2, 3]);"],
-["arr_merge_fn", "echo count(array_merge([1], [2, 3]));"],
-["str_interp", "$n = \"w\"; echo \"hi $n\";"],
-["str_interp_brace", "$n = \"w\"; echo \"hi {$n}!\";"],
-["str_interp_arr", "$a = [\"k\" => \"v\"]; echo \"x {$a[\"k\"]} y\";"],
-["strlen_fn", "echo strlen(\"hello\");"],
-["str_replace_fn", "echo str_replace(\"a\", \"b\", \"banana\");"],
-["substr_fn", "echo substr(\"hello\", 1, 3);"],
-["sprintf_fn", "echo sprintf(\"%05.2f\", 3.14159);"],
-["implode_fn", "echo implode(\",\", [1, 2, 3]);"],
-["explode_fn", "echo implode(\"|\", explode(\",\", \"a,b\"));"],
-["trim_fn", "echo trim(\"  x  \") . \"|\";"],
-["str_repeat_fn", "echo str_repeat(\"ab\", 3);"],
-["intval_fn", "echo intval(\"42abc\");"],
-["floatval_fn", "echo floatval(\"3.5\") + 1;"],
-["strval_fn", "echo strval(123) . \"x\";"],
-["is_array_fn", "echo is_array([]) ? \"y\" : \"n\";"],
-["gettype_fn", "echo gettype(1.5);"],
-["cast_int", "echo (int) \"42abc\";"],
-["cast_float", "echo (float) \"3.5\";"],
-["cast_string", "echo (string) 42;"],
-["cast_bool", "echo (bool) 1 ? \"y\" : \"n\";"],
-["cast_array", "echo count((array) 5);"],
-["abs_fn", "echo abs(-5);"],
-["max_fn", "echo max(1, 5, 3);"],
-["min_fn", "echo min(4, 2, 8);"],
-["floor_fn", "echo floor(3.7);"],
-["ceil_fn", "echo ceil(3.2);"],
-["round_fn", "echo round(3.5);"],
-["pow_fn", "echo pow(2, 10);"],
-["sqrt_fn", "echo sqrt(16);"],
-["rand_det", "echo mt_rand(1, 1);"],
-["class_basic", "class C1 { public $x = 1; public function get() { return $this->x; } } $c = new C1(); echo $c->get();"],
-["class_ctor", "class C2 { public $x; public function __construct($v) { $this->x = $v; } } $c = new C2(7); echo $c->x;"],
-["class_static", "class C3 { public static $s = 0; public static function inc() { self::$s++; } } C3::inc(); C3::inc(); echo C3::$s;"],
-["class_const", "class C4 { const K = 5; } echo C4::K;"],
-["class_inherit", "class A5 { public function f() { return \"A\"; } } class B5 extends A5 { public function f() { return \"B\" . parent::f(); } } echo (new B5())->f();"],
-["class_visibility", "class C6 { private $p = 1; public function get() { return $this->p; } } $c = new C6(); echo $c->get();"],
-["class_toString", "class C7 { public function __toString() { return \"STR\"; } } echo new C7();"],
-["instanceof_op", "class A8 {} class B8 extends A8 {} $b = new B8(); echo $b instanceof A8 ? \"y\" : \"n\";"],
-["class_method_chain", "class C9 { public function f() { return $this; } public function g() { return \"G\"; } } echo (new C9())->f()->g();"],
-["class_static_call", "class C10 { public static function s($x) { return $x * 2; } } echo C10::s(4);"],
-["class_null_safe", "class C11 { public $p = null; } $c = new C11(); echo $c->p?->x ?? \"none\";"],
-["class_isset_prop", "class C12 { public $p = 1; } $c = new C12(); echo isset($c->p) ? \"y\" : \"n\";"],
-["class_unset_prop", "class C13 { public $p = 1; } $c = new C13(); unset($c->p); echo isset($c->p) ? \"y\" : \"n\";"],
-["clone_op", "class C14 { public $x = 1; } $a = new C14(); $b = clone $a; $b->x = 2; echo $a->x . $b->x;"],
-["func_default", "function f1($a = 5) { return $a; } echo f1();"],
-["func_default_multi", "function f2($a, $b = 2, $c = \"x\") { return $a . $b . $c; } echo f2(1);"],
-["func_named_arg", "function f3($a, $b) { return $a . $b; } echo f3(b: \"B\", a: \"A\");"],
-["func_variadic", "function f4(...$args) { return count($args); } echo f4(1, 2, 3);"],
-["func_variadic_use", "function sum5(...$ns) { $s = 0; foreach ($ns as $n) { $s += $n; } return $s; } echo sum5(1, 2, 3, 4);"],
-["func_static_var", "function c5() { static $n = 0; $n++; return $n; } echo c5() . c5() . c5();"],
-["func_recursion", "function fib6($n) { return $n < 2 ? $n : fib6($n-1) + fib6($n-2); } echo fib6(10);"],
-["func_closure", "$f = function ($x) { return $x * 2; }; echo $f(4);"],
-["func_closure_use", "$m = 3; $f = function ($x) use ($m) { return $x * $m; }; echo $f(4);"],
-["func_arrow", "$f = fn ($x) => $x * 2; echo $f(4);"],
-["func_arrow_capture", "$m = 3; $f = fn ($x) => $x * $m; echo $f(4);"],
-["func_higher_order", "function apply7($f, $x) { return $f($x); } echo apply7(function ($n) { return $n + 1; }, 4);"],
-["func_nested_call", "function d8($x) { return $x * 2; } function t8($x) { return $x + 1; } echo d8(t8(5));"],
-["func_null_return", "function f9() { return; } var_dump(f9());"],
-["func_void", "function f10() { } echo \"ok\";"],
-["define_const", "define(\"MYCONST\", 42); echo MYCONST;"],
-["const_stmt", "const KK = 7; echo KK;"],
-["const_fn", "echo PHP_EOL === \"\\n\" ? \"nl\" : \"other\";"],
-["const_math", "echo PHP_INT_SIZE;"],
-["magic_const", "echo basename(__FILE__);"],
-["switch_fall", "$x = 2; switch ($x) { case 1: echo \"a\"; break; case 2: echo \"b\"; case 3: echo \"c\"; break; default: echo \"d\"; }"],
-["switch_str", "$x = \"y\"; switch ($x) { case \"x\": echo \"X\"; break; case \"y\": echo \"Y\"; break; }"],
-["switch_no_break", "$x = 1; switch ($x) { case 1: echo \"one\"; default: echo \"def\"; }"],
-["break_level", "for ($i = 0; $i < 3; $i++) { for ($j = 0; $j < 3; $j++) { if ($j == 1) { break 2; } echo \"$i$j\"; } }"],
-["continue_level", "for ($i = 0; $i < 3; $i++) { for ($j = 0; $j < 3; $j++) { if ($j == 1) { continue 2; } echo \"$i$j\"; } }"],
-["do_while", "$i = 0; do { echo $i; $i++; } while ($i < 3);"],
-["goto_stmt", "goto end; echo \"skip\"; end: echo \"done\";"],
-["nested_loops_break", "$r = \"\"; for ($i = 0; $i < 3; $i++) { if ($i == 1) { break; } $r .= $i; } echo $r;"],
-["nested_loops_continue", "$r = \"\"; for ($i = 0; $i < 3; $i++) { if ($i == 1) { continue; } $r .= $i; } echo $r;"],
-["if_alt", "$x = 1; if ($x): echo \"a\"; endif;"],
-["while_alt", "$i = 0; while ($i < 2): echo $i; $i++; endwhile;"],
-["for_alt", "for ($i = 0; $i < 2; $i++): echo $i; endfor;"],
-["foreach_alt", "$a = [1]; foreach ($a as $v): echo $v; endforeach;"],
-["switch_alt", "$x = 1; switch ($x): case 1: echo \"a\"; break; endswitch;"],
-["suppress", "$x = @$undefined_var; echo \"ok\";"],
-["empty_fn", "$x = 0; echo empty($x) ? \"e\" : \"f\";"],
-["isset_multi", "$a = 1; echo isset($a, $b) ? \"both\" : \"no\";"],
-["unset_var", "$a = 1; unset($a); echo isset($a) ? \"y\" : \"n\";"],
-["unset_arr", "$a = [1, 2, 3]; unset($a[1]); echo count($a);"],
-["compact_fn", "$x = 1; $y = 2; $r = compact(\"x\", \"y\"); echo $r[\"x\"] . $r[\"y\"];"],
-["global_stmt", "$g = 1; function fg() { global $g; $g = 2; } fg(); echo $g;"],
-["static_prop", "class C15 { public static $n = 0; } C15::$n = 5; echo C15::$n;"],
-["exit_stmt", "echo \"before\"; exit;"],
-["die_fn", "echo \"before\"; die;"],
-["eval_stmt", "eval(\"echo 1+1;\");"],
-["time_fn", "echo time() > 0 ? \"y\" : \"n\";"],
-["strlen_big", "$s = \"\"; for ($i = 0; $i < 100; $i++) { $s .= \"x\"; } echo strlen($s);"],
-["php_sapi", "echo PHP_SAPI === \"cli\" ? \"cli\" : \"web\";"],
-["version_fn", "echo version_compare(PHP_VERSION, \"5.0.0\") ? \"new\" : \"old\";"],
-["json_fn", "echo json_encode([\"a\" => 1]);"],
-["json_decode_fn", "$d = json_decode(\"{\\\"a\\\":1}\", true); echo $d[\"a\"];"],
-["array_keys_fn", "$ks = array_keys([\"a\" => 1, \"b\" => 2]); echo $ks[0] . $ks[1];"],
-["array_values_fn", "$vs = array_values([\"a\" => 1, \"b\" => 2]); echo $vs[0] . $vs[1];"],
-["in_array_fn", "echo in_array(2, [1, 2, 3]) ? \"y\" : \"n\";"],
-["array_search_fn", "echo array_search(3, [1, 2, 3]);"],
-["array_map_fn", "$r = array_map(function ($x) { return $x * 2; }, [1, 2]); echo $r[0] . $r[1];"],
-["array_filter_fn", "$r = array_filter([1, 2, 3], function ($x) { return $x > 1; }); echo count($r);"],
-["usort_fn", "$a = [3, 1, 2]; usort($a, function ($x, $y) { return $x - $y; }); echo $a[0] . $a[1] . $a[2];"],
-["array_slice_fn", "echo count(array_slice([1, 2, 3, 4], 1, 2));"],
-["array_reverse_fn", "$r = array_reverse([1, 2, 3]); echo $r[0];"],
-["array_sum_fn", "echo array_sum([1, 2, 3]);"],
-["array_product_fn", "echo array_product([2, 3, 4]);"],
-["range_fn", "echo count(range(1, 10));"],
-["str_split_fn", "echo count(str_split(\"abc\"));"],
-["strpos_fn", "echo strpos(\"hello\", \"ll\");"],
-["strtolower_fn", "echo strtolower(\"ABC\");"],
-["strtoupper_fn", "echo strtoupper(\"abc\");"],
-["ucfirst_fn", "echo ucfirst(\"abc\");"],
-["number_format_fn", "echo number_format(1234.5678, 2);"],
-["is_numeric_fn", "echo is_numeric(\"42\") ? \"y\" : \"n\";"],
-["intdiv_fn", "echo intdiv(7, 2);"],
-["fmod_fn", "echo fmod(7.5, 2);"],
-["min_max_arr", "echo min([3, 1, 2]) . max([3, 1, 2]);"],
-["pi_const", "echo pi() > 3.14 ? \"y\" : \"n\";"],
-["sprintf_args", "echo sprintf(\"%s-%s-%d\", \"a\", \"b\", 3);"],
-["vsprintf_fn", "echo vsprintf(\"%d-%d\", [1, 2]);"],
-["str_pad_fn", "echo str_pad(\"5\", 3, \"0\", STR_PAD_LEFT);"],
-["lcfirst_fn", "echo lcfirst(\"ABC\");"],
-["ucwords_fn", "echo ucwords(\"hello world\");"],
-["nl2br_fn", "echo nl2br(\"a\\nb\") === \"a<br />\\nb\" || nl2br(\"a\\nb\") === \"a<br>\\nb\" ? \"y\" : \"n\";"],
-["strrev_fn", "echo strrev(\"abc\");"],
-["ord_fn", "echo ord(\"A\");"],
-["chr_fn", "echo chr(66);"],
-["bin2hex_fn", "echo bin2hex(\"ab\");"],
-["hex2bin_fn", "echo hex2bin(\"6162\");"],
-["strcmp_fn", "echo strcmp(\"a\", \"b\") < 0 ? \"lt\" : \"ge\";"],
-["strcasecmp_fn", "echo strcasecmp(\"A\", \"a\") == 0 ? \"eq\" : \"ne\";"],
-["substr_count_fn", "echo substr_count(\"aaa\", \"a\");"],
-["strstr_fn", "echo strstr(\"hello\", \"e\");"],
-["strpos_off", "echo strpos(\"abcabc\", \"a\", 1);"],
-["array_key_exists_fn", "echo array_key_exists(\"k\", [\"k\" => 1]) ? \"y\" : \"n\";"],
-["array_flip_fn", "$f = array_flip([\"a\", \"b\"]); echo $f[\"a\"];"],
-["array_unique_fn", "echo count(array_unique([1, 1, 2]));"],
-["array_combine_fn", "$c = array_combine([\"a\", \"b\"], [1, 2]); echo $c[\"a\"] . $c[\"b\"];"],
-["array_fill_fn", "echo count(array_fill(0, 3, \"x\"));"],
-["array_pad_fn", "echo count(array_pad([1], 3, 0));"],
-["array_shift_fn", "$a = [1, 2]; array_shift($a); echo $a[0];"],
-["array_unshift_fn", "$a = [1, 2]; array_unshift($a, 0); echo $a[0];"],
-["array_pop_fn", "$a = [1, 2]; array_pop($a); echo count($a);"],
-["array_push_fn", "$a = [1]; array_push($a, 2, 3); echo count($a);"],
-["sort_fn", "$a = [3, 1, 2]; sort($a); echo $a[0] . $a[1] . $a[2];"],
-["rsort_fn", "$a = [1, 3, 2]; rsort($a); echo $a[0] . $a[1] . $a[2];"],
-["ksort_fn", "$a = [\"b\" => 1, \"a\" => 2]; ksort($a); $ks = implode(array_keys($a)); echo $ks;"],
-["array_reduce_fn", "echo array_reduce([1, 2, 3], function ($c, $x) { return $c + $x; }, 0);"],
-["array_walk_fn", "$a = [1, 2]; array_walk($a, function (&$v) { $v *= 2; }); echo $a[0] . $a[1];"],
-["array_column_fn", "$r = array_column([[\"id\" => 1], [\"id\" => 2]], \"id\"); echo $r[0] . $r[1];"],
-["iterator_to_array_fn", "echo count(iterator_to_array(new ArrayIterator([1, 2])));"],
-["printf_fn", "printf(\"%d-%d\", 1, 2);"],
-["print_fn", "print(\"hi\");"],
-["var_dump_fn", "var_dump(1);"],
-["var_export_fn", "echo var_export(42, true);"],
-["serialize_fn", "echo strlen(serialize([1, 2])) > 0 ? \"y\" : \"n\";"],
-["uniqid_det", "echo strlen(uniqid()) > 0 ? \"y\" : \"n\";"],
-["md5_fn", "echo md5(\"abc\") === \"900150983cd24fb0d6963f7d28e17f72\" ? \"y\" : \"n\";"],
-["sha1_fn", "echo sha1(\"abc\") === \"a9993e364706816aba3e25717850c26c9cd0d89d\" ? \"y\" : \"n\";"],
-["crc32_fn", "echo crc32(\"abc\") > 0 ? \"y\" : \"n\";"],
-["base64_fn", "echo base64_encode(\"hi\");"],
-["base64_decode_fn", "echo base64_decode(\"aGk=\");"],
-["urlencode_fn", "echo urlencode(\"a b\") === \"a+b\" || urlencode(\"a b\") === \"a%20b\" ? \"y\" : \"n\";"],
-["rawurlencode_fn", "echo rawurlencode(\"a b\");"],
-["htmlspecialchars_fn", "echo htmlspecialchars(\"<b>\");"],
-["htmlspecialchars_decode_fn", "echo htmlspecialchars_decode(htmlspecialchars(\"<x>\")) === \"<x>\" ? \"y\" : \"n\";"],
-["filter_var_fn", "echo filter_var(\"a@b.com\", FILTER_VALIDATE_EMAIL) ? \"y\" : \"n\";"],
-["preg_match_fn", "echo preg_match(\"/\\d+\", \"abc123\") ? \"y\" : \"n\";"],
-["preg_replace_fn", "echo preg_replace(\"/\\d/\", \"x\", \"a1b2\");"],
-["preg_split_fn", "echo count(preg_split(\"/,/\", \"a,b,c\"));"],
-["preg_quote_fn", "echo preg_quote(\"a.b\") === \"a\\.b\" ? \"y\" : \"n\";"],
-["str_word_count_fn", "echo str_word_count(\"hello world\");"],
-["levenshtein_fn", "echo levenshtein(\"abc\", \"abd\");"],
-["similar_text_fn", "similar_text(\"abc\", \"abd\", $p); echo $p > 0 ? \"y\" : \"n\";"],
-["soundex_fn", "echo soundex(\"Robert\");"],
-["metaphone_det", "echo strlen(metaphone(\"hello\")) > 0 ? \"y\" : \"n\";"],
-["checkdate_fn", "echo checkdate(2, 29, 2020) ? \"y\" : \"n\";"],
-["mktime_det", "echo mktime(0, 0, 0, 1, 1, 2020) > 0 ? \"y\" : \"n\";"],
-["date_det", "echo date(\"Y\") > 2000 ? \"y\" : \"n\";"],
-["strtotime_det", "echo strtotime(\"2020-01-01\") > 0 ? \"y\" : \"n\";"],
-["getdate_det", "$d = getdate(0); echo $d[\"seconds\"];"],
-["gmdate_det", "echo gmdate(\"Y\") > 2000 ? \"y\" : \"n\";"],
-["idate_det", "echo idate(\"Y\") > 2000 ? \"y\" : \"n\";"],
-["microtime_det", "echo microtime(true) > 0 ? \"y\" : \"n\";"],
-["hrtime_det", "echo hrtime(true) > 0 ? \"y\" : \"n\";"],
-["pathinfo_fn", "$p = pathinfo(\"/a/b.txt\"); echo $p[\"basename\"];"],
-["basename_fn", "echo basename(\"/a/b.txt\");"],
-["dirname_fn", "echo dirname(\"/a/b.txt\");"],
-["sys_get_temp_dir_fn", "echo strlen(sys_get_temp_dir()) > 0 ? \"y\" : \"n\";"],
-["memory_get_usage_fn", "echo memory_get_usage() > 0 ? \"y\" : \"n\";"],
-["memory_get_peak_usage_fn", "echo memory_get_peak_usage() > 0 ? \"y\" : \"n\";"],
-["ini_get_fn", "echo strlen(ini_get(\"memory_limit\")) > 0 ? \"y\" : \"n\";"],
-["function_exists_fn", "echo function_exists(\"strlen\") ? \"y\" : \"n\";"],
-["class_exists_fn", "echo class_exists(\"Exception\") ? \"y\" : \"n\";"],
-["method_exists_fn", "echo method_exists(\"Exception\", \"getMessage\") ? \"y\" : \"n\";"],
-["property_exists_fn", "echo property_exists(\"Exception\", \"message\") ? \"y\" : \"n\";"],
-["is_callable_fn", "echo is_callable(\"strlen\") ? \"y\" : \"n\";"],
-["get_defined_vars_fn", "echo count(get_defined_vars()) > 0 ? \"y\" : \"n\";"],
-["get_defined_functions_fn", "echo count(get_defined_functions()[\"internal\"]) > 100 ? \"y\" : \"n\";"],
-["get_defined_constants_fn", "echo count(get_defined_constants()) > 100 ? \"y\" : \"n\";"],
-["get_declared_classes_fn", "echo count(get_declared_classes()) > 10 ? \"y\" : \"n\";"],
-["extension_loaded_fn", "echo extension_loaded(\"standard\") ? \"y\" : \"n\";"],
-["get_loaded_extensions_fn", "echo count(get_loaded_extensions()) > 5 ? \"y\" : \"n\";"],
-["phpversion_fn", "echo phpversion() === PHP_VERSION ? \"y\" : \"n\";"],
-["php_sapi_name_fn", "echo php_sapi_name() === \"cli\" ? \"y\" : \"n\";"],
-["php_uname_fn", "echo strlen(php_uname()) > 0 ? \"y\" : \"n\";"],
-["get_current_user_fn", "echo strlen(get_current_user()) > 0 ? \"y\" : \"n\";"],
-["getmypid_fn", "echo getmypid() > 0 ? \"y\" : \"n\";"],
-["getmyuid_fn", "echo getmyuid() > 0 ? \"y\" : \"n\";"],
-["getmygid_fn", "echo getmygid() >= 0 ? \"y\" : \"n\";"],
-["lcg_value_det", "echo lcg_value() >= 0 && lcg_value() <= 1 ? \"y\" : \"n\";"],
-["mt_getrandmax_fn", "echo mt_getrandmax() > 0 ? \"y\" : \"n\";"],
-["rand_fn", "echo rand(1, 1);"],
-["getrandmax_fn", "echo getrandmax() > 0 ? \"y\" : \"n\";"],
-["random_int_det", "echo random_int(1, 1);"],
-["random_bytes_det", "echo strlen(random_bytes(4));"],
-["hash_fn", "echo hash(\"crc32\", \"abc\") === hash(\"crc32\", \"abc\") ? \"y\" : \"n\";"],
-["hash_algos_fn", "echo count(hash_algos()) > 5 ? \"y\" : \"n\";"],
-["hash_hmac_det", "echo strlen(hash_hmac(\"sha256\", \"a\", \"k\")) > 0 ? \"y\" : \"n\";"],
-["password_algos_fn", "echo count(password_algos()) > 0 ? \"y\" : \"n\";"],
-["ctype_digit_fn", "echo ctype_digit(\"123\") ? \"y\" : \"n\";"],
-["ctype_alpha_fn", "echo ctype_alpha(\"abc\") ? \"y\" : \"n\";"],
-["ctype_alnum_fn", "echo ctype_alnum(\"abc123\") ? \"y\" : \"n\";"],
-["ctype_space_fn", "echo ctype_space(\"  \") ? \"y\" : \"n\";"],
-["ctype_upper_fn", "echo ctype_upper(\"ABC\") ? \"y\" : \"n\";"],
-["ctype_lower_fn", "echo ctype_lower(\"abc\") ? \"y\" : \"n\";"],
-["ctype_punct_fn", "echo ctype_punct(\"!@#\") ? \"y\" : \"n\";"],
-["ctype_xdigit_fn", "echo ctype_xdigit(\"abc123\") ? \"y\" : \"n\";"],
-["ctype_print_fn", "echo ctype_print(\"abc\") ? \"y\" : \"n\";"],
-["ctype_graph_fn", "echo ctype_graph(\"abc\") ? \"y\" : \"n\";"],
-["ctype_cntrl_fn", "echo ctype_cntrl(\"\\n\") ? \"y\" : \"n\";"],
-["strcoll_det", "echo strcoll(\"a\", \"b\") < 0 ? \"y\" : \"n\";"],
-["strcspn_fn", "echo strcspn(\"abc\", \"c\");"],
-["strspn_fn", "echo strspn(\"abc\", \"ab\");"],
-["strpbrk_fn", "echo strpbrk(\"abc\", \"c\");"],
-["strrpos_fn", "echo strrpos(\"abcabc\", \"a\");"],
-["strripos_fn", "echo strripos(\"abcabc\", \"A\");"],
-["stripos_fn", "echo stripos(\"ABCabc\", \"B\");"],
-["strncmp_fn", "echo strncmp(\"abc\", \"abd\", 2) == 0 ? \"y\" : \"n\";"],
-["strncasecmp_fn", "echo strncasecmp(\"ABC\", \"abc\", 2) == 0 ? \"y\" : \"n\";"],
-["substr_compare_fn", "echo substr_compare(\"abc\", \"abd\", 2) == 0 ? \"y\" : \"n\";"],
-["substr_replace_fn", "echo substr_replace(\"abc\", \"X\", 1, 1);"],
-["str_ireplace_fn", "echo str_ireplace(\"A\", \"x\", \"aAbA\");"],
-["str_replace_count_fn", "echo str_replace(\"a\", \"b\", \"aaa\", $c) . $c;"],
-["strtr_fn", "echo strtr(\"abc\", [\"a\" => \"x\", \"b\" => \"y\"]);"],
-["wordwrap_fn", "echo wordwrap(\"abcdefgh\", 3, \"\\n\", true) === \"abc\\ndef\\ngh\" ? \"y\" : \"n\";"],
-["chunk_split_fn", "echo chunk_split(\"abcd\", 2);"],
-["addslashes_fn", "echo addslashes(\"a\\\"b\");"],
-["stripslashes_fn", "echo stripslashes(\"a\\\\b\");"],
-["stripcslashes_fn", "echo stripcslashes(\"a\\\\b\");"],
-["addcslashes_fn", "echo strlen(addcslashes(\"ab\", \"a\")) > 1 ? \"y\" : \"n\";"],
-["html_entity_decode_fn", "echo html_entity_decode(\"&lt;\") === \"<\" ? \"y\" : \"n\";"],
-["htmlentities_fn", "echo htmlentities(\"<\") === \"&lt;\" ? \"y\" : \"n\";"],
-["htmlspecialchars_flags_fn", "echo htmlspecialchars(\"<\", ENT_QUOTES) === \"&lt;\" ? \"y\" : \"n\";"],
-["heredoc_basic", "$n = 5; $s = <<<EOT\nhello $n\nEOT;\necho $s;"],
-["heredoc_indent", "$s = <<<EOT\n    indented\n    EOT;\necho $s;"],
-["nowdoc_basic", "$s = <<<'EOT'\nno $interp\nEOT;\necho $s;"],
-["heredoc_func", "function fh() { return <<<EOT\nline\nEOT;\n} echo fh();"],
-["numeric_sep", "echo 1_000_000;"],
-["numeric_hex", "echo 0xFF;"],
-["numeric_oct", "echo 0o17;"],
-["numeric_bin", "echo 0b101;"],
-["numeric_exp", "echo 1.5e3;"],
-["numeric_float_dot", "echo 1. . 5;"],
-["str_escape", "echo \"a\\tb\\nc\";"],
-["str_single_quote", "echo 'no $interp';"],
-["str_concat_num", "echo \"n=\" . 42;"],
-["unicode_escape", "echo \"\\u{1F600}\";"],
-["negative_num", "echo -5 + -3;"],
-["float_prec", "echo 0.1 + 0.2;"],
-["int_overflow", "echo PHP_INT_MAX;"],
-["str_repeat_zero", "echo str_repeat(\"x\", 0) === \"\" ? \"y\" : \"n\";"],
-["empty_array", "$a = []; echo count($a);"],
-["assoc_mixed", "$a = [\"a\" => 1, 2, \"b\" => 3]; echo count($a);"],
-["nested_ternary_short", "echo 0 ?: 0 ?: \"z\";"],
-["concat_prec", "echo 1 . 2 + 3;"],
-["assign_in_cond", "if ($x = 5) { echo $x; }"],
-["assign_chain", "$a = $b = $c = 1; echo $a . $b . $c;"],
-["compound_index", "$a = [\"x\" => [\"y\" => 5]]; echo $a[\"x\"][\"y\"];"],
-["chained_calls", "echo strlen(strtoupper(\"abc\"));"],
-["nested_func", "function of($x) { return $x + 1; } function ff($x) { return $x * 2; } echo of(ff(3));"],
-["multi_assign_ref", "$a = [1]; $b = &$a[0]; $b = 9; echo $a[0];"],
-["static_call_var", "class C16 { public static function s() { return \"S\"; } } $m = \"s\"; echo C16::$m();"],
-["dynamic_func", "function fd() { return \"D\"; } $f = \"fd\"; echo $f();"],
-["dynamic_class", "class C17 { public $v = 1; } $cn = \"C17\"; $o = new $cn(); echo $o->v;"],
-["dynamic_prop", "$o = new stdClass(); $p = \"x\"; $o->$p = 5; echo $o->x;"],
-["dynamic_method", "class C18 { public function m() { return \"M\"; } } $o = new C18(); $f = \"m\"; echo $o->$f();"],
-["stdclass_prop", "$o = new stdClass(); $o->a = 1; echo $o->a;"],
-["stdclass_construct", "$o = new stdClass(); $o->a = 1; echo isset($o->a) ? \"y\" : \"n\";"],
-["exception_try", "try { throw new Exception(\"e\"); } catch (Exception $e) { echo $e->getMessage(); }"],
-["exception_finally", "try { echo \"t\"; } finally { echo \"f\"; }"],
-["exception_type", "try { throw new TypeError(\"te\"); } catch (TypeError $e) { echo \"caught\"; }"],
-["exception_rethrow", "function g1() { throw new Exception(\"x\"); } try { g1(); } catch (Exception $e) { echo $e->getMessage(); }"],
-["exception_multi_catch", "try { throw new RuntimeException(\"r\"); } catch (LogicException $e) { echo \"L\"; } catch (RuntimeException $e) { echo \"R\"; }"],
-["error_try", "try { $x = 1 / 0; } catch (DivisionByZeroError $e) { echo \"dz\"; }"],
-["error_suppress", "try { @$x = 1/0; echo \"ok\"; } catch (Throwable $t) { echo \"th\"; }"],
-["interface_impl", "interface I1 { public function f(); } class C19 implements I1 { public function f() { return \"F\"; } } $o = new C19(); echo $o->f();"],
-["abstract_class", "abstract class A20 { abstract public function f(); public function g() { return $this->f(); } } class C20 extends A20 { public function f() { return \"FF\"; } } echo (new C20())->g();"],
-["final_class", "final class C21 { public function f() { return \"F\"; } } echo (new C21())->f();"],
-["final_method", "class C22 { final public function f() { return \"F\"; } } echo (new C22())->f();"],
-["trait_use", "trait T23 { public function f() { return \"T\"; } } class C23 { use T23; } echo (new C23())->f();"],
-["trait_conflict", "trait T24a { public function f() { return \"a\"; } } trait T24b { public function f() { return \"b\"; } } class C24 { use T24a, T24b { T24a::f insteadof T24b; } } echo (new C24())->f();"],
-["enum_basic", "enum Suit: string { case Hearts = \"H\"; case Spades = \"S\"; } echo Suit::Hearts->value;"],
-["readonly_prop", "class C25 { public readonly int $x; public function __construct() { $this->x = 5; } } $o = new C25(); echo $o->x;"],
-["match_expr", "$x = 2; echo match($x) { 1 => \"a\", 2 => \"b\", default => \"c\" };"],
-["match_strict", "$x = \"2\"; echo match(true) { $x === 2 => \"int\", $x === \"2\" => \"str\" };"],
-["match_no_default", "$x = 9; echo match($x) { 1, 2 => \"lo\", 3, 4 => \"mid\", default => \"hi\" };"],
-["named_class_const", "class C26 { const A = 1; const B = 2; } echo C26::A + C26::B;"],
-["class_const_expr", "class C27 { const N = 2 * 3 + 1; } echo C27::N;"],
-["interface_const", "interface I2 { const K = 3; } echo I2::K;"],
-["class_var_default_expr", "class C28 { public $arr = [1, 2, 3]; } $o = new C28(); echo count($o->arr);"],
-["promoted_prop", "class C29 { public function __construct(public int $x = 5) {} } $o = new C29(); echo $o->x;"],
-["first_class_callable", "function f30() { return 1; } $f = f30(...); echo $f();"],
-["null_coalesce_assign", "$a = null; $a ??= 5; echo $a;"],
-["arrow_fn_static", "$f = static fn ($x) => $x + 1; echo $f(1);"],
-["closure_bind_skip", "echo \"skip\";"],
-["generator_fn", "function g30() { yield 1; yield 2; } foreach (g30() as $v) { echo $v; }"],
-["generator_send", "function g31() { $v = yield 1; echo $v; yield 2; } $g = g31(); $g->current(); $g->send(\"S\");"],
-["yield_from", "function g32() { yield from [1, 2]; } foreach (g32() as $v) { echo $v; }"],
-["yield_key", "function g33() { yield \"k\" => \"v\"; } foreach (g33() as $k => $v) { echo $k . $v; }"],
-["yield_expr", "function g34() { $x = yield 1; return $x; } $g = g34(); $g->current(); echo $g->send(\"R\");"],
-["str_contains_fn", "echo str_contains(\"hello\", \"ell\") ? \"y\" : \"n\";"],
-["str_starts_with_fn", "echo str_starts_with(\"hello\", \"he\") ? \"y\" : \"n\";"],
-["str_ends_with_fn", "echo str_ends_with(\"hello\", \"lo\") ? \"y\" : \"n\";"],
-["array_is_list_fn", "echo array_is_list([1, 2]) ? \"y\" : \"n\";"],
-["enum_from_fn", "echo \"skip\";"],
-["enum_try_from", "echo \"skip\";"],
-["fdiv_fn", "echo fdiv(1, 0) === INF ? \"y\" : \"n\";"],
-["get_debug_type_fn", "echo get_debug_type(1) === \"int\" ? \"y\" : \"n\";"],
-["array_key_first_fn", "echo array_key_first([\"a\" => 1]);"],
-["array_key_last_fn", "echo array_key_last([\"a\" => 1, \"b\" => 2]);"],
-["str_increment", "$s = \"Az\"; $s++; echo $s;"],
-["str_decrement", "$s = \"Az\"; $s--; echo $s;"],
-["float_to_int", "echo (int) 3.99;"],
-["int_to_float", "echo (float) 3;"],
-["bool_to_int", "echo (int) true;"],
-["null_to_int", "echo (int) null;"],
-["null_to_str", "echo (string) null;"],
-["null_to_bool", "echo (bool) null ? \"y\" : \"n\";"],
-["arr_to_bool", "echo (bool) [] ? \"y\" : \"n\";"],
-["str_to_bool", "echo (bool) \"0\" ? \"y\" : \"n\";"],
-["str_to_bool_nonempty", "echo (bool) \"a\" ? \"y\" : \"n\";"],
-["int_div_zero_mod", "echo 10 % 0;"],
-["int_div_zero_div", "echo 10 / 0;"],
-["neg_mod", "echo -7 % 3;"],
-["float_mod", "echo 7.5 % 2;"],
-["big_int_add", "echo 9007199254740992 + 1;"],
-["hex_add", "echo 0x10 + 0x01;"],
-["scientific_notation", "echo 1.2e-2;"],
-["string_multiply_err", "echo \"skip\";"],
-["multi_line_str", "echo \"line1\nline2\";"],
-["heredoc_in_func_default", "function f35($s = \"d\") { return $s; } echo f35();"],
-["const_array_default", "function f36($a = [1, 2]) { return count($a); } echo f36();"],
-["const_null_default", "function f37($a = null) { return $a === null ? \"n\" : \"x\"; } echo f37();"],
-["by_ref_arg_call", "function f38(&$x) { $x++; } $a = 5; f38($a); echo $a;"],
-["spread_call", "function f39(...$xs) { return array_sum($xs); } $a = [1, 2, 3]; echo f39(...$a);"],
-["named_and_spread", "function f40($a, $b) { return $a . $b; } $xs = [\"b\" => \"B\", \"a\" => \"A\"]; echo f40(...$xs);"],
-["closure_static", "$f = static function () { return 1; }; echo $f();"],
-["closure_this", "class C31 { private $v = 5; public function make() { return function () { return $this->v; }; } } $o = new C31(); $f = $o->make(); echo $f();"],
-["closure_arrow_this", "class C32 { private $v = 5; public function make() { return fn () => $this->v; } } $o = new C32(); $f = $o->make(); echo $f();"],
-["static_closure_call", "class C33 { public static function s() { return \"S\"; } public function m() { $f = static function () { return self::s(); }; return $f(); } } echo (new C33())->m();"],
-["isset_on_call", "echo \"skip\";"],
-["empty_on_expr", "echo empty(0) ? \"e\" : \"f\";"],
-["list_in_foreach", "$a = [[1, 2], [3, 4]]; foreach ($a as [$x, $y]) { echo $x . $y; }"],
-["list_kv_in_foreach", "$a = [[\"a\" => 1, \"b\" => 2]]; foreach ($a as [\"a\" => $x, \"b\" => $y]) { echo $x . $y; }"],
-["global_in_func_two", "$g = 1; function fg2() { global $g; $g += 10; } fg2(); fg2(); echo $g;"],
-["static_var_arr", "function f41() { static $a = []; $a[] = 1; return count($a); } echo f41() . f41();"],
-["ref_static_var", "function &f42() { static $n = 0; return $n; } $r = f42(); $r = 5; echo f42();"],
-["nested_closure_capture", "$a = 1; $f = function () use ($a) { $g = function () use ($a) { return $a; }; return $g(); }; echo $f();"],
-["closure_by_ref_capture", "$n = 0; $f = function () use (&$n) { $n++; }; $f(); $f(); echo $n;"],
-["multi_catch_finally", "try { throw new Exception(\"m\"); } catch (Throwable $e) { echo $e->getMessage(); } finally { echo \"|\"; }"],
-["catch_without_var", "try { throw new Exception(\"nv\"); } catch (Exception) { echo \"caught\"; }"],
-["throw_expr", "echo \"skip\";"],
-["finally_return", "function f43() { try { return \"t\"; } finally { return \"f\"; } } echo f43();"],
-["nested_try", "try { try { throw new Exception(\"in\"); } catch (Exception $e) { throw new RuntimeException($e->getMessage()); } } catch (RuntimeException $e) { echo $e->getMessage(); }"],
-["str_pad_both", "echo str_pad(\"5\", 3, \"0\", STR_PAD_BOTH);"],
-["substr_negative", "echo substr(\"hello\", -3);"],
-["substr_neg_len", "echo substr(\"hello\", 1, -1);"],
-["array_slice_neg", "echo array_slice([1, 2, 3, 4], -2)[0];"],
-["array_slice_assoc", "echo array_slice([\"a\" => 1, \"b\" => 2, \"c\" => 3], 1, true)[\"c\"];"],
-["array_slice_keep", "$a = [\"a\" => 1, \"b\" => 2]; $s = array_slice($a, 1, preserve_keys: true); echo implode(array_keys($s));"],
-["str_repeat_neg", "echo \"skip\";"],
-["pow_neg_exp", "echo 2 ** -1;"],
-["pow_frac", "echo 4 ** 0.5;"],
-["unary_minus_var", "$x = 5; echo -$x;"],
-["unary_plus", "echo +\"5abc\";"],
-["double_neg", "$x = 5; echo - -$x;"],
-["not_twice", "echo !!1;"],
-["bit_not_var", "$x = 5; echo ~$x;"],
-["concat_num_float", "echo \"x\" . 1.5;"],
-["concat_bool", "echo \"x\" . true;"],
-["concat_null", "echo \"x\" . null;"],
-["concat_array", "echo \"x\" . [1, 2];"],
-["concat_obj_str", "echo \"x\" . new C34();"],
-["string_class_str", "class C34 { public function __toString() { return \"CS\"; } } echo \"pre-\" . new C34();"],
-["eq_loose", "var_dump(1 == \"1\");"],
-["eq_strict", "var_dump(1 === \"1\");"],
-["eq_null_loose", "var_dump(null == false);"],
-["spaceship_num", "echo 1 <=> 2;"],
-["spaceship_str", "echo \"b\" <=> \"a\";"],
-["spaceship_arr", "echo [1, 2] <=> [1, 3];"],
-["cmp_str_num", "echo \"10\" > \"9\" ? \"gt\" : \"lt\";"],
-["cmp_num_str", "echo 10 > 9 ? \"gt\" : \"lt\";"],
-["null_coalesce_deep", "$a = [\"x\" => [\"y\" => null]]; echo $a[\"x\"][\"y\"] ?? \"d\";"],
-["chained_null_safe", "echo \"skip\";"],
-["short_assign_ternary", "$x = 5; $x = $x ?: 0; echo $x;"],
-["nested_ternary_chain", "echo 2 > 1 ? (3 > 2 ? \"a\" : \"b\") : \"c\";"],
-["in_condition", "if (\"a\" in [\"a\"]) { echo \"skip\"; }"],
-["array_key_exists_op", "echo \"skip\";"],
-["str_contains_op", "echo \"skip\";"],
-["multi_catch_same_var", "try { throw new Exception(\"s\"); } catch (RuntimeException $e) { echo \"r\"; } catch (Exception $e) { echo \"e\"; }"],
-["empty_string_coerce", "echo \"\" + 1;"],
-["string_int_add", "echo \"5\" + \"3\";"],
-["string_float_add", "echo \"5.5\" + \"4.5\";"],
-["leading_zero_str", "echo \"007\" + 1;"],
-["hex_str_add", "echo \"0x1A\" + 1;"],
-["octal_str_add", "echo \"0o17\" + 1;"],
-["binary_str_add", "echo \"0b101\" + 1;"],
-["numeric_str_inc", "$s = \"5\"; $s++; echo $s;"],
-["numeric_str_inc_float", "$s = \"5.5\"; $s++; echo $s;"],
-["bool_str_inc", "echo \"skip\";"],
-["float_str_inc", "$s = \"5.5e2\"; $s++; echo $s;"],
-["int_cast_str", "echo (int) \"  42  \";"],
-["float_cast_ws", "echo (float) \"  3.5  \";"],
-["bool_cast_str", "echo (bool) \" 0\" ? \"y\" : \"n\";"],
-["bool_cast_dot_zero", "echo (bool) \"0.0\" ? \"y\" : \"n\";"],
-["array_cast_str", "echo (string) [1, 2];"],
-["array_to_json", "echo json_encode([1, [2, 3]]);"],
-["assoc_to_json", "echo json_encode([\"a\" => [\"b\" => 1]]);"],
-["empty_arr_json", "echo json_encode([]);"],
-["empty_obj_json", "echo json_encode(new stdClass());"],
-["json_unescaped_slash", "echo json_encode(\"a/b\", JSON_UNESCAPED_SLASHES);"],
-["json_pretty", "echo json_encode([1], JSON_PRETTY_PRINT) !== false ? \"y\" : \"n\";"],
-["json_numeric_check", "echo json_encode([\"1\"], JSON_NUMERIC_CHECK);"],
-["json_partial", "echo json_encode([\"a\" => 1, \"b\" => 2], JSON_PARTIAL_OUTPUT_ON_ERROR);"],
-["json_decode_assoc", "echo json_decode(\"[1,2,3]\", true)[1];"],
-["json_decode_depth", "echo json_decode(\"[[[[1]]]]\", true, 5)[0][0][0][0];"],
-["json_last_error_fn", "json_decode(\"{}\"); echo json_last_error() === JSON_ERROR_NONE ? \"y\" : \"n\";"],
-["json_encode_depth", "echo json_encode([[1]], 0, 512) !== false ? \"y\" : \"n\";"],
-["serialize_roundtrip", "$a = [1, \"x\" => 2]; echo unserialize(serialize($a))[\"x\"];"],
-["serialize_obj", "class C35 { public $x = 1; } $o = new C35(); $s = serialize($o); echo unserialize($s)->x;"],
-["serialize_null", "var_dump(unserialize(serialize(null)));"],
-["serialize_bool", "echo unserialize(serialize(true)) ? \"y\" : \"n\";"],
-["serialize_int", "echo unserialize(serialize(42));"],
-["serialize_float", "echo unserialize(serialize(3.5));"],
-["serialize_str", "echo unserialize(serialize(\"hi\"));"],
-["serialize_arr_keys", "echo count(unserialize(serialize([\"a\" => 1, \"b\" => 2])));"],
-["serialize_nested", "echo unserialize(serialize([\"a\" => [\"b\" => 5]]))[\"a\"][\"b\"];"],
-["serialize_empty_arr", "echo count(unserialize(serialize([])));"],
-["serialize_unicode", "echo unserialize(serialize(\"中文\")) === \"中文\" ? \"y\" : \"n\";"],
-["serialize_long_str", "echo strlen(unserialize(serialize(str_repeat(\"x\", 1000))));"],
-["md5_raw", "echo strlen(md5(\"abc\", true));"],
-["sha1_raw", "echo strlen(sha1(\"abc\", true));"],
-["crc32b_fn", "echo crc32(\"abc\") === crc32(\"abc\") ? \"y\" : \"n\";"],
-["hash_copy_fn", "echo hash(\"sha256\", \"abc\") === hash(\"sha256\", \"abc\") ? \"y\" : \"n\";"],
-["hash_file_skip", "echo \"skip\";"],
-["hash_hmac_algos_fn", "echo count(hash_hmac_algos()) > 0 ? \"y\" : \"n\";"],
-["hash_pbkdf2_det", "echo strlen(hash_pbkdf2(\"sha256\", \"p\", \"s\", 1)) > 0 ? \"y\" : \"n\";"],
-["hash_equals_det", "echo hash_equals(\"a\", \"a\") ? \"y\" : \"n\";"],
-["password_hash_det", "echo strlen(password_hash(\"p\", PASSWORD_DEFAULT)) > 10 ? \"y\" : \"n\";"],
-["password_verify_det", "echo password_verify(\"p\", password_hash(\"p\", PASSWORD_DEFAULT)) ? \"y\" : \"n\";"],
-["random_bytes_len", "echo strlen(random_bytes(16));"],
-["random_int_range", "echo random_int(5, 5);"],
-["openssl_random_skip", "echo \"skip\";"],
-["sodium_random_skip", "echo \"skip\";"],
-["base64_encode_pad", "echo base64_encode(\"a\");"],
-["base64_decode_strict", "echo base64_decode(\"aGk=\", true) === \"hi\" ? \"y\" : \"n\";"],
-["base64_url", "echo rtrim(strtr(base64_encode(str_repeat(\"x\", 5)), \"+/\", \"-_\"), \"=\");"],
-["urlencode_special", "echo urlencode(\"a=1&b=2\");"],
-["rawurlencode_special", "echo rawurlencode(\"a b/c\");"],
-["http_build_query_fn", "echo http_build_query([\"a\" => 1, \"b\" => 2]);"],
-["parse_str_fn", "parse_str(\"a=1&b=2\", $r); echo $r[\"a\"] . $r[\"b\"];"],
-["parse_url_fn", "$p = parse_url(\"http://h/p?a=1\"); echo $p[\"host\"];"],
-["filter_var_int", "echo filter_var(\"42\", FILTER_VALIDATE_INT);"],
-["filter_var_url", "echo filter_var(\"http://a.b\", FILTER_VALIDATE_URL) ? \"y\" : \"n\";"],
-["filter_var_ip", "echo filter_var(\"127.0.0.1\", FILTER_VALIDATE_IP) ? \"y\" : \"n\";"],
-["filter_var_email_bad", "echo filter_var(\"bad\", FILTER_VALIDATE_EMAIL) ? \"y\" : \"n\";"],
-["filter_var_float", "echo filter_var(\"3.5\", FILTER_VALIDATE_FLOAT);"],
-["filter_var_bool", "echo filter_var(\"true\", FILTER_VALIDATE_BOOLEAN) ? \"y\" : \"n\";"],
-["filter_var_regexp", "echo filter_var(\"abc\", FILTER_VALIDATE_REGEXP, [\"options\" => [\"regexp\" => \"/^a/\"]]) ? \"y\" : \"n\";"],
-["preg_match_groups", "preg_match(\"/(\\d+)-(\\d+)/\", \"12-34\", $m); echo $m[1] . $m[2];"],
-["preg_match_named", "preg_match(\"/(?<n>\\d+)/\", \"42\", $m); echo $m[\"n\"];"],
-["preg_match_all_fn", "echo preg_match_all(\"/\\d/\", \"a1b2c3\");"],
-["preg_replace_backref", "echo preg_replace(\"/(\\w+)@/\", \"$1#\", \"a@b\");"],
-["preg_replace_named", "echo preg_replace(\"/(?<w>\\w+)/\", \"[${w}]\", \"ab\");"],
-["preg_replace_cb", "echo preg_replace_callback(\"/\\d/\", function ($m) { return (int) $m[0] + 1; }, \"a1b2\");"],
-["preg_replace_limit", "echo preg_replace(\"/\\d/\", \"x\", \"a1b2c3\", 1);"],
-["preg_split_limit", "echo count(preg_split(\"/,/\", \"a,b,c,d\", -1, 1));"],
-["preg_split_flags", "echo count(preg_split(\"/,/\", \"a,,b\", -1, PREG_SPLIT_NO_EMPTY));"],
-["preg_grep_fn", "echo count(preg_grep(\"/\\d/\", [\"a\", \"1\", \"b\"]));"],
-["preg_quote_special", "echo preg_quote(\".+*?[^]$(){}=!<>|:-\");"],
-["mb_strlen_skip", "echo \"skip\";"],
-["mb_substr_skip", "echo \"skip\";"],
-["iconv_skip", "echo \"skip\";"],
-["mb_convert_skip", "echo \"skip\";"],
-["htmlspecialchars_double", "echo htmlspecialchars(htmlspecialchars(\"<x>\"));"],
-["strip_tags_fn", "echo strip_tags(\"<b>x</b>\");"],
-["nl2br_variants", "echo nl2br(\"a\\r\\nb\") !== false ? \"y\" : \"n\";"],
-["word_wrap_break", "echo wordwrap(\"abcdef\", 3);"],
-["chunk_split_skip", "echo \"skip\";"],
-["quoted_printable_skip", "echo \"skip\";"],
-["convert_uuencode_skip", "echo \"skip\";"],
-["addcslashes_range", "echo strlen(addcslashes(\"abc\", \"a..c\")) > 3 ? \"y\" : \"n\";"],
-["str_rot13_fn", "echo str_rot13(\"abc\");"],
-["str_shuffle_det", "echo strlen(str_shuffle(\"abc\")) === 3 ? \"y\" : \"n\";"],
-["strrev_unicode", "echo strrev(\"abc\") === \"cba\" ? \"y\" : \"n\";"],
-["substr_replace_multi", "echo substr_replace(\"abc\", [\"X\", \"Y\"], [0, 1]);"],
-["str_replace_arr_search", "echo str_replace([\"a\", \"b\"], \"x\", \"abc\");"],
-["str_replace_arr_both", "echo str_replace([\"a\", \"b\"], [\"x\", \"y\"], \"abc\");"],
-["str_ireplace_count", "echo str_ireplace(\"A\", \"x\", \"aAbA\", $c) . $c;"],
-["strtr_two_args", "echo strtr(\"abc\", \"a\", \"x\");"],
-["strtr_arr", "echo strtr(\"abc\", [\"a\" => \"x\"]);"],
-["str_repeat_large", "echo strlen(str_repeat(\"ab\", 500));"],
-["str_pad_large", "echo strlen(str_pad(\"x\", 100, \"y\"));"],
-["sprintf_multi", "echo sprintf(\"%s=%d (%%.2f)\", \"k\", 5, 1.5);"],
-["sprintf_pad", "echo sprintf(\"[%-5s]\", \"a\");"],
-["sprintf_zero_pad", "echo sprintf(\"%05d\", 42);"],
-["sprintf_precision", "echo sprintf(\"%.3s\", \"abcdef\");"],
-["sprintf_arg_num", "echo sprintf(\"%2$s %1$s\", \"a\", \"b\");"],
-["vsprintf_arr", "echo vsprintf(\"%s-%s\", [\"x\", \"y\"]);"],
-["number_format_all", "echo number_format(1234567.891, 2, \".\", \",\");"],
-["number_format_zero", "echo number_format(0, 2);"],
-["money_skip", "echo \"skip\";"],
-["localeconv_skip", "echo \"skip\";"],
-["setlocale_skip", "echo \"skip\";"],
-["nl_langinfo_skip", "echo \"skip\";"],
-["strftime_skip", "echo \"skip\";"],
-["gmstrftime_skip", "echo \"skip\";"],
-["date_skip", "echo \"skip\";"],
-["gmdate_skip", "echo \"skip\";"],
-["idate_skip", "echo \"skip\";"],
-["mktime_skip", "echo \"skip\";"],
-["gmmktime_skip", "echo \"skip\";"],
-["checkdate_skip", "echo \"skip\";"],
-["strtotime_skip", "echo \"skip\";"],
-["strtotime_skip2", "echo \"skip\";"],
-["date_parse_fn", "$d = date_parse(\"2020-01-02\"); echo $d[\"year\"];"],
-["date_sun_info_skip", "echo \"skip\";"],
-["timezone_open_skip", "echo \"skip\";"],
-["timezone_name_get_skip", "echo \"skip\";"],
-["date_default_timezone_set_skip", "echo \"skip\";"],
-["date_default_timezone_get_fn", "echo strlen(date_default_timezone_get()) > 0 ? \"y\" : \"n\";"],
-["time_sleep_skip", "echo \"skip\";"],
-["usleep_skip", "echo \"skip\";"],
-["time_nanosleep_skip", "echo \"skip\";"],
-["hrtime_skip", "echo \"skip\";"],
-["microtime_skip", "echo \"skip\";"],
-["gettimeofday_skip", "echo \"skip\";"],
-["localtime_fn", "$t = localtime(0, true); echo $t[\"tm_year\"];"],
-["strftime_skip2", "echo \"skip\";"],
-["cal_days_skip", "echo \"skip\";"],
-["easter_date_skip", "echo \"skip\";"],
-["easter_days_skip", "echo \"skip\";"],
-["french_to_jd_skip", "echo \"skip\";"],
-["gregorian_to_jd_skip", "echo \"skip\";"],
-["jd_to_gregorian_skip", "echo \"skip\";"],
-["julian_to_jd_skip", "echo \"skip\";"],
-["jd_to_julian_skip", "echo \"skip\";"],
-["jewish_to_jd_skip", "echo \"skip\";"],
-["jd_to_jewish_skip", "echo \"skip\";"],
-["cal_to_jd_skip", "echo \"skip\";"],
-["jd_to_cal_skip", "echo \"skip\";"],
-["cal_info_skip", "echo \"skip\";"],
-["cal_from_jd_skip", "echo \"skip\";"],
-["unixtojd_skip", "echo \"skip\";"],
-["jdtoounix_skip", "echo \"skip\";"],
-["getdate_skip", "echo \"skip\";"],
-["date_create_skip", "echo \"skip\";"],
-["date_format_skip", "echo \"skip\";"],
-["date_modify_skip", "echo \"skip\";"],
-["date_diff_skip", "echo \"skip\";"],
-["date_add_skip", "echo \"skip\";"],
-["date_sub_skip", "echo \"skip\";"],
-["date_interval_skip", "echo \"skip\";"],
-["date_period_skip", "echo \"skip\";"],
-["date_timestamp_get_skip", "echo \"skip\";"],
-["date_timestamp_set_skip", "echo \"skip\";"],
-["date_timezone_get_skip", "echo \"skip\";"],
-["date_offset_get_skip", "echo \"skip\";"],
-["date_sunrise_skip", "echo \"skip\";"],
-["date_sunset_skip", "echo \"skip\";"],
-["date_isodate_set_skip", "echo \"skip\";"],
-["date_date_set_skip", "echo \"skip\";"],
-["date_time_set_skip", "echo \"skip\";"],
-["date_default_skip", "echo \"skip\";"],
-["date_parse_from_format_skip", "echo \"skip\";"],
-["date_create_from_format_skip", "echo \"skip\";"],
-["date_get_last_errors_skip", "echo \"skip\";"],
-["timezone_transitions_skip", "echo \"skip\";"],
-["timezone_location_skip", "echo \"skip\";"],
-["timezone_abbreviations_skip", "echo \"skip\";"],
-["timezone_identifiers_skip", "echo \"skip\";"],
-["timezone_version_skip", "echo \"skip\";"],
-["date_timezone_name_skip", "echo \"skip\";"],
-["date_immutable_skip", "echo \"skip\";"],
-["date_period_skip2", "echo \"skip\";"],
-["date_interval_skip2", "echo \"skip\";"],
-["date_skip2", "echo \"skip\";"],
-["final_placeholder", "echo \"end\";"]
+  [
+    "kw_and",
+    "echo (true and false) ? \"t\" : \"f\";"
+  ],
+  [
+    "kw_or",
+    "echo (false or true) ? \"t\" : \"f\";"
+  ],
+  [
+    "kw_xor",
+    "echo (true xor false) ? \"t\" : \"f\";"
+  ],
+  [
+    "kw_and_prec",
+    "$x = true and false; echo $x ? \"T\" : \"F\";"
+  ],
+  [
+    "kw_or_prec",
+    "$x = false or true; echo $x ? \"T\" : \"F\";"
+  ],
+  [
+    "kw_chain",
+    "echo (true and true and false) ? \"t\" : \"f\";"
+  ],
+  [
+    "kw_mixed",
+    "echo (1 and 0 or 1) ? \"t\" : \"f\";"
+  ],
+  [
+    "kw_and_in_if",
+    "if (5 > 3 and 2 > 1) { echo \"both\"; }"
+  ],
+  [
+    "kw_or_in_while",
+    "$i=0;$s=\"\";while ($i < 3 or false) { $s .= $i; $i++; } echo $s;"
+  ],
+  [
+    "kw_xor_assign",
+    "$x = true xor true; echo $x ? \"T\" : \"F\";"
+  ],
+  [
+    "not_op",
+    "echo !0 ? \"t\" : \"f\";"
+  ],
+  [
+    "bang_bang",
+    "echo !!\"\" ? \"t\" : \"f\";"
+  ],
+  [
+    "short_and",
+    "function fa(){ echo \"X\"; return true; } false && fa(); echo \"done\";"
+  ],
+  [
+    "short_or",
+    "function fb(){ echo \"X\"; return true; } true || fb(); echo \"done\";"
+  ],
+  [
+    "bw_and",
+    "echo 6 & 3;"
+  ],
+  [
+    "bw_or",
+    "echo 6 | 3;"
+  ],
+  [
+    "bw_xor",
+    "echo 6 ^ 3;"
+  ],
+  [
+    "bw_not",
+    "echo ~0;"
+  ],
+  [
+    "bw_shift",
+    "echo (1 << 4) . (256 >> 2);"
+  ],
+  [
+    "ternary_nest",
+    "echo 1 ? 2 ? \"a\" : \"b\" : \"c\";"
+  ],
+  [
+    "coalesce",
+    "$a = null; echo $a ?? \"d\";"
+  ],
+  [
+    "coalesce_chain",
+    "$a=null;$b=null;$c=\"z\";echo $a ?? $b ?? $c;"
+  ],
+  [
+    "coalesce_arr",
+    "$a = [\"x\" => null]; echo $a[\"x\"] ?? \"d\";"
+  ],
+  [
+    "coalesce_prop",
+    "class Cc { public $p = null; } $c = new Cc(); echo $c->p ?? \"d\";"
+  ],
+  [
+    "ternary_short",
+    "echo 1 ?: \"d\";"
+  ],
+  [
+    "pow_assign",
+    "$x = 2; $x **= 3; echo $x;"
+  ],
+  [
+    "mod_assign",
+    "$x = 7; $x %= 3; echo $x;"
+  ],
+  [
+    "bw_assign",
+    "$x = 6; $x &= 3; echo $x;"
+  ],
+  [
+    "shift_assign",
+    "$x = 1; $x <<= 3; echo $x;"
+  ],
+  [
+    "concat_assign",
+    "$s = \"a\"; $s .= \"b\"; echo $s;"
+  ],
+  [
+    "pre_inc",
+    "$i = 5; echo ++$i . $i;"
+  ],
+  [
+    "post_inc",
+    "$i = 5; echo $i++ . $i;"
+  ],
+  [
+    "pre_dec",
+    "$i = 5; echo --$i . $i;"
+  ],
+  [
+    "inc_str",
+    "$s = \"a\"; $s++; echo $s;"
+  ],
+  [
+    "inc_arr",
+    "$a = [3, 1, 2]; $a[0]++; echo $a[0];"
+  ],
+  [
+    "ref_assign",
+    "$a = 1; $b = &$a; $b = 2; echo $a;"
+  ],
+  [
+    "ref_param",
+    "function fr(&$x) { $x = 9; } $a = 1; fr($a); echo $a;"
+  ],
+  [
+    "ref_foreach",
+    "$a = [1, 2]; foreach ($a as &$v) { $v *= 10; } unset($v); echo $a[0] . $a[1];"
+  ],
+  [
+    "spread_arr",
+    "$a = [1, 2]; $b = [...$a, 3]; echo count($b);"
+  ],
+  [
+    "arr_destructure",
+    "$a = [1, 2]; [$x, $y] = $a; echo $x . $y;"
+  ],
+  [
+    "arr_destructure_kv",
+    "$a = [\"k\" => 5]; [\"k\" => $v] = $a; echo $v;"
+  ],
+  [
+    "arr_destructure_skip",
+    "$a = [1, 2, 3]; [, $b, ] = $a; echo $b;"
+  ],
+  [
+    "list_destructure",
+    "$a = [1, 2]; list($x, $y) = $a; echo $x . $y;"
+  ],
+  [
+    "neg_idx",
+    "$a = [1, 2, 3]; echo $a[-1] ?? \"none\";"
+  ],
+  [
+    "multi_dim",
+    "$a = [[1, 2], [3, 4]]; echo $a[1][0];"
+  ],
+  [
+    "str_idx",
+    "$s = \"hello\"; echo $s[1];"
+  ],
+  [
+    "count_func",
+    "echo count([1, 2, 3]);"
+  ],
+  [
+    "arr_merge_fn",
+    "echo count(array_merge([1], [2, 3]));"
+  ],
+  [
+    "str_interp",
+    "$n = \"w\"; echo \"hi $n\";"
+  ],
+  [
+    "str_interp_brace",
+    "$n = \"w\"; echo \"hi {$n}!\";"
+  ],
+  [
+    "str_interp_arr",
+    "$a = [\"k\" => \"v\"]; echo \"x {$a[\"k\"]} y\";"
+  ],
+  [
+    "strlen_fn",
+    "echo strlen(\"hello\");"
+  ],
+  [
+    "str_replace_fn",
+    "echo str_replace(\"a\", \"b\", \"banana\");"
+  ],
+  [
+    "substr_fn",
+    "echo substr(\"hello\", 1, 3);"
+  ],
+  [
+    "sprintf_fn",
+    "echo sprintf(\"%05.2f\", 3.14159);"
+  ],
+  [
+    "implode_fn",
+    "echo implode(\",\", [1, 2, 3]);"
+  ],
+  [
+    "explode_fn",
+    "echo implode(\"|\", explode(\",\", \"a,b\"));"
+  ],
+  [
+    "trim_fn",
+    "echo trim(\"  x  \") . \"|\";"
+  ],
+  [
+    "str_repeat_fn",
+    "echo str_repeat(\"ab\", 3);"
+  ],
+  [
+    "intval_fn",
+    "echo intval(\"42abc\");"
+  ],
+  [
+    "floatval_fn",
+    "echo floatval(\"3.5\") + 1;"
+  ],
+  [
+    "strval_fn",
+    "echo strval(123) . \"x\";"
+  ],
+  [
+    "is_array_fn",
+    "echo is_array([]) ? \"y\" : \"n\";"
+  ],
+  [
+    "gettype_fn",
+    "echo gettype(1.5);"
+  ],
+  [
+    "cast_int",
+    "echo (int) \"42abc\";"
+  ],
+  [
+    "cast_float",
+    "echo (float) \"3.5\";"
+  ],
+  [
+    "cast_string",
+    "echo (string) 42;"
+  ],
+  [
+    "cast_bool",
+    "echo (bool) 1 ? \"y\" : \"n\";"
+  ],
+  [
+    "cast_array",
+    "echo count((array) 5);"
+  ],
+  [
+    "abs_fn",
+    "echo abs(-5);"
+  ],
+  [
+    "max_fn",
+    "echo max(1, 5, 3);"
+  ],
+  [
+    "min_fn",
+    "echo min(4, 2, 8);"
+  ],
+  [
+    "floor_fn",
+    "echo floor(3.7);"
+  ],
+  [
+    "ceil_fn",
+    "echo ceil(3.2);"
+  ],
+  [
+    "round_fn",
+    "echo round(3.5);"
+  ],
+  [
+    "pow_fn",
+    "echo pow(2, 10);"
+  ],
+  [
+    "sqrt_fn",
+    "echo sqrt(16);"
+  ],
+  [
+    "rand_det",
+    "echo mt_rand(1, 1);"
+  ],
+  [
+    "class_basic",
+    "class C1 { public $x = 1; public function get() { return $this->x; } } $c = new C1(); echo $c->get();"
+  ],
+  [
+    "class_ctor",
+    "class C2 { public $x; public function __construct($v) { $this->x = $v; } } $c = new C2(7); echo $c->x;"
+  ],
+  [
+    "class_static",
+    "class C3 { public static $s = 0; public static function inc() { self::$s++; } } C3::inc(); C3::inc(); echo C3::$s;"
+  ],
+  [
+    "class_const",
+    "class C4 { const K = 5; } echo C4::K;"
+  ],
+  [
+    "class_inherit",
+    "class A5 { public function f() { return \"A\"; } } class B5 extends A5 { public function f() { return \"B\" . parent::f(); } } echo (new B5())->f();"
+  ],
+  [
+    "class_visibility",
+    "class C6 { private $p = 1; public function get() { return $this->p; } } $c = new C6(); echo $c->get();"
+  ],
+  [
+    "class_toString",
+    "class C7 { public function __toString() { return \"STR\"; } } echo new C7();"
+  ],
+  [
+    "instanceof_op",
+    "class A8 {} class B8 extends A8 {} $b = new B8(); echo $b instanceof A8 ? \"y\" : \"n\";"
+  ],
+  [
+    "class_method_chain",
+    "class C9 { public function f() { return $this; } public function g() { return \"G\"; } } echo (new C9())->f()->g();"
+  ],
+  [
+    "class_static_call",
+    "class C10 { public static function s($x) { return $x * 2; } } echo C10::s(4);"
+  ],
+  [
+    "class_null_safe",
+    "class C11 { public $p = null; } $c = new C11(); echo $c->p?->x ?? \"none\";"
+  ],
+  [
+    "class_isset_prop",
+    "class C12 { public $p = 1; } $c = new C12(); echo isset($c->p) ? \"y\" : \"n\";"
+  ],
+  [
+    "class_unset_prop",
+    "class C13 { public $p = 1; } $c = new C13(); unset($c->p); echo isset($c->p) ? \"y\" : \"n\";"
+  ],
+  [
+    "clone_op",
+    "class C14 { public $x = 1; } $a = new C14(); $b = clone $a; $b->x = 2; echo $a->x . $b->x;"
+  ],
+  [
+    "func_default",
+    "function f1($a = 5) { return $a; } echo f1();"
+  ],
+  [
+    "func_default_multi",
+    "function f2($a, $b = 2, $c = \"x\") { return $a . $b . $c; } echo f2(1);"
+  ],
+  [
+    "func_named_arg",
+    "function f3($a, $b) { return $a . $b; } echo f3(b: \"B\", a: \"A\");"
+  ],
+  [
+    "func_variadic",
+    "function f4(...$args) { return count($args); } echo f4(1, 2, 3);"
+  ],
+  [
+    "func_variadic_use",
+    "function sum5(...$ns) { $s = 0; foreach ($ns as $n) { $s += $n; } return $s; } echo sum5(1, 2, 3, 4);"
+  ],
+  [
+    "func_static_var",
+    "function c5() { static $n = 0; $n++; return $n; } echo c5() . c5() . c5();"
+  ],
+  [
+    "func_recursion",
+    "function fib6($n) { return $n < 2 ? $n : fib6($n-1) + fib6($n-2); } echo fib6(10);"
+  ],
+  [
+    "func_closure",
+    "$f = function ($x) { return $x * 2; }; echo $f(4);"
+  ],
+  [
+    "func_closure_use",
+    "$m = 3; $f = function ($x) use ($m) { return $x * $m; }; echo $f(4);"
+  ],
+  [
+    "func_arrow",
+    "$f = fn ($x) => $x * 2; echo $f(4);"
+  ],
+  [
+    "func_arrow_capture",
+    "$m = 3; $f = fn ($x) => $x * $m; echo $f(4);"
+  ],
+  [
+    "func_higher_order",
+    "function apply7($f, $x) { return $f($x); } echo apply7(function ($n) { return $n + 1; }, 4);"
+  ],
+  [
+    "func_nested_call",
+    "function d8($x) { return $x * 2; } function t8($x) { return $x + 1; } echo d8(t8(5));"
+  ],
+  [
+    "func_null_return",
+    "function f9() { return; } var_dump(f9());"
+  ],
+  [
+    "func_void",
+    "function f10() { } echo \"ok\";"
+  ],
+  [
+    "define_const",
+    "define(\"MYCONST\", 42); echo MYCONST;"
+  ],
+  [
+    "const_stmt",
+    "const KK = 7; echo KK;"
+  ],
+  [
+    "const_fn",
+    "echo PHP_EOL === \"\\n\" ? \"nl\" : \"other\";"
+  ],
+  [
+    "const_math",
+    "echo PHP_INT_SIZE;"
+  ],
+  [
+    "magic_const",
+    "echo basename(__FILE__);"
+  ],
+  [
+    "switch_fall",
+    "$x = 2; switch ($x) { case 1: echo \"a\"; break; case 2: echo \"b\"; case 3: echo \"c\"; break; default: echo \"d\"; }"
+  ],
+  [
+    "switch_str",
+    "$x = \"y\"; switch ($x) { case \"x\": echo \"X\"; break; case \"y\": echo \"Y\"; break; }"
+  ],
+  [
+    "switch_no_break",
+    "$x = 1; switch ($x) { case 1: echo \"one\"; default: echo \"def\"; }"
+  ],
+  [
+    "break_level",
+    "for ($i = 0; $i < 3; $i++) { for ($j = 0; $j < 3; $j++) { if ($j == 1) { break 2; } echo \"$i$j\"; } }"
+  ],
+  [
+    "continue_level",
+    "for ($i = 0; $i < 3; $i++) { for ($j = 0; $j < 3; $j++) { if ($j == 1) { continue 2; } echo \"$i$j\"; } }"
+  ],
+  [
+    "do_while",
+    "$i = 0; do { echo $i; $i++; } while ($i < 3);"
+  ],
+  [
+    "goto_stmt",
+    "goto end; echo \"skip\"; end: echo \"done\";"
+  ],
+  [
+    "nested_loops_break",
+    "$r = \"\"; for ($i = 0; $i < 3; $i++) { if ($i == 1) { break; } $r .= $i; } echo $r;"
+  ],
+  [
+    "nested_loops_continue",
+    "$r = \"\"; for ($i = 0; $i < 3; $i++) { if ($i == 1) { continue; } $r .= $i; } echo $r;"
+  ],
+  [
+    "if_alt",
+    "$x = 1; if ($x): echo \"a\"; endif;"
+  ],
+  [
+    "while_alt",
+    "$i = 0; while ($i < 2): echo $i; $i++; endwhile;"
+  ],
+  [
+    "for_alt",
+    "for ($i = 0; $i < 2; $i++): echo $i; endfor;"
+  ],
+  [
+    "foreach_alt",
+    "$a = [1]; foreach ($a as $v): echo $v; endforeach;"
+  ],
+  [
+    "switch_alt",
+    "$x = 1; switch ($x): case 1: echo \"a\"; break; endswitch;"
+  ],
+  [
+    "suppress",
+    "$x = @$undefined_var; echo \"ok\";"
+  ],
+  [
+    "empty_fn",
+    "$x = 0; echo empty($x) ? \"e\" : \"f\";"
+  ],
+  [
+    "isset_multi",
+    "$a = 1; echo isset($a, $b) ? \"both\" : \"no\";"
+  ],
+  [
+    "unset_var",
+    "$a = 1; unset($a); echo isset($a) ? \"y\" : \"n\";"
+  ],
+  [
+    "unset_arr",
+    "$a = [1, 2, 3]; unset($a[1]); echo count($a);"
+  ],
+  [
+    "compact_fn",
+    "$x = 1; $y = 2; $r = compact(\"x\", \"y\"); echo $r[\"x\"] . $r[\"y\"];"
+  ],
+  [
+    "global_stmt",
+    "$g = 1; function fg() { global $g; $g = 2; } fg(); echo $g;"
+  ],
+  [
+    "static_prop",
+    "class C15 { public static $n = 0; } C15::$n = 5; echo C15::$n;"
+  ],
+  [
+    "exit_stmt",
+    "echo \"before\"; exit;"
+  ],
+  [
+    "die_fn",
+    "echo \"before\"; die;"
+  ],
+  [
+    "eval_stmt",
+    "eval(\"echo 1+1;\");"
+  ],
+  [
+    "time_fn",
+    "echo time() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "strlen_big",
+    "$s = \"\"; for ($i = 0; $i < 100; $i++) { $s .= \"x\"; } echo strlen($s);"
+  ],
+  [
+    "php_sapi",
+    "echo PHP_SAPI === \"cli\" ? \"cli\" : \"web\";"
+  ],
+  [
+    "version_fn",
+    "echo version_compare(PHP_VERSION, \"5.0.0\") ? \"new\" : \"old\";"
+  ],
+  [
+    "json_fn",
+    "echo json_encode([\"a\" => 1]);"
+  ],
+  [
+    "json_decode_fn",
+    "$d = json_decode(\"{\\\"a\\\":1}\", true); echo $d[\"a\"];"
+  ],
+  [
+    "array_keys_fn",
+    "$ks = array_keys([\"a\" => 1, \"b\" => 2]); echo $ks[0] . $ks[1];"
+  ],
+  [
+    "array_values_fn",
+    "$vs = array_values([\"a\" => 1, \"b\" => 2]); echo $vs[0] . $vs[1];"
+  ],
+  [
+    "in_array_fn",
+    "echo in_array(2, [1, 2, 3]) ? \"y\" : \"n\";"
+  ],
+  [
+    "array_search_fn",
+    "echo array_search(3, [1, 2, 3]);"
+  ],
+  [
+    "array_map_fn",
+    "$r = array_map(function ($x) { return $x * 2; }, [1, 2]); echo $r[0] . $r[1];"
+  ],
+  [
+    "array_filter_fn",
+    "$r = array_filter([1, 2, 3], function ($x) { return $x > 1; }); echo count($r);"
+  ],
+  [
+    "usort_fn",
+    "$a = [3, 1, 2]; usort($a, function ($x, $y) { return $x - $y; }); echo $a[0] . $a[1] . $a[2];"
+  ],
+  [
+    "array_slice_fn",
+    "echo count(array_slice([1, 2, 3, 4], 1, 2));"
+  ],
+  [
+    "array_reverse_fn",
+    "$r = array_reverse([1, 2, 3]); echo $r[0];"
+  ],
+  [
+    "array_sum_fn",
+    "echo array_sum([1, 2, 3]);"
+  ],
+  [
+    "array_product_fn",
+    "echo array_product([2, 3, 4]);"
+  ],
+  [
+    "range_fn",
+    "echo count(range(1, 10));"
+  ],
+  [
+    "str_split_fn",
+    "echo count(str_split(\"abc\"));"
+  ],
+  [
+    "strpos_fn",
+    "echo strpos(\"hello\", \"ll\");"
+  ],
+  [
+    "strtolower_fn",
+    "echo strtolower(\"ABC\");"
+  ],
+  [
+    "strtoupper_fn",
+    "echo strtoupper(\"abc\");"
+  ],
+  [
+    "ucfirst_fn",
+    "echo ucfirst(\"abc\");"
+  ],
+  [
+    "number_format_fn",
+    "echo number_format(1234.5678, 2);"
+  ],
+  [
+    "is_numeric_fn",
+    "echo is_numeric(\"42\") ? \"y\" : \"n\";"
+  ],
+  [
+    "intdiv_fn",
+    "echo intdiv(7, 2);"
+  ],
+  [
+    "fmod_fn",
+    "echo fmod(7.5, 2);"
+  ],
+  [
+    "min_max_arr",
+    "echo min([3, 1, 2]) . max([3, 1, 2]);"
+  ],
+  [
+    "pi_const",
+    "echo pi() > 3.14 ? \"y\" : \"n\";"
+  ],
+  [
+    "sprintf_args",
+    "echo sprintf(\"%s-%s-%d\", \"a\", \"b\", 3);"
+  ],
+  [
+    "vsprintf_fn",
+    "echo vsprintf(\"%d-%d\", [1, 2]);"
+  ],
+  [
+    "str_pad_fn",
+    "echo str_pad(\"5\", 3, \"0\", STR_PAD_LEFT);"
+  ],
+  [
+    "lcfirst_fn",
+    "echo lcfirst(\"ABC\");"
+  ],
+  [
+    "ucwords_fn",
+    "echo ucwords(\"hello world\");"
+  ],
+  [
+    "nl2br_fn",
+    "echo nl2br(\"a\\nb\") === \"a<br />\\nb\" || nl2br(\"a\\nb\") === \"a<br>\\nb\" ? \"y\" : \"n\";"
+  ],
+  [
+    "strrev_fn",
+    "echo strrev(\"abc\");"
+  ],
+  [
+    "ord_fn",
+    "echo ord(\"A\");"
+  ],
+  [
+    "chr_fn",
+    "echo chr(66);"
+  ],
+  [
+    "bin2hex_fn",
+    "echo bin2hex(\"ab\");"
+  ],
+  [
+    "hex2bin_fn",
+    "echo hex2bin(\"6162\");"
+  ],
+  [
+    "strcmp_fn",
+    "echo strcmp(\"a\", \"b\") < 0 ? \"lt\" : \"ge\";"
+  ],
+  [
+    "strcasecmp_fn",
+    "echo strcasecmp(\"A\", \"a\") == 0 ? \"eq\" : \"ne\";"
+  ],
+  [
+    "substr_count_fn",
+    "echo substr_count(\"aaa\", \"a\");"
+  ],
+  [
+    "strstr_fn",
+    "echo strstr(\"hello\", \"e\");"
+  ],
+  [
+    "strpos_off",
+    "echo strpos(\"abcabc\", \"a\", 1);"
+  ],
+  [
+    "array_key_exists_fn",
+    "echo array_key_exists(\"k\", [\"k\" => 1]) ? \"y\" : \"n\";"
+  ],
+  [
+    "array_flip_fn",
+    "$f = array_flip([\"a\", \"b\"]); echo $f[\"a\"];"
+  ],
+  [
+    "array_unique_fn",
+    "echo count(array_unique([1, 1, 2]));"
+  ],
+  [
+    "array_combine_fn",
+    "$c = array_combine([\"a\", \"b\"], [1, 2]); echo $c[\"a\"] . $c[\"b\"];"
+  ],
+  [
+    "array_fill_fn",
+    "echo count(array_fill(0, 3, \"x\"));"
+  ],
+  [
+    "array_pad_fn",
+    "echo count(array_pad([1], 3, 0));"
+  ],
+  [
+    "array_shift_fn",
+    "$a = [1, 2]; array_shift($a); echo $a[0];"
+  ],
+  [
+    "array_unshift_fn",
+    "$a = [1, 2]; array_unshift($a, 0); echo $a[0];"
+  ],
+  [
+    "array_pop_fn",
+    "$a = [1, 2]; array_pop($a); echo count($a);"
+  ],
+  [
+    "array_push_fn",
+    "$a = [1]; array_push($a, 2, 3); echo count($a);"
+  ],
+  [
+    "sort_fn",
+    "$a = [3, 1, 2]; sort($a); echo $a[0] . $a[1] . $a[2];"
+  ],
+  [
+    "rsort_fn",
+    "$a = [1, 3, 2]; rsort($a); echo $a[0] . $a[1] . $a[2];"
+  ],
+  [
+    "ksort_fn",
+    "$a = [\"b\" => 1, \"a\" => 2]; ksort($a); $ks = implode(array_keys($a)); echo $ks;"
+  ],
+  [
+    "array_reduce_fn",
+    "echo array_reduce([1, 2, 3], function ($c, $x) { return $c + $x; }, 0);"
+  ],
+  [
+    "array_walk_fn",
+    "$a = [1, 2]; array_walk($a, function (&$v) { $v *= 2; }); echo $a[0] . $a[1];"
+  ],
+  [
+    "array_column_fn",
+    "$r = array_column([[\"id\" => 1], [\"id\" => 2]], \"id\"); echo $r[0] . $r[1];"
+  ],
+  [
+    "iterator_to_array_fn",
+    "echo count(iterator_to_array(new ArrayIterator([1, 2])));"
+  ],
+  [
+    "printf_fn",
+    "printf(\"%d-%d\", 1, 2);"
+  ],
+  [
+    "print_fn",
+    "print(\"hi\");"
+  ],
+  [
+    "var_dump_fn",
+    "var_dump(1);"
+  ],
+  [
+    "var_export_fn",
+    "echo var_export(42, true);"
+  ],
+  [
+    "serialize_fn",
+    "echo strlen(serialize([1, 2])) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "uniqid_det",
+    "echo strlen(uniqid()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "md5_fn",
+    "echo md5(\"abc\") === \"900150983cd24fb0d6963f7d28e17f72\" ? \"y\" : \"n\";"
+  ],
+  [
+    "sha1_fn",
+    "echo sha1(\"abc\") === \"a9993e364706816aba3e25717850c26c9cd0d89d\" ? \"y\" : \"n\";"
+  ],
+  [
+    "crc32_fn",
+    "echo crc32(\"abc\") > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "base64_fn",
+    "echo base64_encode(\"hi\");"
+  ],
+  [
+    "base64_decode_fn",
+    "echo base64_decode(\"aGk=\");"
+  ],
+  [
+    "urlencode_fn",
+    "echo urlencode(\"a b\") === \"a+b\" || urlencode(\"a b\") === \"a%20b\" ? \"y\" : \"n\";"
+  ],
+  [
+    "rawurlencode_fn",
+    "echo rawurlencode(\"a b\");"
+  ],
+  [
+    "htmlspecialchars_fn",
+    "echo htmlspecialchars(\"<b>\");"
+  ],
+  [
+    "htmlspecialchars_decode_fn",
+    "echo htmlspecialchars_decode(htmlspecialchars(\"<x>\")) === \"<x>\" ? \"y\" : \"n\";"
+  ],
+  [
+    "filter_var_fn",
+    "echo filter_var(\"a@b.com\", FILTER_VALIDATE_EMAIL) ? \"y\" : \"n\";"
+  ],
+  [
+    "preg_match_fn",
+    "echo preg_match(\"/\\d+\", \"abc123\") ? \"y\" : \"n\";"
+  ],
+  [
+    "preg_replace_fn",
+    "echo preg_replace(\"/\\d/\", \"x\", \"a1b2\");"
+  ],
+  [
+    "preg_split_fn",
+    "echo count(preg_split(\"/,/\", \"a,b,c\"));"
+  ],
+  [
+    "preg_quote_fn",
+    "echo preg_quote(\"a.b\") === \"a\\.b\" ? \"y\" : \"n\";"
+  ],
+  [
+    "str_word_count_fn",
+    "echo str_word_count(\"hello world\");"
+  ],
+  [
+    "levenshtein_fn",
+    "echo levenshtein(\"abc\", \"abd\");"
+  ],
+  [
+    "similar_text_fn",
+    "similar_text(\"abc\", \"abd\", $p); echo $p > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "soundex_fn",
+    "echo soundex(\"Robert\");"
+  ],
+  [
+    "metaphone_det",
+    "echo strlen(metaphone(\"hello\")) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "checkdate_fn",
+    "echo checkdate(2, 29, 2020) ? \"y\" : \"n\";"
+  ],
+  [
+    "mktime_det",
+    "echo mktime(0, 0, 0, 1, 1, 2020) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "date_det",
+    "echo date(\"Y\") > 2000 ? \"y\" : \"n\";"
+  ],
+  [
+    "strtotime_det",
+    "echo strtotime(\"2020-01-01\") > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "getdate_det",
+    "$d = getdate(0); echo $d[\"seconds\"];"
+  ],
+  [
+    "gmdate_det",
+    "echo gmdate(\"Y\") > 2000 ? \"y\" : \"n\";"
+  ],
+  [
+    "idate_det",
+    "echo idate(\"Y\") > 2000 ? \"y\" : \"n\";"
+  ],
+  [
+    "microtime_det",
+    "echo microtime(true) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "hrtime_det",
+    "echo hrtime(true) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "pathinfo_fn",
+    "$p = pathinfo(\"/a/b.txt\"); echo $p[\"basename\"];"
+  ],
+  [
+    "basename_fn",
+    "echo basename(\"/a/b.txt\");"
+  ],
+  [
+    "dirname_fn",
+    "echo dirname(\"/a/b.txt\");"
+  ],
+  [
+    "sys_get_temp_dir_fn",
+    "echo strlen(sys_get_temp_dir()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "memory_get_usage_fn",
+    "echo memory_get_usage() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "memory_get_peak_usage_fn",
+    "echo memory_get_peak_usage() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "ini_get_fn",
+    "echo strlen(ini_get(\"memory_limit\")) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "function_exists_fn",
+    "echo function_exists(\"strlen\") ? \"y\" : \"n\";"
+  ],
+  [
+    "class_exists_fn",
+    "echo class_exists(\"Exception\") ? \"y\" : \"n\";"
+  ],
+  [
+    "method_exists_fn",
+    "echo method_exists(\"Exception\", \"getMessage\") ? \"y\" : \"n\";"
+  ],
+  [
+    "property_exists_fn",
+    "echo property_exists(\"Exception\", \"message\") ? \"y\" : \"n\";"
+  ],
+  [
+    "is_callable_fn",
+    "echo is_callable(\"strlen\") ? \"y\" : \"n\";"
+  ],
+  [
+    "get_defined_vars_fn",
+    "echo count(get_defined_vars()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "get_defined_functions_fn",
+    "echo count(get_defined_functions()[\"internal\"]) > 100 ? \"y\" : \"n\";"
+  ],
+  [
+    "get_defined_constants_fn",
+    "echo count(get_defined_constants()) > 100 ? \"y\" : \"n\";"
+  ],
+  [
+    "get_declared_classes_fn",
+    "echo count(get_declared_classes()) > 10 ? \"y\" : \"n\";"
+  ],
+  [
+    "extension_loaded_fn",
+    "echo extension_loaded(\"standard\") ? \"y\" : \"n\";"
+  ],
+  [
+    "get_loaded_extensions_fn",
+    "echo count(get_loaded_extensions()) > 5 ? \"y\" : \"n\";"
+  ],
+  [
+    "phpversion_fn",
+    "echo phpversion() === PHP_VERSION ? \"y\" : \"n\";"
+  ],
+  [
+    "php_sapi_name_fn",
+    "echo php_sapi_name() === \"cli\" ? \"y\" : \"n\";"
+  ],
+  [
+    "php_uname_fn",
+    "echo strlen(php_uname()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "get_current_user_fn",
+    "echo strlen(get_current_user()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "getmypid_fn",
+    "echo getmypid() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "getmyuid_fn",
+    "echo getmyuid() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "getmygid_fn",
+    "echo getmygid() >= 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "lcg_value_det",
+    "echo lcg_value() >= 0 && lcg_value() <= 1 ? \"y\" : \"n\";"
+  ],
+  [
+    "mt_getrandmax_fn",
+    "echo mt_getrandmax() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "rand_fn",
+    "echo rand(1, 1);"
+  ],
+  [
+    "getrandmax_fn",
+    "echo getrandmax() > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "random_int_det",
+    "echo random_int(1, 1);"
+  ],
+  [
+    "random_bytes_det",
+    "echo strlen(random_bytes(4));"
+  ],
+  [
+    "hash_fn",
+    "echo hash(\"crc32\", \"abc\") === hash(\"crc32\", \"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_algos_fn",
+    "echo count(hash_algos()) > 5 ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_hmac_det",
+    "echo strlen(hash_hmac(\"sha256\", \"a\", \"k\")) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "password_algos_fn",
+    "echo count(password_algos()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_digit_fn",
+    "echo ctype_digit(\"123\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_alpha_fn",
+    "echo ctype_alpha(\"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_alnum_fn",
+    "echo ctype_alnum(\"abc123\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_space_fn",
+    "echo ctype_space(\"  \") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_upper_fn",
+    "echo ctype_upper(\"ABC\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_lower_fn",
+    "echo ctype_lower(\"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_punct_fn",
+    "echo ctype_punct(\"!@#\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_xdigit_fn",
+    "echo ctype_xdigit(\"abc123\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_print_fn",
+    "echo ctype_print(\"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_graph_fn",
+    "echo ctype_graph(\"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "ctype_cntrl_fn",
+    "echo ctype_cntrl(\"\\n\") ? \"y\" : \"n\";"
+  ],
+  [
+    "strcoll_det",
+    "echo strcoll(\"a\", \"b\") < 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "strcspn_fn",
+    "echo strcspn(\"abc\", \"c\");"
+  ],
+  [
+    "strspn_fn",
+    "echo strspn(\"abc\", \"ab\");"
+  ],
+  [
+    "strpbrk_fn",
+    "echo strpbrk(\"abc\", \"c\");"
+  ],
+  [
+    "strrpos_fn",
+    "echo strrpos(\"abcabc\", \"a\");"
+  ],
+  [
+    "strripos_fn",
+    "echo strripos(\"abcabc\", \"A\");"
+  ],
+  [
+    "stripos_fn",
+    "echo stripos(\"ABCabc\", \"B\");"
+  ],
+  [
+    "strncmp_fn",
+    "echo strncmp(\"abc\", \"abd\", 2) == 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "strncasecmp_fn",
+    "echo strncasecmp(\"ABC\", \"abc\", 2) == 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "substr_compare_fn",
+    "echo substr_compare(\"abc\", \"abd\", 2) == 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "substr_replace_fn",
+    "echo substr_replace(\"abc\", \"X\", 1, 1);"
+  ],
+  [
+    "str_ireplace_fn",
+    "echo str_ireplace(\"A\", \"x\", \"aAbA\");"
+  ],
+  [
+    "str_replace_count_fn",
+    "echo str_replace(\"a\", \"b\", \"aaa\", $c) . $c;"
+  ],
+  [
+    "strtr_fn",
+    "echo strtr(\"abc\", [\"a\" => \"x\", \"b\" => \"y\"]);"
+  ],
+  [
+    "wordwrap_fn",
+    "echo wordwrap(\"abcdefgh\", 3, \"\\n\", true) === \"abc\\ndef\\ngh\" ? \"y\" : \"n\";"
+  ],
+  [
+    "chunk_split_fn",
+    "echo chunk_split(\"abcd\", 2);"
+  ],
+  [
+    "addslashes_fn",
+    "echo addslashes(\"a\\\"b\");"
+  ],
+  [
+    "stripslashes_fn",
+    "echo stripslashes(\"a\\\\b\");"
+  ],
+  [
+    "stripcslashes_fn",
+    "echo stripcslashes(\"a\\\\b\");"
+  ],
+  [
+    "addcslashes_fn",
+    "echo strlen(addcslashes(\"ab\", \"a\")) > 1 ? \"y\" : \"n\";"
+  ],
+  [
+    "html_entity_decode_fn",
+    "echo html_entity_decode(\"&lt;\") === \"<\" ? \"y\" : \"n\";"
+  ],
+  [
+    "htmlentities_fn",
+    "echo htmlentities(\"<\") === \"&lt;\" ? \"y\" : \"n\";"
+  ],
+  [
+    "htmlspecialchars_flags_fn",
+    "echo htmlspecialchars(\"<\", ENT_QUOTES) === \"&lt;\" ? \"y\" : \"n\";"
+  ],
+  [
+    "heredoc_basic",
+    "$n = 5; $s = <<<EOT\nhello $n\nEOT;\necho $s;"
+  ],
+  [
+    "heredoc_indent",
+    "$s = <<<EOT\n    indented\n    EOT;\necho $s;"
+  ],
+  [
+    "nowdoc_basic",
+    "$s = <<<'EOT'\nno $interp\nEOT;\necho $s;"
+  ],
+  [
+    "heredoc_func",
+    "function fh() { return <<<EOT\nline\nEOT;\n} echo fh();"
+  ],
+  [
+    "numeric_sep",
+    "echo 1_000_000;"
+  ],
+  [
+    "numeric_hex",
+    "echo 0xFF;"
+  ],
+  [
+    "numeric_oct",
+    "echo 0o17;"
+  ],
+  [
+    "numeric_bin",
+    "echo 0b101;"
+  ],
+  [
+    "numeric_exp",
+    "echo 1.5e3;"
+  ],
+  [
+    "numeric_float_dot",
+    "echo 1. . 5;"
+  ],
+  [
+    "str_escape",
+    "echo \"a\\tb\\nc\";"
+  ],
+  [
+    "str_single_quote",
+    "echo 'no $interp';"
+  ],
+  [
+    "str_concat_num",
+    "echo \"n=\" . 42;"
+  ],
+  [
+    "unicode_escape",
+    "echo \"\\u{1F600}\";"
+  ],
+  [
+    "negative_num",
+    "echo -5 + -3;"
+  ],
+  [
+    "float_prec",
+    "echo 0.1 + 0.2;"
+  ],
+  [
+    "int_overflow",
+    "echo PHP_INT_MAX;"
+  ],
+  [
+    "str_repeat_zero",
+    "echo str_repeat(\"x\", 0) === \"\" ? \"y\" : \"n\";"
+  ],
+  [
+    "empty_array",
+    "$a = []; echo count($a);"
+  ],
+  [
+    "assoc_mixed",
+    "$a = [\"a\" => 1, 2, \"b\" => 3]; echo count($a);"
+  ],
+  [
+    "nested_ternary_short",
+    "echo 0 ?: 0 ?: \"z\";"
+  ],
+  [
+    "concat_prec",
+    "echo 1 . 2 + 3;"
+  ],
+  [
+    "assign_in_cond",
+    "if ($x = 5) { echo $x; }"
+  ],
+  [
+    "assign_chain",
+    "$a = $b = $c = 1; echo $a . $b . $c;"
+  ],
+  [
+    "compound_index",
+    "$a = [\"x\" => [\"y\" => 5]]; echo $a[\"x\"][\"y\"];"
+  ],
+  [
+    "chained_calls",
+    "echo strlen(strtoupper(\"abc\"));"
+  ],
+  [
+    "nested_func",
+    "function of($x) { return $x + 1; } function ff($x) { return $x * 2; } echo of(ff(3));"
+  ],
+  [
+    "multi_assign_ref",
+    "$a = [1]; $b = &$a[0]; $b = 9; echo $a[0];"
+  ],
+  [
+    "static_call_var",
+    "class C16 { public static function s() { return \"S\"; } } $m = \"s\"; echo C16::$m();"
+  ],
+  [
+    "dynamic_func",
+    "function fd() { return \"D\"; } $f = \"fd\"; echo $f();"
+  ],
+  [
+    "dynamic_class",
+    "class C17 { public $v = 1; } $cn = \"C17\"; $o = new $cn(); echo $o->v;"
+  ],
+  [
+    "dynamic_prop",
+    "$o = new stdClass(); $p = \"x\"; $o->$p = 5; echo $o->x;"
+  ],
+  [
+    "dynamic_method",
+    "class C18 { public function m() { return \"M\"; } } $o = new C18(); $f = \"m\"; echo $o->$f();"
+  ],
+  [
+    "stdclass_prop",
+    "$o = new stdClass(); $o->a = 1; echo $o->a;"
+  ],
+  [
+    "stdclass_construct",
+    "$o = new stdClass(); $o->a = 1; echo isset($o->a) ? \"y\" : \"n\";"
+  ],
+  [
+    "exception_try",
+    "try { throw new Exception(\"e\"); } catch (Exception $e) { echo $e->getMessage(); }"
+  ],
+  [
+    "exception_finally",
+    "try { echo \"t\"; } finally { echo \"f\"; }"
+  ],
+  [
+    "exception_type",
+    "try { throw new TypeError(\"te\"); } catch (TypeError $e) { echo \"caught\"; }"
+  ],
+  [
+    "exception_rethrow",
+    "function g1() { throw new Exception(\"x\"); } try { g1(); } catch (Exception $e) { echo $e->getMessage(); }"
+  ],
+  [
+    "exception_multi_catch",
+    "try { throw new RuntimeException(\"r\"); } catch (LogicException $e) { echo \"L\"; } catch (RuntimeException $e) { echo \"R\"; }"
+  ],
+  [
+    "error_try",
+    "try { $x = 1 / 0; } catch (DivisionByZeroError $e) { echo \"dz\"; }"
+  ],
+  [
+    "error_suppress",
+    "try { @$x = 1/0; echo \"ok\"; } catch (Throwable $t) { echo \"th\"; }"
+  ],
+  [
+    "interface_impl",
+    "interface I1 { public function f(); } class C19 implements I1 { public function f() { return \"F\"; } } $o = new C19(); echo $o->f();"
+  ],
+  [
+    "abstract_class",
+    "abstract class A20 { abstract public function f(); public function g() { return $this->f(); } } class C20 extends A20 { public function f() { return \"FF\"; } } echo (new C20())->g();"
+  ],
+  [
+    "final_class",
+    "final class C21 { public function f() { return \"F\"; } } echo (new C21())->f();"
+  ],
+  [
+    "final_method",
+    "class C22 { final public function f() { return \"F\"; } } echo (new C22())->f();"
+  ],
+  [
+    "trait_use",
+    "trait T23 { public function f() { return \"T\"; } } class C23 { use T23; } echo (new C23())->f();"
+  ],
+  [
+    "trait_conflict",
+    "trait T24a { public function f() { return \"a\"; } } trait T24b { public function f() { return \"b\"; } } class C24 { use T24a, T24b { T24a::f insteadof T24b; } } echo (new C24())->f();"
+  ],
+  [
+    "enum_basic",
+    "enum Suit: string { case Hearts = \"H\"; case Spades = \"S\"; } echo Suit::Hearts->value;"
+  ],
+  [
+    "readonly_prop",
+    "class C25 { public readonly int $x; public function __construct() { $this->x = 5; } } $o = new C25(); echo $o->x;"
+  ],
+  [
+    "match_expr",
+    "$x = 2; echo match($x) { 1 => \"a\", 2 => \"b\", default => \"c\" };"
+  ],
+  [
+    "match_strict",
+    "$x = \"2\"; echo match(true) { $x === 2 => \"int\", $x === \"2\" => \"str\" };"
+  ],
+  [
+    "match_no_default",
+    "$x = 9; echo match($x) { 1, 2 => \"lo\", 3, 4 => \"mid\", default => \"hi\" };"
+  ],
+  [
+    "named_class_const",
+    "class C26 { const A = 1; const B = 2; } echo C26::A + C26::B;"
+  ],
+  [
+    "class_const_expr",
+    "class C27 { const N = 2 * 3 + 1; } echo C27::N;"
+  ],
+  [
+    "interface_const",
+    "interface I2 { const K = 3; } echo I2::K;"
+  ],
+  [
+    "class_var_default_expr",
+    "class C28 { public $arr = [1, 2, 3]; } $o = new C28(); echo count($o->arr);"
+  ],
+  [
+    "promoted_prop",
+    "class C29 { public function __construct(public int $x = 5) {} } $o = new C29(); echo $o->x;"
+  ],
+  [
+    "first_class_callable",
+    "function f30() { return 1; } $f = f30(...); echo $f();"
+  ],
+  [
+    "null_coalesce_assign",
+    "$a = null; $a ??= 5; echo $a;"
+  ],
+  [
+    "arrow_fn_static",
+    "$f = static fn ($x) => $x + 1; echo $f(1);"
+  ],
+  [
+    "closure_bind_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "generator_fn",
+    "function g30() { yield 1; yield 2; } foreach (g30() as $v) { echo $v; }"
+  ],
+  [
+    "generator_send",
+    "function g31() { $v = yield 1; echo $v; yield 2; } $g = g31(); $g->current(); $g->send(\"S\");"
+  ],
+  [
+    "yield_from",
+    "function g32() { yield from [1, 2]; } foreach (g32() as $v) { echo $v; }"
+  ],
+  [
+    "yield_key",
+    "function g33() { yield \"k\" => \"v\"; } foreach (g33() as $k => $v) { echo $k . $v; }"
+  ],
+  [
+    "yield_expr",
+    "function g34() { $x = yield 1; return $x; } $g = g34(); $g->current(); echo $g->send(\"R\");"
+  ],
+  [
+    "str_contains_fn",
+    "echo str_contains(\"hello\", \"ell\") ? \"y\" : \"n\";"
+  ],
+  [
+    "str_starts_with_fn",
+    "echo str_starts_with(\"hello\", \"he\") ? \"y\" : \"n\";"
+  ],
+  [
+    "str_ends_with_fn",
+    "echo str_ends_with(\"hello\", \"lo\") ? \"y\" : \"n\";"
+  ],
+  [
+    "array_is_list_fn",
+    "echo array_is_list([1, 2]) ? \"y\" : \"n\";"
+  ],
+  [
+    "enum_from_fn",
+    "echo \"skip\";"
+  ],
+  [
+    "enum_try_from",
+    "echo \"skip\";"
+  ],
+  [
+    "fdiv_fn",
+    "echo fdiv(1, 0) === INF ? \"y\" : \"n\";"
+  ],
+  [
+    "get_debug_type_fn",
+    "echo get_debug_type(1) === \"int\" ? \"y\" : \"n\";"
+  ],
+  [
+    "array_key_first_fn",
+    "echo array_key_first([\"a\" => 1]);"
+  ],
+  [
+    "array_key_last_fn",
+    "echo array_key_last([\"a\" => 1, \"b\" => 2]);"
+  ],
+  [
+    "str_increment",
+    "$s = \"Az\"; $s++; echo $s;"
+  ],
+  [
+    "str_decrement",
+    "$s = \"Az\"; $s--; echo $s;"
+  ],
+  [
+    "float_to_int",
+    "echo (int) 3.99;"
+  ],
+  [
+    "int_to_float",
+    "echo (float) 3;"
+  ],
+  [
+    "bool_to_int",
+    "echo (int) true;"
+  ],
+  [
+    "null_to_int",
+    "echo (int) null;"
+  ],
+  [
+    "null_to_str",
+    "echo (string) null;"
+  ],
+  [
+    "null_to_bool",
+    "echo (bool) null ? \"y\" : \"n\";"
+  ],
+  [
+    "arr_to_bool",
+    "echo (bool) [] ? \"y\" : \"n\";"
+  ],
+  [
+    "str_to_bool",
+    "echo (bool) \"0\" ? \"y\" : \"n\";"
+  ],
+  [
+    "str_to_bool_nonempty",
+    "echo (bool) \"a\" ? \"y\" : \"n\";"
+  ],
+  [
+    "int_div_zero_mod",
+    "echo 10 % 0;"
+  ],
+  [
+    "int_div_zero_div",
+    "echo 10 / 0;"
+  ],
+  [
+    "neg_mod",
+    "echo -7 % 3;"
+  ],
+  [
+    "float_mod",
+    "echo 7.5 % 2;"
+  ],
+  [
+    "big_int_add",
+    "echo 9007199254740992 + 1;"
+  ],
+  [
+    "hex_add",
+    "echo 0x10 + 0x01;"
+  ],
+  [
+    "scientific_notation",
+    "echo 1.2e-2;"
+  ],
+  [
+    "string_multiply_err",
+    "echo \"skip\";"
+  ],
+  [
+    "multi_line_str",
+    "echo \"line1\nline2\";"
+  ],
+  [
+    "heredoc_in_func_default",
+    "function f35($s = \"d\") { return $s; } echo f35();"
+  ],
+  [
+    "const_array_default",
+    "function f36($a = [1, 2]) { return count($a); } echo f36();"
+  ],
+  [
+    "const_null_default",
+    "function f37($a = null) { return $a === null ? \"n\" : \"x\"; } echo f37();"
+  ],
+  [
+    "by_ref_arg_call",
+    "function f38(&$x) { $x++; } $a = 5; f38($a); echo $a;"
+  ],
+  [
+    "spread_call",
+    "function f39(...$xs) { return array_sum($xs); } $a = [1, 2, 3]; echo f39(...$a);"
+  ],
+  [
+    "named_and_spread",
+    "function f40($a, $b) { return $a . $b; } $xs = [\"b\" => \"B\", \"a\" => \"A\"]; echo f40(...$xs);"
+  ],
+  [
+    "closure_static",
+    "$f = static function () { return 1; }; echo $f();"
+  ],
+  [
+    "closure_this",
+    "class C31 { private $v = 5; public function make() { return function () { return $this->v; }; } } $o = new C31(); $f = $o->make(); echo $f();"
+  ],
+  [
+    "closure_arrow_this",
+    "class C32 { private $v = 5; public function make() { return fn () => $this->v; } } $o = new C32(); $f = $o->make(); echo $f();"
+  ],
+  [
+    "static_closure_call",
+    "class C33 { public static function s() { return \"S\"; } public function m() { $f = static function () { return self::s(); }; return $f(); } } echo (new C33())->m();"
+  ],
+  [
+    "isset_on_call",
+    "echo \"skip\";"
+  ],
+  [
+    "empty_on_expr",
+    "echo empty(0) ? \"e\" : \"f\";"
+  ],
+  [
+    "list_in_foreach",
+    "$a = [[1, 2], [3, 4]]; foreach ($a as [$x, $y]) { echo $x . $y; }"
+  ],
+  [
+    "list_kv_in_foreach",
+    "$a = [[\"a\" => 1, \"b\" => 2]]; foreach ($a as [\"a\" => $x, \"b\" => $y]) { echo $x . $y; }"
+  ],
+  [
+    "global_in_func_two",
+    "$g = 1; function fg2() { global $g; $g += 10; } fg2(); fg2(); echo $g;"
+  ],
+  [
+    "static_var_arr",
+    "function f41() { static $a = []; $a[] = 1; return count($a); } echo f41() . f41();"
+  ],
+  [
+    "ref_static_var",
+    "function &f42() { static $n = 0; return $n; } $r = f42(); $r = 5; echo f42();"
+  ],
+  [
+    "nested_closure_capture",
+    "$a = 1; $f = function () use ($a) { $g = function () use ($a) { return $a; }; return $g(); }; echo $f();"
+  ],
+  [
+    "closure_by_ref_capture",
+    "$n = 0; $f = function () use (&$n) { $n++; }; $f(); $f(); echo $n;"
+  ],
+  [
+    "multi_catch_finally",
+    "try { throw new Exception(\"m\"); } catch (Throwable $e) { echo $e->getMessage(); } finally { echo \"|\"; }"
+  ],
+  [
+    "catch_without_var",
+    "try { throw new Exception(\"nv\"); } catch (Exception) { echo \"caught\"; }"
+  ],
+  [
+    "throw_expr",
+    "echo \"skip\";"
+  ],
+  [
+    "finally_return",
+    "function f43() { try { return \"t\"; } finally { return \"f\"; } } echo f43();"
+  ],
+  [
+    "nested_try",
+    "try { try { throw new Exception(\"in\"); } catch (Exception $e) { throw new RuntimeException($e->getMessage()); } } catch (RuntimeException $e) { echo $e->getMessage(); }"
+  ],
+  [
+    "str_pad_both",
+    "echo str_pad(\"5\", 3, \"0\", STR_PAD_BOTH);"
+  ],
+  [
+    "substr_negative",
+    "echo substr(\"hello\", -3);"
+  ],
+  [
+    "substr_neg_len",
+    "echo substr(\"hello\", 1, -1);"
+  ],
+  [
+    "array_slice_neg",
+    "echo array_slice([1, 2, 3, 4], -2)[0];"
+  ],
+  [
+    "array_slice_assoc",
+    "echo array_slice([\"a\" => 1, \"b\" => 2, \"c\" => 3], 1, true)[\"c\"];"
+  ],
+  [
+    "array_slice_keep",
+    "$a = [\"a\" => 1, \"b\" => 2]; $s = array_slice($a, 1, preserve_keys: true); echo implode(array_keys($s));"
+  ],
+  [
+    "str_repeat_neg",
+    "echo \"skip\";"
+  ],
+  [
+    "pow_neg_exp",
+    "echo 2 ** -1;"
+  ],
+  [
+    "pow_frac",
+    "echo 4 ** 0.5;"
+  ],
+  [
+    "unary_minus_var",
+    "$x = 5; echo -$x;"
+  ],
+  [
+    "unary_plus",
+    "echo +\"5abc\";"
+  ],
+  [
+    "double_neg",
+    "$x = 5; echo - -$x;"
+  ],
+  [
+    "not_twice",
+    "echo !!1;"
+  ],
+  [
+    "bit_not_var",
+    "$x = 5; echo ~$x;"
+  ],
+  [
+    "concat_num_float",
+    "echo \"x\" . 1.5;"
+  ],
+  [
+    "concat_bool",
+    "echo \"x\" . true;"
+  ],
+  [
+    "concat_null",
+    "echo \"x\" . null;"
+  ],
+  [
+    "concat_array",
+    "echo \"x\" . [1, 2];"
+  ],
+  [
+    "concat_obj_str",
+    "echo \"x\" . new C34();"
+  ],
+  [
+    "string_class_str",
+    "class C34 { public function __toString() { return \"CS\"; } } echo \"pre-\" . new C34();"
+  ],
+  [
+    "eq_loose",
+    "var_dump(1 == \"1\");"
+  ],
+  [
+    "eq_strict",
+    "var_dump(1 === \"1\");"
+  ],
+  [
+    "eq_null_loose",
+    "var_dump(null == false);"
+  ],
+  [
+    "spaceship_num",
+    "echo 1 <=> 2;"
+  ],
+  [
+    "spaceship_str",
+    "echo \"b\" <=> \"a\";"
+  ],
+  [
+    "spaceship_arr",
+    "echo [1, 2] <=> [1, 3];"
+  ],
+  [
+    "cmp_str_num",
+    "echo \"10\" > \"9\" ? \"gt\" : \"lt\";"
+  ],
+  [
+    "cmp_num_str",
+    "echo 10 > 9 ? \"gt\" : \"lt\";"
+  ],
+  [
+    "null_coalesce_deep",
+    "$a = [\"x\" => [\"y\" => null]]; echo $a[\"x\"][\"y\"] ?? \"d\";"
+  ],
+  [
+    "chained_null_safe",
+    "echo \"skip\";"
+  ],
+  [
+    "short_assign_ternary",
+    "$x = 5; $x = $x ?: 0; echo $x;"
+  ],
+  [
+    "nested_ternary_chain",
+    "echo 2 > 1 ? (3 > 2 ? \"a\" : \"b\") : \"c\";"
+  ],
+  [
+    "in_condition",
+    "if (\"a\" in [\"a\"]) { echo \"skip\"; }"
+  ],
+  [
+    "array_key_exists_op",
+    "echo \"skip\";"
+  ],
+  [
+    "str_contains_op",
+    "echo \"skip\";"
+  ],
+  [
+    "multi_catch_same_var",
+    "try { throw new Exception(\"s\"); } catch (RuntimeException $e) { echo \"r\"; } catch (Exception $e) { echo \"e\"; }"
+  ],
+  [
+    "empty_string_coerce",
+    "echo \"\" + 1;"
+  ],
+  [
+    "string_int_add",
+    "echo \"5\" + \"3\";"
+  ],
+  [
+    "string_float_add",
+    "echo \"5.5\" + \"4.5\";"
+  ],
+  [
+    "leading_zero_str",
+    "echo \"007\" + 1;"
+  ],
+  [
+    "hex_str_add",
+    "echo \"0x1A\" + 1;"
+  ],
+  [
+    "octal_str_add",
+    "echo \"0o17\" + 1;"
+  ],
+  [
+    "binary_str_add",
+    "echo \"0b101\" + 1;"
+  ],
+  [
+    "numeric_str_inc",
+    "$s = \"5\"; $s++; echo $s;"
+  ],
+  [
+    "numeric_str_inc_float",
+    "$s = \"5.5\"; $s++; echo $s;"
+  ],
+  [
+    "bool_str_inc",
+    "echo \"skip\";"
+  ],
+  [
+    "float_str_inc",
+    "$s = \"5.5e2\"; $s++; echo $s;"
+  ],
+  [
+    "int_cast_str",
+    "echo (int) \"  42  \";"
+  ],
+  [
+    "float_cast_ws",
+    "echo (float) \"  3.5  \";"
+  ],
+  [
+    "bool_cast_str",
+    "echo (bool) \" 0\" ? \"y\" : \"n\";"
+  ],
+  [
+    "bool_cast_dot_zero",
+    "echo (bool) \"0.0\" ? \"y\" : \"n\";"
+  ],
+  [
+    "array_cast_str",
+    "echo (string) [1, 2];"
+  ],
+  [
+    "array_to_json",
+    "echo json_encode([1, [2, 3]]);"
+  ],
+  [
+    "assoc_to_json",
+    "echo json_encode([\"a\" => [\"b\" => 1]]);"
+  ],
+  [
+    "empty_arr_json",
+    "echo json_encode([]);"
+  ],
+  [
+    "empty_obj_json",
+    "echo json_encode(new stdClass());"
+  ],
+  [
+    "json_unescaped_slash",
+    "echo json_encode(\"a/b\", JSON_UNESCAPED_SLASHES);"
+  ],
+  [
+    "json_pretty",
+    "echo json_encode([1], JSON_PRETTY_PRINT) !== false ? \"y\" : \"n\";"
+  ],
+  [
+    "json_numeric_check",
+    "echo json_encode([\"1\"], JSON_NUMERIC_CHECK);"
+  ],
+  [
+    "json_partial",
+    "echo json_encode([\"a\" => 1, \"b\" => 2], JSON_PARTIAL_OUTPUT_ON_ERROR);"
+  ],
+  [
+    "json_decode_assoc",
+    "echo json_decode(\"[1,2,3]\", true)[1];"
+  ],
+  [
+    "json_decode_depth",
+    "echo json_decode(\"[[[[1]]]]\", true, 5)[0][0][0][0];"
+  ],
+  [
+    "json_last_error_fn",
+    "json_decode(\"{}\"); echo json_last_error() === JSON_ERROR_NONE ? \"y\" : \"n\";"
+  ],
+  [
+    "json_encode_depth",
+    "echo json_encode([[1]], 0, 512) !== false ? \"y\" : \"n\";"
+  ],
+  [
+    "serialize_roundtrip",
+    "$a = [1, \"x\" => 2]; echo unserialize(serialize($a))[\"x\"];"
+  ],
+  [
+    "serialize_obj",
+    "class C35 { public $x = 1; } $o = new C35(); $s = serialize($o); echo unserialize($s)->x;"
+  ],
+  [
+    "serialize_null",
+    "var_dump(unserialize(serialize(null)));"
+  ],
+  [
+    "serialize_bool",
+    "echo unserialize(serialize(true)) ? \"y\" : \"n\";"
+  ],
+  [
+    "serialize_int",
+    "echo unserialize(serialize(42));"
+  ],
+  [
+    "serialize_float",
+    "echo unserialize(serialize(3.5));"
+  ],
+  [
+    "serialize_str",
+    "echo unserialize(serialize(\"hi\"));"
+  ],
+  [
+    "serialize_arr_keys",
+    "echo count(unserialize(serialize([\"a\" => 1, \"b\" => 2])));"
+  ],
+  [
+    "serialize_nested",
+    "echo unserialize(serialize([\"a\" => [\"b\" => 5]]))[\"a\"][\"b\"];"
+  ],
+  [
+    "serialize_empty_arr",
+    "echo count(unserialize(serialize([])));"
+  ],
+  [
+    "serialize_unicode",
+    "echo unserialize(serialize(\"中文\")) === \"中文\" ? \"y\" : \"n\";"
+  ],
+  [
+    "serialize_long_str",
+    "echo strlen(unserialize(serialize(str_repeat(\"x\", 1000))));"
+  ],
+  [
+    "md5_raw",
+    "echo strlen(md5(\"abc\", true));"
+  ],
+  [
+    "sha1_raw",
+    "echo strlen(sha1(\"abc\", true));"
+  ],
+  [
+    "crc32b_fn",
+    "echo crc32(\"abc\") === crc32(\"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_copy_fn",
+    "echo hash(\"sha256\", \"abc\") === hash(\"sha256\", \"abc\") ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_file_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "hash_hmac_algos_fn",
+    "echo count(hash_hmac_algos()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_pbkdf2_det",
+    "echo strlen(hash_pbkdf2(\"sha256\", \"p\", \"s\", 1)) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "hash_equals_det",
+    "echo hash_equals(\"a\", \"a\") ? \"y\" : \"n\";"
+  ],
+  [
+    "password_hash_det",
+    "echo strlen(password_hash(\"p\", PASSWORD_DEFAULT)) > 10 ? \"y\" : \"n\";"
+  ],
+  [
+    "password_verify_det",
+    "echo password_verify(\"p\", password_hash(\"p\", PASSWORD_DEFAULT)) ? \"y\" : \"n\";"
+  ],
+  [
+    "random_bytes_len",
+    "echo strlen(random_bytes(16));"
+  ],
+  [
+    "random_int_range",
+    "echo random_int(5, 5);"
+  ],
+  [
+    "openssl_random_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "sodium_random_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "base64_encode_pad",
+    "echo base64_encode(\"a\");"
+  ],
+  [
+    "base64_decode_strict",
+    "echo base64_decode(\"aGk=\", true) === \"hi\" ? \"y\" : \"n\";"
+  ],
+  [
+    "base64_url",
+    "echo rtrim(strtr(base64_encode(str_repeat(\"x\", 5)), \"+/\", \"-_\"), \"=\");"
+  ],
+  [
+    "urlencode_special",
+    "echo urlencode(\"a=1&b=2\");"
+  ],
+  [
+    "rawurlencode_special",
+    "echo rawurlencode(\"a b/c\");"
+  ],
+  [
+    "http_build_query_fn",
+    "echo http_build_query([\"a\" => 1, \"b\" => 2]);"
+  ],
+  [
+    "parse_str_fn",
+    "parse_str(\"a=1&b=2\", $r); echo $r[\"a\"] . $r[\"b\"];"
+  ],
+  [
+    "parse_url_fn",
+    "$p = parse_url(\"http://h/p?a=1\"); echo $p[\"host\"];"
+  ],
+  [
+    "filter_var_int",
+    "echo filter_var(\"42\", FILTER_VALIDATE_INT);"
+  ],
+  [
+    "filter_var_url",
+    "echo filter_var(\"http://a.b\", FILTER_VALIDATE_URL) ? \"y\" : \"n\";"
+  ],
+  [
+    "filter_var_ip",
+    "echo filter_var(\"127.0.0.1\", FILTER_VALIDATE_IP) ? \"y\" : \"n\";"
+  ],
+  [
+    "filter_var_email_bad",
+    "echo filter_var(\"bad\", FILTER_VALIDATE_EMAIL) ? \"y\" : \"n\";"
+  ],
+  [
+    "filter_var_float",
+    "echo filter_var(\"3.5\", FILTER_VALIDATE_FLOAT);"
+  ],
+  [
+    "filter_var_bool",
+    "echo filter_var(\"true\", FILTER_VALIDATE_BOOLEAN) ? \"y\" : \"n\";"
+  ],
+  [
+    "filter_var_regexp",
+    "echo filter_var(\"abc\", FILTER_VALIDATE_REGEXP, [\"options\" => [\"regexp\" => \"/^a/\"]]) ? \"y\" : \"n\";"
+  ],
+  [
+    "preg_match_groups",
+    "preg_match(\"/(\\d+)-(\\d+)/\", \"12-34\", $m); echo $m[1] . $m[2];"
+  ],
+  [
+    "preg_match_named",
+    "preg_match(\"/(?<n>\\d+)/\", \"42\", $m); echo $m[\"n\"];"
+  ],
+  [
+    "preg_match_all_fn",
+    "echo preg_match_all(\"/\\d/\", \"a1b2c3\");"
+  ],
+  [
+    "preg_replace_backref",
+    "echo preg_replace(\"/(\\w+)@/\", \"$1#\", \"a@b\");"
+  ],
+  [
+    "preg_replace_named",
+    "echo preg_replace(\"/(?<w>\\w+)/\", \"[${w}]\", \"ab\");"
+  ],
+  [
+    "preg_replace_cb",
+    "echo preg_replace_callback(\"/\\d/\", function ($m) { return (int) $m[0] + 1; }, \"a1b2\");"
+  ],
+  [
+    "preg_replace_limit",
+    "echo preg_replace(\"/\\d/\", \"x\", \"a1b2c3\", 1);"
+  ],
+  [
+    "preg_split_limit",
+    "echo count(preg_split(\"/,/\", \"a,b,c,d\", -1, 1));"
+  ],
+  [
+    "preg_split_flags",
+    "echo count(preg_split(\"/,/\", \"a,,b\", -1, PREG_SPLIT_NO_EMPTY));"
+  ],
+  [
+    "preg_grep_fn",
+    "echo count(preg_grep(\"/\\d/\", [\"a\", \"1\", \"b\"]));"
+  ],
+  [
+    "preg_quote_special",
+    "echo preg_quote(\".+*?[^]$(){}=!<>|:-\");"
+  ],
+  [
+    "mb_strlen_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "mb_substr_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "iconv_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "mb_convert_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "htmlspecialchars_double",
+    "echo htmlspecialchars(htmlspecialchars(\"<x>\"));"
+  ],
+  [
+    "strip_tags_fn",
+    "echo strip_tags(\"<b>x</b>\");"
+  ],
+  [
+    "nl2br_variants",
+    "echo nl2br(\"a\\r\\nb\") !== false ? \"y\" : \"n\";"
+  ],
+  [
+    "word_wrap_break",
+    "echo wordwrap(\"abcdef\", 3);"
+  ],
+  [
+    "chunk_split_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "quoted_printable_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "convert_uuencode_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "addcslashes_range",
+    "echo strlen(addcslashes(\"abc\", \"a..c\")) > 3 ? \"y\" : \"n\";"
+  ],
+  [
+    "str_rot13_fn",
+    "echo str_rot13(\"abc\");"
+  ],
+  [
+    "str_shuffle_det",
+    "echo strlen(str_shuffle(\"abc\")) === 3 ? \"y\" : \"n\";"
+  ],
+  [
+    "strrev_unicode",
+    "echo strrev(\"abc\") === \"cba\" ? \"y\" : \"n\";"
+  ],
+  [
+    "substr_replace_multi",
+    "echo substr_replace(\"abc\", [\"X\", \"Y\"], [0, 1]);"
+  ],
+  [
+    "str_replace_arr_search",
+    "echo str_replace([\"a\", \"b\"], \"x\", \"abc\");"
+  ],
+  [
+    "str_replace_arr_both",
+    "echo str_replace([\"a\", \"b\"], [\"x\", \"y\"], \"abc\");"
+  ],
+  [
+    "str_ireplace_count",
+    "echo str_ireplace(\"A\", \"x\", \"aAbA\", $c) . $c;"
+  ],
+  [
+    "strtr_two_args",
+    "echo strtr(\"abc\", \"a\", \"x\");"
+  ],
+  [
+    "strtr_arr",
+    "echo strtr(\"abc\", [\"a\" => \"x\"]);"
+  ],
+  [
+    "str_repeat_large",
+    "echo strlen(str_repeat(\"ab\", 500));"
+  ],
+  [
+    "str_pad_large",
+    "echo strlen(str_pad(\"x\", 100, \"y\"));"
+  ],
+  [
+    "sprintf_multi",
+    "echo sprintf(\"%s=%d (%%.2f)\", \"k\", 5, 1.5);"
+  ],
+  [
+    "sprintf_pad",
+    "echo sprintf(\"[%-5s]\", \"a\");"
+  ],
+  [
+    "sprintf_zero_pad",
+    "echo sprintf(\"%05d\", 42);"
+  ],
+  [
+    "sprintf_precision",
+    "echo sprintf(\"%.3s\", \"abcdef\");"
+  ],
+  [
+    "sprintf_arg_num",
+    "echo sprintf(\"%2$s %1$s\", \"a\", \"b\");"
+  ],
+  [
+    "vsprintf_arr",
+    "echo vsprintf(\"%s-%s\", [\"x\", \"y\"]);"
+  ],
+  [
+    "number_format_all",
+    "echo number_format(1234567.891, 2, \".\", \",\");"
+  ],
+  [
+    "number_format_zero",
+    "echo number_format(0, 2);"
+  ],
+  [
+    "money_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "localeconv_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "setlocale_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "nl_langinfo_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "strftime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "gmstrftime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "gmdate_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "idate_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "mktime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "gmmktime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "checkdate_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "strtotime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "strtotime_skip2",
+    "echo \"skip\";"
+  ],
+  [
+    "date_parse_fn",
+    "$d = date_parse(\"2020-01-02\"); echo $d[\"year\"];"
+  ],
+  [
+    "date_sun_info_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_open_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_name_get_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_default_timezone_set_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_default_timezone_get_fn",
+    "echo strlen(date_default_timezone_get()) > 0 ? \"y\" : \"n\";"
+  ],
+  [
+    "time_sleep_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "usleep_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "time_nanosleep_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "hrtime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "microtime_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "gettimeofday_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "localtime_fn",
+    "$t = localtime(0, true); echo $t[\"tm_year\"];"
+  ],
+  [
+    "strftime_skip2",
+    "echo \"skip\";"
+  ],
+  [
+    "cal_days_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "easter_date_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "easter_days_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "french_to_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "gregorian_to_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jd_to_gregorian_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "julian_to_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jd_to_julian_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jewish_to_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jd_to_jewish_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "cal_to_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jd_to_cal_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "cal_info_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "cal_from_jd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "unixtojd_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "jdtoounix_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "getdate_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_create_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_format_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_modify_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_diff_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_add_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_sub_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_interval_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_period_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_timestamp_get_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_timestamp_set_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_timezone_get_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_offset_get_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_sunrise_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_sunset_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_isodate_set_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_date_set_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_time_set_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_default_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_parse_from_format_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_create_from_format_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_get_last_errors_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_transitions_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_location_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_abbreviations_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_identifiers_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "timezone_version_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_timezone_name_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_immutable_skip",
+    "echo \"skip\";"
+  ],
+  [
+    "date_period_skip2",
+    "echo \"skip\";"
+  ],
+  [
+    "date_interval_skip2",
+    "echo \"skip\";"
+  ],
+  [
+    "date_skip2",
+    "echo \"skip\";"
+  ],
+  [
+    "final_placeholder",
+    "echo \"end\";"
+  ],
+  [
+    "heredoc_interp",
+    "$n=5;$s=<<<EOT\nhello $n\nEOT;\necho trim($s);"
+  ],
+  [
+    "nowdoc_lit",
+    "$s=<<<'EOT'\nplain text\nEOT;\necho $s;"
+  ],
+  [
+    "array_spread",
+    "$a=[1,2];$b=[...$a,3];echo count($b);"
+  ],
+  [
+    "empty_any",
+    "echo empty(0)?'e':'f';"
+  ],
+  [
+    "empty_any_call",
+    "function z($x){return $x===0;}echo empty(z(0))?'E':'F';"
+  ],
+  [
+    "dynamic_prop_rw",
+    "$o=new stdClass();$p='x';$o->$p=5;echo $o->x;"
+  ],
+  [
+    "dynamic_prop_read",
+    "$o=new stdClass();$o->secret=7;$f='secret';echo $o->$f;"
+  ],
+  [
+    "nullsafe_method_null",
+    "$e=null;echo $e?->missing(3) ?? 'nil';"
+  ],
+  [
+    "clone_obj",
+    "class P{public $v=1;}$o=new P();$c=clone $o;$c->v=9;echo $o->v.$c->v;"
+  ]
 ]
