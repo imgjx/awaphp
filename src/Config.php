@@ -305,19 +305,15 @@ final class Config
     }
 
     /**
-     * 从自定义分层 JSON 构造配置。JSON 顶层需含 "layers" 数组（每项 {name,params,inject}），
-     * 可选 "salt" / 其它标量覆盖项。校验每层 name 在注册表中，否则抛错；
-     * 每层 params 经 LayerDescriptor::validate() 检查（未知参数/越界值记入
-     * layer_warnings，构建时由 Logger 输出，不阻断）。
+     * 从已解析的分层数组构造配置（JSON / PHP 配置共用）。数组顶层需含 "layers"
+     * 数组（每项 {name,params,inject}），可选 "salt" / 其它标量覆盖项。
+     * 校验每层 name 在注册表中，否则抛错；每层 params 经 LayerDescriptor::validate()
+     * 检查（未知参数/越界值记入 layer_warnings，构建时由 Logger 输出，不阻断）。
      */
-    public static function fromLayeredJson(string $path): self
+    public static function fromLayeredArray(array $json): self
     {
-        if (!is_file($path)) {
-            throw new RuntimeException("分层配置文件不存在: {$path}");
-        }
-        $json = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($json) || !isset($json['layers']) || !is_array($json['layers'])) {
-            throw new RuntimeException("分层配置文件必须包含顶层 layers 数组: {$path}");
+        if (!isset($json['layers']) || !is_array($json['layers'])) {
+            throw new RuntimeException('分层配置必须包含顶层 layers 数组');
         }
         $known = LayerRegistry::names();
         $warnings = [];
@@ -334,7 +330,7 @@ final class Config
         $data = array_diff_key($json, ['layers' => true]);
         $data['layers'] = $json['layers'];
         $data['layer_warnings'] = $warnings;
-        // 自定义分层 JSON 含 class 层 on:true → 同样提升为全局 class_obf（与预设同规则）。
+        // 含 class 层 on:true → 同样提升为全局 class_obf（与预设同规则）。
         if (empty($data['class_obf'])) {
             foreach ($json['layers'] as $layer) {
                 if (($layer['name'] ?? '') === 'class' && !empty($layer['params']['on'])) {
@@ -344,6 +340,41 @@ final class Config
             }
         }
         return new self($data);
+    }
+
+    /**
+     * 从自定义分层 JSON 构造配置（--config 指向 .json 时）。详见 fromLayeredArray。
+     */
+    public static function fromLayeredJson(string $path): self
+    {
+        if (!is_file($path)) {
+            throw new RuntimeException("分层配置文件不存在: {$path}");
+        }
+        $json = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($json)) {
+            throw new RuntimeException("分层配置文件内容必须是 JSON 对象: {$path}");
+        }
+        return self::fromLayeredArray($json);
+    }
+
+    /**
+     * 从 PHP 数组配置文件构造配置（--config 指向 .php 时）。文件需 return 一个数组，
+     * 可直接用 PHP 表达式 / 注释，便于维护；与 JSON 配置语义完全一致
+     * （含顶层 layers 即走分层分支，否则作普通标量配置）。
+     */
+    public static function fromPhpFile(string $path): self
+    {
+        if (!is_file($path)) {
+            throw new RuntimeException("PHP 配置文件不存在: {$path}");
+        }
+        $raw = require $path;
+        if (!is_array($raw)) {
+            throw new RuntimeException("PHP 配置文件必须 return 一个数组: {$path}");
+        }
+        if (isset($raw['layers'])) {
+            return self::fromLayeredArray($raw);
+        }
+        return new self($raw);
     }
 
     /** @return array<int,array{name:string,params:array,inject:array}> */

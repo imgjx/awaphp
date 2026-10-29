@@ -186,7 +186,8 @@ function obf_help(): string
 基础
   -i, --input=        输入文件或目录（必填；目录递归混淆）
   -o, --output=       输出文件或目录
-  -c, --config=       指定 JSON 配置文件（普通标量配置 / 分层 JSON 均可）
+  -c, --config=       指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；
+                        .php 文件需 return 一个数组，可直接用 PHP 表达式与注释，便于维护）
       --level=        等级预设：low|mid|high|max|ultra（一键切换完整分层方案）
   -low -mid -high -max -ultra  等价 --level=<name> 的短旗标
                         （等级仅作默认，散装参数如 --level high --junk_intensity 10 可叠加覆盖；
@@ -347,21 +348,33 @@ $LEVEL_NON_OVERRIDE = ['level', 'config'];
 $cliOverrides = array_diff_key($args, array_flip($LEVEL_NON_OVERRIDE));
 try {
     if (!empty($args['config']) && is_file($args['config'])) {
-        $raw = json_decode((string) file_get_contents($args['config']), true);
-        if (is_array($raw) && isset($raw['layers'])) {
-            // 分层 JSON：完全替换 layers；CLI 标量覆盖项叠加到顶层标量键
-            $config = Config::fromLayeredJson($args['config']);
+        $cfgPath = $args['config'];
+        if (str_ends_with(strtolower($cfgPath), '.php')) {
+            // PHP 数组配置：文件需 return 一个数组（可直接用 PHP 表达式 / 注释，便于维护）
+            $config = Config::fromPhpFile($cfgPath);
             if ($cliOverrides !== []) {
                 $config = new Config(array_merge($config->all(), $cliOverrides));
             }
         } else {
-            // 普通 JSON 配置：文件提供基础配置，CLI 标量覆盖项叠加。
-            // 与分层 JSON / 预设路径保持一致，只叠加 $cliOverrides
-            // （已剔除 level/config 等非配置键）—— 早期实现直接
-            // array_merge($fileCfg, $args)，会把 --config 的路径本身、
-            // --level 等原始 CLI 键混进配置数组，语义脆弱。
-            $fileCfg = Config::fromJsonFile($args['config'])->all();
-            $config = new Config(array_merge($fileCfg, $cliOverrides));
+            $raw = json_decode((string) file_get_contents($cfgPath), true);
+            if ($raw === null && json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException("JSON 配置文件解析失败: " . json_last_error_msg());
+            }
+            if (is_array($raw) && isset($raw['layers'])) {
+                // 分层 JSON：完全替换 layers；CLI 标量覆盖项叠加到顶层标量键
+                $config = Config::fromLayeredJson($cfgPath);
+                if ($cliOverrides !== []) {
+                    $config = new Config(array_merge($config->all(), $cliOverrides));
+                }
+            } else {
+                // 普通 JSON 配置：文件提供基础配置，CLI 标量覆盖项叠加。
+                // 与分层 JSON / 预设路径保持一致，只叠加 $cliOverrides
+                // （已剔除 level/config 等非配置键）—— 早期实现直接
+                // array_merge($fileCfg, $args)，会把 --config 的路径本身、
+                // --level 等原始 CLI 键混进配置数组，语义脆弱。
+                $fileCfg = Config::fromJsonFile($cfgPath)->all();
+                $config = new Config(array_merge($fileCfg, $cliOverrides));
+            }
         }
     } elseif (!empty($args['level'])) {
         // 等级预设：CLI 标量覆盖项叠加在预设之上
