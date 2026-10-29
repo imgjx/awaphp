@@ -65,6 +65,15 @@ final class DynamicSymbols
             if (isset($literals[$name])) {
                 continue; // 名字以字符串形式出现过 -> 保守保留原名
             }
+            // FQCN 键（类名混淆 v2）：短名以字面量出现同样视为动态引用
+            // （`$c='Request'` 与 `$c='app\Request'` 都可能拼出 FQCN）
+            $short = $name;
+            if (str_contains($name, '\\')) {
+                $short = substr($name, (int) strrpos($name, '\\') + 1);
+                if (isset($literals[$short])) {
+                    continue;
+                }
+            }
             $safe[$name] = true;
         }
         return $safe;

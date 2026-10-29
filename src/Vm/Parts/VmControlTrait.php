@@ -120,8 +120,13 @@ trait VmControlTrait
 
         // 注意：for 的初始化段可能是赋值（如 $i=0），必须用 compileExprOrAssign，
         // 不能用 compileExpr（后者走 parseTernary 链，不识别 '='，会把赋值右值吞掉）。
+        // init/step 是"求值即丢弃"位置（PHP 语义），但不同写法的栈净效应不同：
+        // `$i = 0` 走 POP_V 不留值，`$i++` / `foo()` 会留一个表达式结果。统一补一条
+        // DROP（空栈时是空操作），否则残留值会一直堆在帧栈上——生成器函数还会因此
+        // 让 `getReturn()` 返回最后一次自增的旧值，而非 PHP 语义的 null。
         if ($init !== []) {
             $this->compileExprOrAssign($init, $code);
+            $code[] = [VmOp::DROP];
         }
         $start = count($code);
         // 空条件（for(;;)）恒为真：不能走 compileExpr（空 token 会压 null 成假，循环体永不执行）
@@ -141,6 +146,7 @@ trait VmControlTrait
         $this->loopCtx[$lid]['cont'] = $contIdx;
         if ($this->trimWs($step) !== []) {
             $this->compileExpr($step, $code);
+            $code[] = [VmOp::DROP];
         }
         $code[] = [VmOp::JMP, $start - (count($code) + 1)];
         $this->patch($code, $jz);
@@ -234,6 +240,13 @@ trait VmControlTrait
         $ta = '__fe' . ($this->tempSeq++);
         $tk = '__fe' . ($this->tempSeq++);
         $ti = '__fe' . ($this->tempSeq++);
+        // 迭代器模式（$tm=1）：源是 Generator 时【不物化】，走 valid/current/key/next 惰性迭代。
+        // 两个原因：
+        //   ① 生成器的键可重复（yield 自动键 + yield from 的子序列），array_keys 化会丢元素；
+        //   ② 物化会把副作用提前、且无限生成器（while(true) yield）直接挂死。
+        // 惰性迭代后，循环体与生成器推进严格交错，与 PHP foreach 语义一致。
+        $tm = '__fe' . ($this->tempSeq++);
+        $it = '__fe' . ($this->tempSeq++);
 
         if ($refByRef) {
             // $ta 与源变量别名（引用同一数组）：迭代内经 MAKE_REF_EL 把 $v 别名为
@@ -243,32 +256,109 @@ trait VmControlTrait
             // $ta = src（值拷贝）
             $this->compileExpr($src, $code);
             $code[] = [VmOp::POP_V, '$' . $ta];
+            // 源归一化为"可 array_keys 的数组"（下面取迭代键用的是 array_keys）：
+            //   - 数组：原样；
+            //   - Traversable（生成器 / 迭代器 / ArrayObject…）：iterator_to_array 物化
+            //     （PHP 的 foreach 本就接受任意 Traversable；直接 array_keys(Generator)
+            //     会 TypeError "must be of type array, Generator given"）；
+            //   - 普通对象：转数组后遍历公有属性（等价 PHP 的外部 foreach 可见性）。
+            $code[] = [VmOp::PUSH_C, 0];
+            $code[] = [VmOp::POP_V, '$' . $tm];             // 默认：数组模式
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::CALL_NATIVE, $this->natIdx('is_array'), 1, 0];
+            $jArr = count($code);
+            $code[] = [VmOp::JNZ, 0];                       // 已是数组 → 直接迭代
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::INSTANCEOF, 'Generator'];
+            $jNotGen = count($code);
+            $code[] = [VmOp::JZ, 0];                        // 非 Generator → 其它归一化
+            // —— Generator：惰性迭代（rewind 一次，之后每轮 valid/current/key/next）——
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::POP_V, '$' . $it];
+            $code[] = [VmOp::PUSH_V, '$' . $it];
+            $code[] = [VmOp::PUSH_C, 'rewind'];
+            $code[] = [VmOp::MECALL, 0];
+            $code[] = [VmOp::DROP];
+            $code[] = [VmOp::PUSH_C, 1];
+            $code[] = [VmOp::POP_V, '$' . $tm];             // 标记：迭代器模式
+            $jDoneGen = count($code);
+            $code[] = [VmOp::JMP, 0];                       // → 迭代
+            $this->patch($code, $jNotGen);
+            // —— 其它 Traversable（ArrayObject / 用户迭代器…）：iterator_to_array 物化 ——
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::INSTANCEOF, 'Traversable'];
+            $jNotIter = count($code);
+            $code[] = [VmOp::JZ, 0];                        // 非 Traversable → 试对象分支
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::CALL_NATIVE, $this->natIdx('iterator_to_array'), 1, 0];
+            $code[] = [VmOp::POP_V, '$' . $ta];
+            $jDone = count($code);
+            $code[] = [VmOp::JMP, 0];                       // 物化完成 → 迭代
+            $this->patch($code, $jNotIter);
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::CALL_NATIVE, $this->natIdx('is_object'), 1, 0];
+            $jNotObj = count($code);
+            $code[] = [VmOp::JZ, 0];
+            $code[] = [VmOp::PUSH_V, '$' . $ta];
+            $code[] = [VmOp::CAST_ARRAY];
+            $code[] = [VmOp::POP_V, '$' . $ta];
+            $this->patch($code, $jNotObj);
+            $this->patch($code, $jArr);
+            $this->patch($code, $jDone);
+            $this->patch($code, $jDoneGen);
         }
         // $tk = array_keys($ta); $ti = 0;
         // 用 CALL_NATIVE 调用 array_keys（而非 CALL）：array_keys 是编译器内部的取键辅助，
         // 必须恒走原生分发；否则当模块名恰好为 array_keys 时，renameCallTargets 会把这条
         // CALL 误改写成模块自身别名，造成无限递归（OOM / Killed）。
+        $code[] = [VmOp::PUSH_V, '$' . $tm];
+        $jSkipKeys = count($code);
+        $code[] = [VmOp::JNZ, 0];                           // 迭代器模式：无键表可用
         $code[] = [VmOp::PUSH_V, '$' . $ta];
         $code[] = [VmOp::CALL_NATIVE, $this->natIdx('array_keys'), 1, 0];
         $code[] = [VmOp::POP_V, '$' . $tk];
+        $this->patch($code, $jSkipKeys);
         $code[] = [VmOp::PUSH_C, 0];
         $code[] = [VmOp::POP_V, '$' . $ti];
 
         $start = count($code);
-        // if ($ti >= count($tk)) goto end
+        // 结束条件：迭代器模式看 valid()，数组模式看 $ti >= count($tk)
+        $endJumps = [];
+        $code[] = [VmOp::PUSH_V, '$' . $tm];
+        $jIsArr = count($code);
+        $code[] = [VmOp::JZ, 0];
+        $code[] = [VmOp::PUSH_V, '$' . $it];
+        $code[] = [VmOp::PUSH_C, 'valid'];
+        $code[] = [VmOp::MECALL, 0];
+        $endJumps[] = count($code);
+        $code[] = [VmOp::JZ, 0];                            // !valid() → 结束
+        $jToBody = count($code);
+        $code[] = [VmOp::JMP, 0];
+        $this->patch($code, $jIsArr);
         $code[] = [VmOp::PUSH_V, '$' . $ti];
         $code[] = [VmOp::PUSH_V, '$' . $tk];
         $code[] = [VmOp::COUNT];
         $code[] = [VmOp::GE];
-        $jz = count($code);
-        // 当 $ti >= count($tk) 为真（非 0）时跳到循环末尾：用 JNZ
-        $code[] = [VmOp::JNZ, 0];
-        // 先解析出当前迭代的“键” $tk[$ti]（无论是否用 $k，值都要用真实键取）
+        $endJumps[] = count($code);
+        $code[] = [VmOp::JNZ, 0];                           // $ti >= count($tk) → 结束
+        $this->patch($code, $jToBody);
+        // 先解析出当前迭代的“键”（无论是否用 $k，值都要用真实键取）
         $keyTmp = '__fe' . ($this->tempSeq++);
+        $code[] = [VmOp::PUSH_V, '$' . $tm];
+        $jKeyArr = count($code);
+        $code[] = [VmOp::JZ, 0];
+        $code[] = [VmOp::PUSH_V, '$' . $it];
+        $code[] = [VmOp::PUSH_C, 'key'];
+        $code[] = [VmOp::MECALL, 0];
+        $code[] = [VmOp::POP_V, '$' . $keyTmp];
+        $jKeyDone = count($code);
+        $code[] = [VmOp::JMP, 0];
+        $this->patch($code, $jKeyArr);
         $code[] = [VmOp::PUSH_V, '$' . $tk];
         $code[] = [VmOp::PUSH_V, '$' . $ti];
         $code[] = [VmOp::INDEX_GET];
         $code[] = [VmOp::POP_V, '$' . $keyTmp];
+        $this->patch($code, $jKeyDone);
         if ($hasKey) {
             // $k 直接就是解析出的键 $tk[$ti]，不要再对 $ta 做索引
             $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
@@ -281,10 +371,22 @@ trait VmControlTrait
             $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
             $code[] = [VmOp::MAKE_REF_EL, '$' . $vvar, '$' . $ta];
         } else {
+            // 取值分支：迭代器模式取 current()；数组模式用真实键 $keyTmp 索引
+            $code[] = [VmOp::PUSH_V, '$' . $tm];
+            $jPlain = count($code);
+            $code[] = [VmOp::JZ, 0];
+            $code[] = [VmOp::PUSH_V, '$' . $it];
+            $code[] = [VmOp::PUSH_C, 'current'];
+            $code[] = [VmOp::MECALL, 0];
+            $code[] = [VmOp::POP_V, '$' . $valueTmp];
+            $jFetchDone = count($code);
+            $code[] = [VmOp::JMP, 0];
+            $this->patch($code, $jPlain);
             $code[] = [VmOp::PUSH_V, '$' . $ta];
             $code[] = [VmOp::PUSH_V, '$' . $keyTmp];
             $code[] = [VmOp::INDEX_GET];
             $code[] = [VmOp::POP_V, '$' . $valueTmp];
+            $this->patch($code, $jFetchDone);
         }
         if ($isList) {
             // list/数组解构：把 $valueTmp 逐元素分发到目标变量（支持位置/带键/嵌套）
@@ -298,13 +400,26 @@ trait VmControlTrait
         array_pop($this->ctxStack);
         $contIdx = count($code); // continue 目标 = $ti++ 起点（先自增再循环）
         $this->loopCtx[$lid]['cont'] = $contIdx;
-        // $ti++
+        // 推进：迭代器模式 next()，数组模式 $ti++
+        $code[] = [VmOp::PUSH_V, '$' . $tm];
+        $jIncArr = count($code);
+        $code[] = [VmOp::JZ, 0];
+        $code[] = [VmOp::PUSH_V, '$' . $it];
+        $code[] = [VmOp::PUSH_C, 'next'];
+        $code[] = [VmOp::MECALL, 0];
+        $code[] = [VmOp::DROP];
+        $jIncDone = count($code);
+        $code[] = [VmOp::JMP, 0];
+        $this->patch($code, $jIncArr);
         $code[] = [VmOp::PUSH_V, '$' . $ti];
         $code[] = [VmOp::PUSH_C, 1];
         $code[] = [VmOp::ADD];
         $code[] = [VmOp::POP_V, '$' . $ti];
+        $this->patch($code, $jIncDone);
         $code[] = [VmOp::JMP, $start - (count($code) + 1)];
-        $this->patch($code, $jz);
+        foreach ($endJumps as $ej) {
+            $this->patch($code, $ej);
+        }
         $this->patchContinues($lid, $code);
         $this->patchBreaks($lid, $code);
     }
@@ -338,32 +453,87 @@ trait VmControlTrait
                 $pos++;
                 continue;
             }
-            // 带键元素：KEY => TARGET（KEY 为字符串/数字/标识符字面量）
-            $key = null;
-            $k0 = $c->peekSig();
-            $k1 = $c->peekSigAt(1);
-            if ($k0 !== null && is_array($k0)
-                && in_array($k0[0], [T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER, T_STRING], true)
-                && $k1 !== null && is_array($k1) && $k1[0] === T_DOUBLE_ARROW) {
-                $key = $this->constTokenText($k0);
-                $c->next();          // KEY
-                $c->skipWs();
-                $c->expect(T_DOUBLE_ARROW);
+            // 元素前缀收集：KEY => TARGET 的 KEY 允许是【任意表达式】——字符串层会把
+            // 字符串键编码成 (base64_decode(...)^str_repeat(...)) 这类括号表达式，
+            // 若只认字面量单 token 键，这里会把 `(` 当目标报「期望 T_VARIABLE」。
+            // 收集到顶层 `=>`（有键）或顶层 , / ] / )（无键，不消费）为止。
+            $keyToks = [];
+            $hasKey = false;
+            $d1 = 0; // ()
+            $d2 = 0; // []
+            $d3 = 0; // {}（含字符串插值开括号）
+            while (!$c->eof()) {
+                $t = $c->peek();
+                if (is_string($t)) {
+                    if ($d1 === 0 && $d2 === 0 && $d3 === 0 && ($t === ',' || $t === ']' || $t === ')')) {
+                        break;
+                    }
+                    if ($t === '(') { $d1++; }
+                    elseif ($t === ')') { $d1 = max(0, $d1 - 1); }
+                    elseif ($t === '[') { $d2++; }
+                    elseif ($t === ']') { $d2 = max(0, $d2 - 1); }
+                    elseif ($t === '{') { $d3++; }
+                    elseif ($t === '}') { $d3 = max(0, $d3 - 1); }
+                    $keyToks[] = $c->next();
+                    continue;
+                }
+                if (is_array($t)) {
+                    if ($t[0] === T_DOUBLE_ARROW && $d1 === 0 && $d2 === 0 && $d3 === 0) {
+                        $c->next(); // 消费 =>
+                        $hasKey = true;
+                        break;
+                    }
+                    if ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES) {
+                        $d3++;
+                    }
+                }
+                $keyToks[] = $c->next();
             }
-            $c->skipWs();
+            // 键：单 token 字面量沿用常量键（PUSH_C）；其余表达式键走运行期求值
+            $key = null;
+            $keyDyn = null;
+            if ($hasKey) {
+                if (count($keyToks) === 1 && is_array($keyToks[0])
+                    && in_array($keyToks[0][0], [T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER, T_STRING], true)) {
+                    $key = $this->constTokenText($keyToks[0]);
+                } else {
+                    $keyDyn = $keyToks;
+                }
+                $c->skipWs();
+            } else {
+                // 无键元素：收集到的即目标（变量或嵌套解构）
+                $tc = new Cursor($keyToks);
+                $tc->skipWs();
+                if ($tc->is('[') || $tc->is(T_LIST)) {
+                    $subVar = '__fe' . ($this->tempSeq++);
+                    $this->emitReadKey($srcVar, $keyDyn ?? $key ?? $pos, '$' . $subVar, $code, $keyDyn !== null);
+                    $this->emitListDestruct($tc, '$' . $subVar, $code);
+                    $pos++;
+                    $c->skipWs();
+                    if ($c->is(',')) { $c->next(); }
+                    continue;
+                }
+                $varName = trim($tc->expectText(T_VARIABLE), '$');
+                $tc->next();
+                $this->emitReadKey($srcVar, $keyDyn ?? $key ?? $pos, '$' . $varName, $code, $keyDyn !== null);
+                $pos++;
+                $c->skipWs();
+                if ($c->is(',')) { $c->next(); }
+                continue;
+            }
             if ($c->is('[') || $c->is(T_LIST)) {
                 // 嵌套解构：先把当前元素读到临时变量，再递归
                 $subVar = '__fe' . ($this->tempSeq++);
                 // 注意：dstVar 必须带 '$' 前缀，与后续递归读该临时变量的键名保持一致
                 //（否则会写成 $__vars['__fe5'] 而无 $ 前缀，导致读侧 $__vars['$__fe5'] 取不到）。
-                $this->emitReadKey($srcVar, $key ?? $pos, '$' . $subVar, $code);
+                $this->emitReadKey($srcVar, $keyDyn ?? $key ?? $pos, '$' . $subVar, $code, $keyDyn !== null);
                 $this->emitListDestruct($c, '$' . $subVar, $code);
             } else {
                 $varName = trim($c->expectText(T_VARIABLE), '$');
                 $c->next();
-                $this->emitReadKey($srcVar, $key ?? $pos, '$' . $varName, $code);
+                $this->emitReadKey($srcVar, $keyDyn ?? $key ?? $pos, '$' . $varName, $code, $keyDyn !== null);
             }
-            if ($key === null) {
+            if ($key === null && $keyDyn === null) {
                 $pos++;
             }
             $c->skipWs();
@@ -373,11 +543,15 @@ trait VmControlTrait
         }
     }
 
-    /** 发射「$dstVar = $srcVar[$key]」（位置下标或字符串键皆可） */
-    private function emitReadKey(string $srcVar, $key, string $dstVar, array &$code): void
+    /** 发射「$dstVar = $srcVar[$key]」（位置下标或字符串键皆可；$keyDyn 非空时键为已收集表达式） */
+    private function emitReadKey(string $srcVar, $key, string $dstVar, array &$code, bool $keyDyn = false): void
     {
         $code[] = [VmOp::PUSH_V, $srcVar];
-        $code[] = [VmOp::PUSH_C, $key];
+        if ($keyDyn && is_array($key)) {
+            $this->compileExpr($key, $code);
+        } else {
+            $code[] = [VmOp::PUSH_C, $key];
+        }
         $code[] = [VmOp::INDEX_GET];
         $code[] = [VmOp::POP_V, $dstVar];
     }
@@ -657,7 +831,12 @@ trait VmControlTrait
             throw new VmUnsupported('VM 仅支持变量形式的 isset/empty/unset 目标（已回退）');
         }
         $name = $t[1];
+        // 静态局部变量在 VM 里被映射到共享帧槽位（\x01sl:scope:$x，见
+        // emitStaticPreamble / compileStaticLocal）。isset/empty/unset 的目标名
+        // 必须走同一张路由表，否则运行期按【原名】查帧表恒为"未设置"——
+        // 表现为 isset($static) === false、empty($static) === true，与原生不符。
         $keys = [];
+        $name = $this->curStatic[$name] ?? $name;
         $i = 1;
         while ($i < count($tokens)) {
             if (($tokens[$i] ?? null) === '[') {

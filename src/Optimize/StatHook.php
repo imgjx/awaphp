@@ -29,12 +29,12 @@ final class StatHook
         }
         $out = [];
         $inserted = false;
-        foreach ($tokens as $tok) {
-            if (!$inserted && is_array($tok) && $tok[0] === T_OPEN_TAG) {
-                $out[] = $tok;
+        // 钩子语句必须落在 declare/namespace 之后（否则 declare 不再是首语句直接致命）
+        $insAt = DeclareHoist::headInsertIndex($tokens);
+        foreach ($tokens as $i => $tok) {
+            if (!$inserted && $insAt >= 0 && $i === $insAt) {
                 $out[] = "\$_stat=unserialize('a:0:{}');";
                 $inserted = true;
-                continue;
             }
             $out[] = $tok;
         }

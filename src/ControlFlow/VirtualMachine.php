@@ -129,7 +129,7 @@ final class VirtualMachine
 
     private function needsSpace(string $prevChar, string $firstChar): bool
     {
-        $wordy = fn (string $c) => ctype_alnum($c) || $c === '_' || $c === '$';
+        $wordy = fn (string $c) => $c !== '' && (ctype_alnum($c) || $c === '_' || $c === '$' || ord($c) >= 0x80);
         return $wordy($prevChar) && $wordy($firstChar);
     }
 

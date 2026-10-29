@@ -155,7 +155,16 @@ trait VmStmtTrait
             if ($e->fileFallback) {
                 throw $e;
             }
-            $code[] = [VmOp::PUSH_C, $this->detokenize($origStmt)];
+            if (getenv('OBF_VM_DEBUG')) {
+                fwrite(STDERR, "[EVAL_FALLBACK] " . $e->getMessage() . " :: " . substr(str_replace("\n", ' ', $this->detokenize($origStmt)), 0, 2000) . "\n");
+            }
+            // 类引用 FQCN 化：兜底 eval 运行在【全局命名空间】（解释器闭包作用域），
+            // 语句文本里的 use 导入短名 / 改名类短名都解析不到——运行期原生
+            // "Class X not found"。把类位引用（X:: / new X / instanceof X / 类型提示位）
+            // 按编译期同一套规则（useMap + 当前命名空间）补全为 \FQCN，eval 即可经
+            // 自动加载命中原文件（class_alias 回挂原名）。本文件声明的 VM 类仍不可
+            // eval（上方 referencesVmClass 已守卫重抛）。
+            $code[] = [VmOp::PUSH_C, $this->detokenize($this->rewriteClassRefsForEval($origStmt))];
             $code[] = [VmOp::EVAL_STMT];
         }
     }
@@ -208,6 +217,142 @@ trait VmStmtTrait
             }
         }
         return false;
+    }
+
+    /**
+     * EVAL_STMT 兜底文本的类引用 FQCN 化。
+     *
+     * 兜底 eval 运行在全局命名空间（解释器闭包作用域），语句文本里的 use 导入短名、
+     * 跨文件改名类短名（如 _fda72ccfe）在该作用域都解析不到 → 运行期原生
+     * "Class X not found"。此处把【类位】的名字按编译期同款规则（resolveClassRef：
+     * useMap / curNs）补全为 \FQCN 再交 eval：useMap 命中的 FQN 经工程 classmap
+     * 自动加载回到原文件（class_alias 回挂原名），语义与 VM 内执行一致。
+     *
+     * 类位判定（保守，避免误伤函数名/常量名）：
+     *   X::  /  new X  /  instanceof X  /  extends X  /  implements X  /
+     *   catch(X  /  类型提示位（前为 ( , | & 且后为 $var）/  联合类型位（后为 | &）。
+     *
+     * @param array<int,mixed> $stmt
+     * @return array<int,mixed>
+     */
+    private function rewriteClassRefsForEval(array $stmt): array
+    {
+        $n = count($stmt);
+        $sig = [];
+        for ($i = 0; $i < $n; $i++) {
+            $t = $stmt[$i];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            $sig[] = $i;
+        }
+        $m = count($sig);
+        if ($m === 0) {
+            return $stmt;
+        }
+        $isSep = static function ($t): bool {
+            if (!is_array($t)) {
+                return $t === '|';
+            }
+            // '|' 在 PHP 词法里是单字符字符串 token（不存在 T_BITWISE_OR 常量），由上方
+            // !is_array 分支覆盖；此处只收 & 的两个 8.1+ 变体。
+            return in_array($t[0], [
+                T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG,
+                T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG,
+            ], true);
+        };
+        $isNameTok = static function ($t): bool {
+            return is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR], true);
+        };
+        $out = $stmt;
+        $k = 0;
+        while ($k < $m) {
+            $i = $sig[$k];
+            $t = $stmt[$i];
+            $start = null;
+            if (is_array($t) && $t[0] === T_STRING) {
+                // 向前吞前导 \（仅当更前不是名字成分，如 new \Foo\Bar）
+                $start = $k;
+                if ($k - 1 >= 0 && $this->tokIs($stmt[$sig[$k - 1]], T_NS_SEPARATOR)) {
+                    $pp = $k - 2 < 0 ? null : $stmt[$sig[$k - 2]];
+                    if ($pp === null || !$isNameTok($pp)) {
+                        $start = $k - 1;
+                    }
+                }
+            } elseif ($this->tokIs($t, T_NS_SEPARATOR)
+                && ($k + 1 < $m) && $this->tokIs($stmt[$sig[$k + 1]], T_STRING)
+                && ($k - 1 < 0 || !$isNameTok($stmt[$sig[$k - 1]]))) {
+                $start = $k;
+            }
+            if ($start === null) {
+                $k++;
+                continue;
+            }
+            // 向后吞名字成分
+            $end = $start;
+            while ($end + 1 < $m && $isNameTok($stmt[$sig[$end + 1]])) {
+                $end++;
+            }
+            $prev = $start - 1 >= 0 ? $stmt[$sig[$start - 1]] : null;
+            $next = $end + 1 < $m ? $stmt[$sig[$end + 1]] : null;
+            $isClassPos = false;
+            if ($next !== null && is_array($next) && $next[0] === T_DOUBLE_COLON) {
+                $isClassPos = true;
+            } elseif ($prev !== null && is_array($prev)
+                && in_array($prev[0], [T_NEW, T_INSTANCEOF, T_EXTENDS, T_IMPLEMENTS, T_CATCH], true)) {
+                $isClassPos = true;
+            } elseif ($next !== null && is_array($next) && $next[0] === T_VARIABLE
+                && $prev !== null
+                    && ((is_array($prev) && in_array($prev[0], [
+                        T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG,
+                        T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG,
+                    ], true))
+                    || $prev === '(' || $prev === ',' || $prev === '|')) {
+                // 类型提示位：X $var（前为 ( , | &）
+                $isClassPos = true;
+            } elseif ($next !== null && $isSep($next)
+                && $prev !== null
+                    && ((is_array($prev) && in_array($prev[0], [
+                        T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG,
+                        T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG,
+                    ], true))
+                    || $prev === '(' || $prev === ',' || $prev === '|'
+                    || $prev === '=' || (is_array($prev) && $prev[0] === T_DOUBLE_ARROW))) {
+                // 联合类型位：A|B / A&B 里的 A
+                $isClassPos = true;
+            }
+            if ($isClassPos) {
+                $name = '';
+                for ($j = $start; $j <= $end; $j++) {
+                    $name .= is_array($stmt[$sig[$j]]) ? $stmt[$sig[$j]][1] : $stmt[$sig[$j]];
+                }
+                $resolved = $this->resolveClassRef($name);
+                // 只改写「解析结果与原文不同」的引用；原样可解析的全局名（如原生
+                // Exception / 用户全局类）不动，避免误伤。
+                if ($resolved !== $name) {
+                    $first = $out[$sig[$start]];
+                    $out[$sig[$start]] = is_array($first)
+                        ? [$first[0], '\\' . ltrim($resolved, '\\'), $first[2] ?? 0]
+                        : '\\' . ltrim($resolved, '\\');
+                    for ($j = $start + 1; $j <= $end; $j++) {
+                        $rest = $out[$sig[$j]];
+                        if (is_array($rest)) {
+                            $out[$sig[$j]] = [$rest[0], '', $rest[2] ?? 0];
+                        } else {
+                            $out[$sig[$j]] = '';
+                        }
+                    }
+                }
+            }
+            $k = $end + 1;
+        }
+        return $out;
+    }
+
+    /** token 是否为指定 token 类型 */
+    private function tokIs($t, int $type): bool
+    {
+        return is_array($t) && $t[0] === $type;
     }
 
     /**

@@ -44,7 +44,7 @@ final class StringRuntimeAssembler
         if (!$config->get('str_xor')) {
             return $tokens;
         }
-        $safe = $this->scanSafeContexts($tokens);
+        $safe = ConstExprScan::safeStringIndices($tokens); // [index => true] 表示"不可编码"（常量表达式/属性默认值等）
         // ---- 密钥（v2）：不再存储密钥本身，只存 seed；运行期 key = sha256(seed) 前 8 字节 ----
         $style = new NameStyle($this->salt);
         $this->keyName = $style->globalKey('str-xor-key');
@@ -60,13 +60,21 @@ final class StringRuntimeAssembler
         $n = count($tokens);
         $injected = 0;
 
+        // 密钥安装语句必须落在 declare/namespace 之后（否则 declare 不再是首语句直接致命）
+        $insAt = DeclareHoist::headInsertIndex($tokens);
+        if ($insAt < 0) {
+            // 无开标签的片段流：装不了密钥，直接放弃编码（保持语义优先）
+            $this->logger->debug('字符串运行时异或装配：片段流无开标签，跳过');
+            return $tokens;
+        }
+
         for ($i = 0; $i < $n; $i++) {
             $tok = $tokens[$i];
-            $out[] = $tok;
-            if (!$keyInserted && is_array($tok) && $tok[0] === T_OPEN_TAG) {
+            if (!$keyInserted && $i === $insAt) {
                 $out[] = "\$GLOBALS['" . $this->keyName . "']=substr(hash('sha256','" . $seedStr . "',true),0,8);";
                 $keyInserted = true;
             }
+            $out[] = $tok;
             if (is_array($tok) && $tok[0] === T_CONSTANT_ENCAPSED_STRING && !isset($safe[$i])) {
                 $val = $this->decodeLiteral($tok[1]);
                 if ($val === null || $val === '') {
@@ -75,6 +83,11 @@ final class StringRuntimeAssembler
                 $out[count($out) - 1] = $this->encode($val, $key, $this->strIdx++);
                 $injected++;
             }
+        }
+
+        if (!$keyInserted) {
+            // 兜底：insAt 越界（或无开标签）时追加到末尾
+            $out[] = "\$GLOBALS['" . $this->keyName . "']=substr(hash('sha256','" . $seedStr . "',true),0,8);";
         }
 
         if ($injected > 0) {
@@ -122,61 +135,6 @@ final class StringRuntimeAssembler
     }
 
     /** @return array<int,true> */
-    private function scanSafeContexts(array $tokens): array
-    {
-        $safe = [];
-        $constMode = false;
-        $caseMode = false;
-        $inParam = false;
-        $paramNest = 0;
-        $awaitParam = false;
-        $defaultMode = false;
-        $n = count($tokens);
-
-        for ($i = 0; $i < $n; $i++) {
-            $tok = $tokens[$i];
-            $isArr = is_array($tok);
-            $type = $isArr ? $tok[0] : null;
-            $t = is_string($tok) ? $tok : null;
-
-            if ($type === T_CONST) {
-                $constMode = true;
-            } elseif ($type === T_CASE || $type === T_DEFAULT) {
-                $caseMode = true;
-            } elseif ($t === ':' && $caseMode) {
-                $caseMode = false;
-            } elseif ($t === ';' && $constMode) {
-                $constMode = false;
-            } elseif ($type === T_FUNCTION) {
-                $awaitParam = true;
-            } elseif ($t === '(') {
-                if ($awaitParam) {
-                    $inParam = true;
-                    $paramNest = 1;
-                    $awaitParam = false;
-                } elseif ($inParam) {
-                    $paramNest++;
-                }
-            } elseif ($t === ')') {
-                if ($inParam && $paramNest > 1) {
-                    $paramNest--;
-                } elseif ($inParam && $paramNest === 1) {
-                    $inParam = false;
-                    $defaultMode = false;
-                }
-            } elseif ($t === '=' && $inParam) {
-                $defaultMode = true;
-            } elseif ($t === ',' && $defaultMode) {
-                $defaultMode = false;
-            }
-
-            if ($isArr && $type === T_CONSTANT_ENCAPSED_STRING && ($constMode || $caseMode || $defaultMode)) {
-                $safe[$i] = true;
-            }
-        }
-        return $safe;
-    }
-
     private function decodeLiteral(string $text): ?string
     {
         if (strlen($text) < 2) {

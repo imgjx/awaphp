@@ -259,6 +259,10 @@ final class VmRuntimeGenerator
         }
         $program['natTbl'] = $natTbl;
 
+        // —— 生成器标记（必须在任何"移动指令位置"的变换之前：junk/flatten/stateMachine 一律
+        // 跳过带标记的段，保证 GEN_HEAD 恒在下标 0）——
+        $this->markGenerators($program);
+
         // —— VM opcode 组合执行（combo）：把单 opcode 拆成等价多指令序列，打破 1:1 映射，抗反编译 ——
         // 在 flatten/stateMachine/ISA 精简之前注入：展开后的 NEG/ADD/DUP/EQ/PUSH_C 会一并被平坦化
         // 与 ISA 收口（ADD→BINOP 等），组合痕迹被进一步打散。combo=0（默认）不展开。
@@ -694,6 +698,9 @@ final class VmRuntimeGenerator
         $template = $this->runtimeTemplate();
         $runtime = str_replace('___SWITCH___', $switch, $template);
         $runtime = strtr($runtime, $this->placeholderMap($nm, $scramble, $jt));
+        // GEN_HEAD 的【重映射后】操作码编号：RUN 入口靠它识别生成器段。
+        // 必须在 remap 之后取 mapping 值——段内操作数已是随机编号，写死常量会永不命中。
+        $runtime = str_replace('___GENHEADOP___', (string) ($mapping[VmOp::GEN_HEAD] ?? 0), $runtime);
 
         // —— VM 常量池加密：把常量池变量纳入 $___RUN___ 闭包的 use 列表 ——
         // $___RUN___ 是按值捕获的闭包，handler 内引用 $___CPOOL___ 若不在此登记，
@@ -793,7 +800,7 @@ final class VmRuntimeGenerator
         $suffix = 0;
         foreach ($raw as $role => $name) {
             while (isset($seen[$name])) {
-                $name .= self::UNI_DIGITS[$suffix % 10];
+                $name .= self::uniDigit($suffix % 10);
                 $suffix++;
             }
             $seen[$name] = true;
@@ -811,6 +818,20 @@ final class VmRuntimeGenerator
     private const CJK_MAX = 0x9FFF;   // 约 2 万个可用码点
     private const UNI_DIGITS = '零一二三四五六七八九';
 
+    /**
+     * 取 Unicode 数字字符（按【字符】而非按字节）。
+     *
+     * 注意：UNI_DIGITS 是多字节 UTF-8 字符串，用 `$str[$i]` 取的是**单个字节**，
+     * 拼进标识符会截断字符 → 产物出现非法 UTF-8 → php -l 直接报
+     * "syntax error, unexpected variable"（并让逐层壳自保护整层回滚）。
+     * 必须走 mb_substr 按字符切。
+     */
+    private static function uniDigit(int $i): string
+    {
+        $c = mb_substr(self::UNI_DIGITS, max(0, $i) % 10, 1, 'UTF-8');
+        return ($c === '' || $c === false) ? '零' : $c;
+    }
+
     private function uniChar(string $label): string
     {
         $cp = $this->salt->deriveInt($label, self::CJK_MIN, self::CJK_MAX);
@@ -826,7 +847,7 @@ final class VmRuntimeGenerator
         for ($i = 0; $i < $n; $i++) {
             // 适当混入 Unicode 数字，进一步破坏"字母+数字"的可预测结构
             if ($this->salt->deriveInt($label . '|d' . $i, 0, 3) === 0) {
-                $name .= self::UNI_DIGITS[$this->salt->deriveInt($label . '|dn' . $i, 0, 9)];
+                $name .= self::uniDigit($this->salt->deriveInt($label . '|dn' . $i, 0, 9));
             } else {
                 $name .= $this->uniChar($label . '|r' . $i);
             }
@@ -957,16 +978,26 @@ final class VmRuntimeGenerator
     {
         return <<<'TPL'
 $___META___='__vm_cls__';
-$___IDXGET___=function($arr,$k){if(is_array($arr)){return $arr[$k]??null;}if(is_string($arr)){return $k===(int)$k&&$k>=0&&$k<strlen($arr)?$arr[$k]:null;}if(is_object($arr)){return $arr->$k??null;}return null;};
-$___PROPGET___=function($obj,$p)use($___META___){if(is_object($obj)){return $obj->$p??null;}if(is_array($obj)){return $obj[$p]??null;}return null;};
-$___PROPSET___=function($obj,$p,$v)use($___META___){if(is_object($obj)){$obj->$p=$v;return;}if(is_array($obj)){$obj[$p]=$v;return;}};
-$___PATHGET___=function(&$vars,$name,$keys,&$found){if($name==='$GLOBALS'){$v=$GLOBALS;}elseif(!array_key_exists($name,$vars)){$found=false;return null;}else{$v=$vars[$name];}foreach($keys as $k){if(is_array($v)){if(!array_key_exists($k,$v)){$found=false;return null;}$v=$v[$k];}elseif(is_object($v)){if(!isset($v->$k)){$found=false;return null;}$v=$v->$k;}else{$found=false;return null;}}$found=true;return $v;};
+$___IDXGET___=function($arr,$k){if(is_array($arr)){return $arr[$k]??null;}if(is_string($arr)){if(!is_int($k)&&!(is_string($k)&&preg_match('/^-?\d+$/',$k))){return null;}$k=(int)$k;$___IL___=strlen($arr);if($k<0){$k+=$___IL___;}return ($k>=0&&$k<$___IL___)?$arr[$k]:null;}if(is_object($arr)){return $arr->$k??null;}return null;};
+$___PROPGET___=function($obj,$p)use($___META___){if(is_object($obj)){if(isset($obj->$___META___)){return $obj->$p??null;}static $___PGC___=[];$___pc___=get_class($obj);if(!isset($___PGC___[$___pc___])){$___PGC___[$___pc___]=(new \ReflectionClass($___pc___))->isInternal()?(static function($o,$k){return $o->$k??null;}):Closure::bind(static function($o,$k){return $o->$k??null;},null,$___pc___);}return ($___PGC___[$___pc___])($obj,$p);}if(is_array($obj)){return $obj[$p]??null;}return null;};
+$___PROPSET___=function($obj,$p,$v)use($___META___){if(is_object($obj)){if(isset($obj->$___META___)){$obj->$p=$v;return;}static $___PSC___=[];$___sc___=get_class($obj);if(!isset($___PSC___[$___sc___])){$___PSC___[$___sc___]=(new \ReflectionClass($___sc___))->isInternal()?(static function($o,$k,$vv){$o->$k=$vv;}):Closure::bind(static function($o,$k,$vv){$o->$k=$vv;},null,$___sc___);}($___PSC___[$___sc___])($obj,$p,$v);return;}if(is_array($obj)){$obj[$p]=$v;return;}};
+$___PATHGET___=function(&$vars,$name,$keys,&$found){if($name==='$GLOBALS'){$v=$GLOBALS;}elseif(!array_key_exists($name,$vars)){$found=false;return null;}else{$v=$vars[$name];}foreach($keys as $k){if(is_array($v)){if(!array_key_exists($k,$v)){$found=false;return null;}$v=$v[$k];}elseif(is_object($v)){if(!isset($v->$k)){$found=false;return null;}$v=$v->$k;}elseif(is_string($v)){if(!is_int($k)&&!(is_string($k)&&preg_match('/^-?\d+$/',$k))){$found=false;return null;}$k=(int)$k;$___PL___=strlen($v);if($k<0){$k+=$___PL___;}if($k<0||$k>=$___PL___){$found=false;return null;}$v=$v[$k];}else{$found=false;return null;}}$found=true;return $v;};
 $___PAD___=function($spec,$args)use(&$___RUN___){$n=count($spec);if($n>0&&(($spec[$n-1][2]??0)&2)){$f=$n-1;$fl=false;for($i=0;$i<$f;$i++){if(array_key_exists($i,$args)){continue;}$d=$spec[$i][1];$___EMPTYV___=[];$args[$i]=($d===null)?null:$___RUN___($d,$___EMPTYV___,null,[]);$fl=true;}if($fl){ksort($args);}$rest=array_slice($args,$f);$args=array_slice($args,0,$f);$args[]=array_values($rest);return $args;}$fl=false;for($i=0;$i<$n;$i++){if(array_key_exists($i,$args)){continue;}$d=$spec[$i][1];$___EMPTYV___=[];$args[$i]=($d===null)?null:$___RUN___($d,$___EMPTYV___,null,[]);$fl=true;}if($fl){ksort($args);}return $args;};
 $___FLAT___=function($args){foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmspread__'){$f=[];foreach($args as $y){if(is_array($y)&&($y[0]??'')==='__vmspread__'){foreach((array)($y[1]??[]) as $k=>$e){$f[]=is_int($k)?$e:['__vmnamed__',$k,$e];}}else{$f[]=$y;}}return $f;}}return $args;};
 $___REORDER___=function($args,$spec){$has=false;foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$has=true;break;}}if(!$has){return $args;}$out=[];$named=[];foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$named[(string)$x[1]]=$x[2];}else{$out[]=$x;}}if($spec!==null){foreach($spec as $i=>$sp){$pn=ltrim((string)$sp[0],'$');if(array_key_exists($pn,$named)){$out[$i]=$named[$pn];unset($named[$pn]);}}}if($named!==[]){throw new \Error('Unknown named parameter $'.array_key_first($named));}return $out;};
 $___BINDARGS___=function($args,$spec,&$cv=null)use($___FLAT___,$___REORDER___){$args=$___FLAT___($args);$args=$___REORDER___($args,$spec);$refs=[];if($spec!==null){foreach($args as $i=>$a){if(!is_array($a)||($a[0]??'')!=='__vmref__'){continue;}$cvar=(string)$a[1];if(((int)($spec[$i][2]??0))&1){$refs[$i]=[$cvar,(string)$spec[$i][0]];$args[$i]=($cv!==null&&array_key_exists($cvar,$cv))?$cv[$cvar]:null;}else{$args[$i]=$a[2]??null;}}}else{foreach($args as $i=>$a){if(is_array($a)&&($a[0]??'')==='__vmref__'){$args[$i]=$a[2]??null;}}}return [$args,$refs];};
 $___BINDNATIVE___=function($args,$rm,&$cv=null)use($___FLAT___,$___REORDER___){$args=$___FLAT___($args);$args=$___REORDER___($args,null);foreach($args as $i=>$a){if(!is_array($a)||($a[0]??'')!=='__vmref__'){continue;}if((($rm>>$i)&1)&&$cv!==null){$n=(string)$a[1];if(!array_key_exists($n,$cv)){$cv[$n]=null;}$args[$i]=&$cv[$n];}else{$args[$i]=$a[2]??null;}}return $args;};
 $___MO___=function($cls,$m)use($___P___){$c=$cls;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64&&isset($___P___['classes'][$c])){if(isset($___P___['classes'][$c]['methods'][$m])){return $c;}$c=$___P___['classParents'][$c]??null;}return null;};
+// 类名解析：编译期已按 namespace + use 别名补全为首选 FQN；此处再按 PHP 的
+// 「命名空间内找不到就去全局找」回退语义补一次，避免 `new Exception()` 这类
+// 全局类在 app\ 命名空间下被补成 app\Exception 后找不到。
+$___RCLS___=function($c)use($___P___){if(!is_string($c)||$c===''){return $c;}if(class_exists($c)||interface_exists($c)||isset($___P___['classes'][$c])){return $c;}$p=strrpos($c,'\\');if($p===false){return $c;}$s=substr($c,$p+1);if(class_exists($s)||interface_exists($s)||isset($___P___['classes'][$s])){return $s;}return $c;};
+// 实参引用修正：调用【真实 PHP 方法】时，by-ref 形参必须收到引用容器，否则 PHP 直接
+// 抛 "Argument #1 must be passed by reference, value given"（call_user_func_array
+// 传的是数组元素，天然是值）。这里把 PUSH_REF 句柄（['__vmref__',帧槽名,值]）绑成
+// 调用方帧槽的真实引用——写穿回帧变量表，与 PHP 的 by-ref 语义一致；
+// 其余 by-ref 位置（非变量实参）退回"临时引用容器"，保证调用不致命。
+$___FIXREF___=function(&$args,$cls,$m,&$vars)use($___BINDARGS___){$___mk___=false;foreach($args as $___a4___){if(is_array($___a4___)&&(($___a4___[0]??'')==='__vmspread__'||($___a4___[0]??'')==='__vmnamed__')){$___mk___=true;break;}}if($___mk___){[$args,]=$___BINDARGS___($args,null,$vars);}foreach($args as $___i4___=>$___a4___){if(is_array($___a4___)&&($___a4___[0]??'')==='__vmref__'){$args[$___i4___]=&$vars[(string)$___a4___[1]];}}static $___RK___=[];$___k4___=is_string($cls)?$cls.'::'.$m:'';if($___k4___!==''){if(!isset($___RK___[$___k4___])){$___o4___=[];try{$___rf4___=new \ReflectionMethod($cls,$m);foreach($___rf4___->getParameters() as $___j4___=>$___p4___){if($___p4___->isPassedByReference()){$___o4___[]=$___j4___;}}}catch(\Throwable $___e4___){}$___RK___[$___k4___]=$___o4___;}$___h4___=[];foreach($___RK___[$___k4___] as $___i4___){if(array_key_exists($___i4___,$args)&&\ReflectionReference::fromArrayElement($args,$___i4___)===null){$___h4___[$___i4___]=$args[$___i4___];$args[$___i4___]=&$___h4___[$___i4___];}}}return $args;};
 // called-class 栈（static:: 延迟静态绑定）：与 runtime.php 参考运行期同语义。
 // VM 方法/静态调用执行期间压入「本次调用的 called class」；类操作数为
 // "\x00lsb:FB" 标记（static::）时按栈顶解析（栈空回退 FB）；"\x00fwd:FB"
@@ -978,7 +1009,7 @@ $___TOSTR___=function($v)use(&$___TOSTR___,$___P___,$___META___,&$___CALLMETHOD_
 $___INSTOF___=function($v,$cls)use($___P___,$___META___){if(is_object($v)){if(isset($v->$___META___)&&is_string($v->$___META___)){$c=$v->$___META___;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64){if($c===$cls){return true;}if(isset($___P___['classImpl'][$c][$cls])){return true;}$c=$___P___['classParents'][$c]??null;}return false;}}return $v instanceof $cls;};
 $___CCO___=function($cls,$name)use($___P___){$c=$cls;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64&&isset($___P___['classes'][$c])){if(array_key_exists($name,$___P___['classes'][$c]['consts']??[])){return $c;}foreach(array_keys($___P___['classImpl'][$c]??[]) as $if){if(isset($___P___['classes'][$if])&&array_key_exists($name,$___P___['classes'][$if]['consts']??[])){return $if;}}$c=$___P___['classParents'][$c]??null;}return null;};
 $___VMCB___=function($cb)use(&$___RUN___,$___P___,$___META___,&$___CALLMETHOD___,&$___PAD___,&$___CALLEDCLS___){if(is_string($cb)&&isset($___P___['funcs'][$cb])){$s=$___P___['funcs'][$cb];$sp=$___P___['funcParams'][$cb]??[];$fet=$___P___['funcET'][$cb]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$fet){$___EMPTYV___=[];return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$fet);};}if(is_array($cb)&&count($cb)===2){$o=$cb[0];$m=$cb[1];if(is_object($o)&&isset($o->$___META___)&&isset($___P___['classes'][$o->$___META___]['methods'][$m])){return function(...$a)use(&$___CALLMETHOD___,$o,$m){return $___CALLMETHOD___($o,$m,$a);};}if(is_string($o)&&isset($___P___['classes'][$o]['methods'][$m])){$s=$___P___['classes'][$o]['methods'][$m];$sp=$___P___['classParams'][$o][$m]??[];$cet=$___P___['classET'][$o][$m]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$o,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$o;try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}if(is_string($cb)&&strpos($cb,'::')!==false){$p=explode('::',$cb,2);if(isset($___P___['classes'][$p[0]]['methods'][$p[1]])){$s=$___P___['classes'][$p[0]]['methods'][$p[1]];$sp=$___P___['classParams'][$p[0]][$p[1]]??[];$cet=$___P___['classET'][$p[0]][$p[1]]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$p,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$p[0];try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}return $cb;};
-$___NEWOBJ___=function($cls,$args)use(&$___RUN___,$___P___,$___META___,$___MO___,&$___CALLMETHOD___,$___BINDARGS___,&$___CALLEDCLS___){if(is_string($cls)&&strncmp($cls,"\x00lsb:",5)===0){$cls=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($cls,5);}if(isset($___P___['classes'][$cls])){$o=new \stdClass();$o->$___META___=$cls;$___PDEFS___=[];$___CC___=$cls;$___G___=0;while(is_string($___CC___)&&$___CC___!==''&&isset($___P___['classes'][$___CC___])&&$___G___++<64){foreach(($___P___['classes'][$___CC___]['props']??[]) as $pn=>$def){if(!array_key_exists($pn,$___PDEFS___)){$___PDEFS___[$pn]=$def;}}$___CC___=$___P___['classParents'][$___CC___]??null;}foreach($___PDEFS___ as $pn=>$def){$___EMPTYV___=[];$o->$pn=($def===null)?null:$___RUN___($def,$___EMPTYV___,null,[]);}if($___MO___($cls,'__construct')!==null){$___CALLMETHOD___($o,'__construct',$args);}return $o;}$___NOCV___=null;[$args,]=$___BINDARGS___($args,null,$___NOCV___);$rc=new \ReflectionClass($cls);return $rc->newInstanceArgs($args);};
+$___NEWOBJ___=function($cls,$args)use(&$___RUN___,$___P___,$___META___,$___MO___,$___RCLS___,$___FIXREF___,&$___CALLMETHOD___,$___BINDARGS___,&$___CALLEDCLS___){if(is_string($cls)&&strncmp($cls,"\x00lsb:",5)===0){$cls=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($cls,5);}if(isset($___P___['classes'][$cls])){$o=new \stdClass();$o->$___META___=$cls;$___PDEFS___=[];$___CC___=$cls;$___G___=0;while(is_string($___CC___)&&$___CC___!==''&&isset($___P___['classes'][$___CC___])&&$___G___++<64){foreach(($___P___['classes'][$___CC___]['props']??[]) as $pn=>$def){if(!array_key_exists($pn,$___PDEFS___)){$___PDEFS___[$pn]=$def;}}$___CC___=$___P___['classParents'][$___CC___]??null;}foreach($___PDEFS___ as $pn=>$def){$___EMPTYV___=[];$o->$pn=($def===null)?null:$___RUN___($def,$___EMPTYV___,null,[]);}if($___MO___($cls,'__construct')!==null){$___CALLMETHOD___($o,'__construct',$args);}return $o;}$___NOCV___=null;[$args,]=$___BINDARGS___($args,null,$___NOCV___);$cls=$___RCLS___($cls);$rc=new \ReflectionClass($cls);return $rc->newInstanceArgs($args);};
 // FCC：一等可调用创建（PHP 8.1+ $o->m(...) / C::m(...) 等）——与 runtime.php
 // 参考运行期 $__fcc 逐语义同步：创建期校验（方法不存在/非静态类名 FCC/null
 // 接收者）与原生一致；实例 FCC 绑定 $this，类名 FCC 桥接类方法段（调用期压
@@ -994,16 +1025,25 @@ $___CALLFN___=function($idx,$args)use($___P___,$___VMCB___,$___META___,&$___CALL
 $___INC___=function($v,$d){if(is_int($v)||is_float($v)){return $v+$d;}if(is_null($v)){return $d>0?1:$v;}if(is_bool($v)){return $v;}if(is_array($v)){throw new \TypeError($d>0?'Cannot increment array':'Cannot decrement array');}if(is_string($v)){if(is_numeric($v)){return (strpbrk($v,'.eE')!==false)?(float)$v+$d:(int)$v+$d;}if($v===''){return $d>0?'1':$v;}if($d<0){return $v;}$s=$v;$carry=true;for($i=strlen($s)-1;$i>=0;$i--){$ch=$s[$i];if($ch>='a'&&$ch<'z'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='z'){$s[$i]='a';continue;}if($ch>='A'&&$ch<'Z'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='Z'){$s[$i]='A';continue;}if($ch>='0'&&$ch<'9'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='9'){$s[$i]='0';continue;}$carry=false;break;}if($carry){$f=$v[0];$s=(($f==='Z')?'A':(($f==='z')?'a':'1')).$s;}return $s;}return $v+$d;};
 $___DIV___=function($a,$b){if($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))){if($b==0){throw new \DivisionByZeroError('Division by zero');}}return $a/$b;};
 $___MOD___=function($a,$b){if($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))){if((int)$b===0){throw new \DivisionByZeroError('Modulo by zero');}}return $a%$b;};
-$___RUN___=function($___CODE___,&$___VARS___,$___THIS___,$___INIT___,$___ISG___=false,$___EXTAB___=null)use(&$___RUN___,$___P___,$___META___,$___IDXGET___,$___PROPGET___,$___PROPSET___,$___NEWOBJ___,$___CALLFUNC___,$___CALLMETHOD___,$___CALLFN___,$___FCC___,$___PATHGET___,$___INC___,$___DIV___,$___MOD___,$___TOSTR___,$___INSTOF___,$___CCO___,$___MO___,$___BINDARGS___,$___BINDNATIVE___,&$___GFRAME___,&$___PAD___,&$___INCTRACK___,&$___CALLEDCLS___){
+$___RUN___=function($___CODE___,&$___VARS___,$___THIS___,$___INIT___,$___ISG___=false,$___EXTAB___=null,$___NW___=false)use(&$___RUN___,$___P___,$___META___,$___IDXGET___,$___PROPGET___,$___PROPSET___,$___NEWOBJ___,$___CALLFUNC___,$___CALLMETHOD___,$___CALLFN___,$___FCC___,$___PATHGET___,$___INC___,$___DIV___,$___MOD___,$___TOSTR___,$___INSTOF___,$___CCO___,$___MO___,$___RCLS___,$___FIXREF___,$___BINDARGS___,$___BINDNATIVE___,&$___GFRAME___,&$___PAD___,&$___INCTRACK___,&$___CALLEDCLS___){
+// —— 生成器入口（段首 GEN_HEAD 标记）——
+// 该段是"含 yield 的函数/方法/闭包体"。此处【不执行】它，而是返回一个原生 Generator
+// 作为桥：调用方第一次取项时才创建 Fiber 并启动解释器，段内 YIELD 通过 Fiber::suspend
+// 把 (key,value) 交给桥、桥再 yield 给调用方；调用方 send() 的值经 Fiber::resume 回注，
+// 于是惰性求值、双向传值、getReturn()、foreach、iterator_to_array 全部保持 PHP 原生语义。
+// 桥内以 NOWRAP=true 重入同一段（GEN_HEAD 执行时是空操作），标记不剥离——剥离会
+// 整体前移指令下标，而异常表记录的是绝对 pc，错位会让 try/catch/finally 路由错乱。
+if(!$___NW___&&isset($___CODE___[0][0])&&$___CODE___[0][0]===___GENHEADOP___){
+return (function($___GR___,$___GC___,&$___GV___,$___GT___,$___GI___,$___GS___,$___GE___){$___FB___=new \Fiber(function()use($___GR___,$___GC___,&$___GV___,$___GT___,$___GI___,$___GS___,$___GE___){return $___GR___($___GC___,$___GV___,$___GT___,$___GI___,$___GS___,$___GE___,true);});$___CV___=$___FB___->start();while(!$___FB___->isTerminated()){$___SV___=yield $___CV___[0]=>$___CV___[1];$___CV___=$___FB___->resume($___SV___);}return $___FB___->getReturn();})($___RUN___,$___CODE___,$___VARS___,$___THIS___,$___INIT___,$___ISG___,$___EXTAB___);}
 $___MCPLAIN___=[];$___MCFLAGS___=[];
 $___MCKEY___=substr(hash('sha256',(string)microtime(true).(string)memory_get_usage(),true),0,16);
-$___MCENC___=function($v)use(&$___MCKEY___,&$___MCPLAIN___){if(is_object($v)||is_resource($v)||$v===null){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}try{$___MCS___=serialize($v);}catch(\Throwable $___E___){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}$___MCN___=strlen($___MCS___);$___MCO___='';for($___MCI___=0;$___MCI___<$___MCN___;$___MCI___++){$___MCO___.=$___MCS___[$___MCI___]^$___MCKEY___[$___MCI___%16];}return $___MCO___;};
-$___MCDEC___=function($v)use(&$___MCKEY___){if(is_object($v)||is_resource($v)||$v===null){return $v;}$___MCN___=strlen($v);$___MCO___='';for($___MCI___=0;$___MCI___<$___MCN___;$___MCI___++){$___MCO___.=$v[$___MCI___]^$___MCKEY___[$___MCI___%16];}return unserialize($___MCO___);};
+$___MCENC___=function($v)use(&$___MCKEY___,&$___MCPLAIN___){if(is_object($v)||is_resource($v)||$v===null){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}if(is_string($v)&&strlen($v)>4096){return ['#',$v];}if(is_array($v)&&count($v)>128){return ['#',$v];}try{$___MCS___=serialize($v);}catch(\Throwable $___E___){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}$___MCN___=strlen($___MCS___);if($___MCN___===0){return '';}return $___MCS___^substr(str_repeat($___MCKEY___,(int)(($___MCN___+15)/16)),0,$___MCN___);};
+$___MCDEC___=function($v)use(&$___MCKEY___){if(is_object($v)||is_resource($v)||$v===null){return $v;}$___MCN___=strlen($v);if($___MCN___===0){return false;}return unserialize($v^substr(str_repeat($___MCKEY___,(int)(($___MCN___+15)/16)),0,$___MCN___));};
 $___STACK___=[];$___MCFLAGS___=[];
-foreach($___INIT___ as $___IV___){$___E___=$___MCENC___($___IV___);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:0;}
-$___MCPUSH___=function($v)use(&$___STACK___,&$___MCFLAGS___,&$___MCENC___){$___E___=$___MCENC___($v);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:0;};
-$___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___F___=array_pop($___MCFLAGS___);$___S___=array_pop($___STACK___);return $___F___===1?$___MCPLAIN___[$___S___]:$___MCDEC___($___S___);};
-$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___S___=$___STACK___[$___C___-1];return $___F___===1?$___MCPLAIN___[$___S___]:$___MCDEC___($___S___);};$___PC___=0;$___N___=count($___CODE___);$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
+foreach($___INIT___ as $___IV___){$___E___=$___MCENC___($___IV___);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:(is_array($___E___)?2:0);}
+$___MCPUSH___=function($v)use(&$___STACK___,&$___MCFLAGS___,&$___MCENC___){$___E___=$___MCENC___($v);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:(is_array($___E___)?2:0);};
+$___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___F___=array_pop($___MCFLAGS___);$___S___=array_pop($___STACK___);return $___F___===1?$___MCPLAIN___[$___S___]:($___F___===2?$___S___[1]:$___MCDEC___($___S___));};
+$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___S___=$___STACK___[$___C___-1];return $___F___===1?$___MCPLAIN___[$___S___]:($___F___===2?$___S___[1]:$___MCDEC___($___S___));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
 // —— 异常处理（try/catch/finally 真编译）——
 // 外层 try 包装内层取指循环：运行期 opcode 抛出的异常（除法错 / 调用用户码 / THROW）在此
 // 捕获，按异常表（exTab，绝对 pc 区间 + 处理器 pc）路由到 catch 或 finally；无处理器则重抛。
@@ -1043,12 +1083,50 @@ TPL;
             case VmOp::PUSH_REF_EL: return '$___MCPUSH___([\'__vmrefel__\',$___INS___[1]]);';
             case VmOp::POP_V:    return '$___VARS___[$___INS___[1]]=$___MCPOP___();';
             case VmOp::DUP:      return '$___MCPUSH___($___MCPEEK___());';
-            case VmOp::DROP:     return '$___MCPOP___();';
+            // DROP：丢弃栈顶。空栈时为空操作——`for` 的 init/step 段是"求值即丢弃"，
+            // 但其中有的写法本就不留值（如 `$i = $i + 1` 走 POP_V），有的留值（`$i++`、
+            // 函数调用）。编译器无法逐形态判定，统一补一条 DROP，由运行期按栈深度兜底。
+            case VmOp::DROP:     return 'if($___STACK___){$___MCPOP___();}';
             case VmOp::LOAD_THIS:return '$___MCPUSH___($___THIS___);';
             case VmOp::PUSH_NULL:return '$___MCPUSH___(null);';
             case VmOp::NEG:      return '$___MCPUSH___(-$___MCPOP___());';
             case VmOp::CLONE:    return '$___MCPUSH___(clone $___MCPOP___());';
+            // MAKE_CLOSURE：把一段所属 Program 内的字节码包装成【真实 PHP Closure】。
+            // 捕获：'*' = 当前帧整表按值捕获（箭头函数）；否则按 CSV 名单逐项捕获，
+            // 引用位为 '1' 的变量直接绑定为创建者帧槽位的引用（写完穿透回外层）。
+            // 段（funcs/funcParams/funcET）与普通函数同构，故调用期也能走 CALL/CALL_VAR。
+            case VmOp::MAKE_CLOSURE: return '$___TCN___=$___INS___[2];$___TCF___=$___INS___[3];$___TCAP___=[];'
+                . 'if($___TCN___===\'*\'){foreach($___VARS___ as $___TCK___=>$___TCV___){if($___TCK___===\'$this\'||strpos($___TCK___,"\x01")===0){continue;}$___TCAP___[$___TCK___]=$___TCV___;}}'
+                . 'elseif($___TCN___!==\'\'){foreach(explode(\',\',$___TCN___) as $___TCI___=>$___TCK___){'
+                . 'if($___TCF___!==\'\'&&($___TCF___[$___TCI___]??\'0\')===\'1\'){$___TCAP___[$___TCK___]=&$___VARS___[$___TCK___];}'
+                . 'else{$___TCAP___[$___TCK___]=$___VARS___[$___TCK___]??null;}}}'
+                . '$___TSG___=$___P___[\'funcs\'][$___INS___[1]]??null;'
+                . '$___TSP2___=$___P___[\'funcParams\'][$___INS___[1]]??[];'
+                . '$___TET2___=$___P___[\'funcET\'][$___INS___[1]]??null;'
+                . '$___TSELF___=$___INS___[4]?null:$___THIS___;'
+                . '$___MCPUSH___(function(...$___TAA___)use(&$___RUN___,&$___PAD___,$___TSG___,$___TCAP___,$___TSP2___,$___TET2___,$___TSELF___){$___TV2___=$___TCAP___;if($___TSP2___!==[]){$___TAA___=$___PAD___($___TSP2___,$___TAA___);}return $___RUN___($___TSG___,$___TV2___,$___TSELF___,$___TAA___,false,$___TET2___);});';
             case VmOp::BW_NOT:   return '$___MCPUSH___(~$___MCPOP___());';
+            // —— 生成器 ——
+            // YIELD：栈 [key?, value]（value 在顶）。\Fiber::suspend 把 (key,value) 交给
+            // 桥接原生 Generator；恢复时返回调用方 send() 的值，压栈作为 yield 表达式结果。
+            // 自动键（`yield $v`）由帧内计数器 $___YAK___ 递增——与 PHP 自增键语义一致。
+            case VmOp::YIELD:
+                return 'if($___INS___[1]===1){$___YV___=$___MCPOP___();$___YK___=$___MCPOP___();}'
+                    . 'else{$___YV___=$___MCPOP___();$___YK___=$___YAK___++;}'
+                    . '$___MCPUSH___(\Fiber::suspend([$___YK___,$___YV___]));';
+            // YIELD_FROM：Generator 走 rewind/valid/send 显式迭代（保留 send 语义与 return 值），
+            // 数组与其它可迭代对象按 foreach 转发（send 值被丢弃，与 PHP 行为一致）。
+            case VmOp::YIELD_FROM:
+                return '$___YG___=$___MCPOP___();$___YRET___=null;'
+                    . 'if($___YG___ instanceof \Generator){$___YG___->rewind();'
+                    . 'while($___YG___->valid()){$___YS___=\Fiber::suspend([$___YG___->key(),$___YG___->current()]);'
+                    . 'if($___YS___===null){$___YG___->next();}else{$___YG___->send($___YS___);}}'
+                    . '$___YRET___=$___YG___->getReturn();}'
+                    . 'elseif(is_array($___YG___)||$___YG___ instanceof \Traversable){'
+                    . 'foreach($___YG___ as $___YK2___=>$___YV2___){\Fiber::suspend([$___YK2___,$___YV2___]);}}'
+                    . '$___MCPUSH___($___YRET___);';
+            // GEN_HEAD：段首标记，解释器执行时为空调试指令（真执行路径上会被 RUN 入口剥离）。
+            case VmOp::GEN_HEAD: return '';
             case VmOp::BOOL_NOT: return '$___MCPUSH___(!$___MCPOP___());';
             case VmOp::JMP:      return '$___PC___+=$___INS___[1];';
             case VmOp::JZ:       return '$___TV___=$___MCPOP___();if(!$___TV___){$___PC___+=$___INS___[1];}';
@@ -1099,10 +1177,10 @@ TPL;
             // 方法转发 → 查找类=FB、called class 保持栈顶——与 runtime.php 同语义），
             // called class 入栈后执行（try/finally 保证异常安全弹出）。
             // 异常表一并透传（classET）：静态方法内的 try/catch 由本段自己分发。
-            case VmOp::SCALL:    return '$___TARGC___=$___INS___[3];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=$___MCPOP___();}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=$___INS___[2];$___TFWD___=false;if(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00lsb:",5)===0){$___TCLS___=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($___TCLS___,5);}elseif(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00fwd:",5)===0){$___TFWD___=true;$___TCLS___=substr($___TCLS___,5);}$___TMO___=$___MO___($___TCLS___,$___TM___);if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=($___THIS___!==null)?[\'$this\'=>$___THIS___]:[];$___CALLEDCLS___[]=$___TFWD___?(($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:$___TCLS___):$___TCLS___;try{$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,$___THIS___,$___TARGS___,false,$___P___[\'classET\'][$___TMO___][$___TM___] ?? null);}finally{array_pop($___CALLEDCLS___);}foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___MCPUSH___($___TR___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){[$___TARGS___,]=$___BINDARGS___($___TARGS___,null,$___VARS___);$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}else{$___cso=$___MO___($___TCLS___,\'__callStatic\');if($___cso!==null){$___cssp=$___P___[\'classParams\'][$___cso][\'__callStatic\']??[];$___csargs=$___PAD___($___cssp,[$___TM___,$___TARGS___]);$___CALLEDCLS___[]=$___TCLS___;try{$___MCPUSH___($___RUN___($___P___[\'classes\'][$___cso][\'methods\'][\'__callStatic\'],[],null,$___csargs,false,$___P___[\'classET\'][$___cso][\'__callStatic\'] ?? null));}finally{array_pop($___CALLEDCLS___);}}else{$___MCPUSH___(null);}}';
+            case VmOp::SCALL:    return '$___TARGC___=$___INS___[3];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=$___MCPOP___();}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=$___INS___[2];$___TFWD___=false;if(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00lsb:",5)===0){$___TCLS___=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($___TCLS___,5);}elseif(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00fwd:",5)===0){$___TFWD___=true;$___TCLS___=substr($___TCLS___,5);}$___TCLS___=$___RCLS___($___TCLS___);$___TMO___=$___MO___($___TCLS___,$___TM___);if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=($___THIS___!==null)?[\'$this\'=>$___THIS___]:[];$___CALLEDCLS___[]=$___TFWD___?(($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:$___TCLS___):$___TCLS___;try{$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,$___THIS___,$___TARGS___,false,$___P___[\'classET\'][$___TMO___][$___TM___] ?? null);}finally{array_pop($___CALLEDCLS___);}foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___MCPUSH___($___TR___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){$___TARGS___=$___FIXREF___($___TARGS___,$___TCLS___,$___TM___,$___VARS___);if($___THIS___!==null&&$___THIS___ instanceof $___TCLS___&&!(new \ReflectionMethod($___TCLS___,$___TM___))->isStatic()){$___MCPUSH___((new \ReflectionMethod($___TCLS___,$___TM___))->invoke($___THIS___,...$___TARGS___));}else{$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,\'__callStatic\')){$___TARGS___=$___FIXREF___($___TARGS___,$___TCLS___,$___TM___,$___VARS___);$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}else{$___cso=$___MO___($___TCLS___,\'__callStatic\');if($___cso!==null){$___cssp=$___P___[\'classParams\'][$___cso][\'__callStatic\']??[];$___csargs=$___PAD___($___cssp,[$___TM___,$___TARGS___]);$___CALLEDCLS___[]=$___TCLS___;try{$___MCPUSH___($___RUN___($___P___[\'classes\'][$___cso][\'methods\'][\'__callStatic\'],[],null,$___csargs,false,$___P___[\'classET\'][$___cso][\'__callStatic\'] ?? null));}finally{array_pop($___CALLEDCLS___);}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)){throw new \Error("Call to undefined method {$___TCLS___}::{$___TM___}()");}else{throw new \Error("Class \"".(is_string($___TCLS___)?$___TCLS___:gettype($___TCLS___))."\" not found");}}';
             // SCALL_VAR：动态方法名静态调用 C::$m() / self::$m() / static::$m()。
             // LSB / 转发标记与 called-class 压栈同 SCALL；异常表透传同 SCALL。
-            case VmOp::SCALL_VAR: return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=$___MCPOP___();}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=$___MCPOP___();$___TFWD___=false;if(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00lsb:",5)===0){$___TCLS___=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($___TCLS___,5);}elseif(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00fwd:",5)===0){$___TFWD___=true;$___TCLS___=substr($___TCLS___,5);}$___TMO___=is_string($___TM___)?$___MO___($___TCLS___,$___TM___):null;if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=($___THIS___!==null)?[\'$this\'=>$___THIS___]:[];$___CALLEDCLS___[]=$___TFWD___?(($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:$___TCLS___):$___TCLS___;try{$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,$___THIS___,$___TARGS___,false,$___P___[\'classET\'][$___TMO___][$___TM___] ?? null);}finally{array_pop($___CALLEDCLS___);}foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___MCPUSH___($___TR___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&is_string($___TM___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){[$___TARGS___,]=$___BINDARGS___($___TARGS___,null,$___VARS___);$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}else{$___cso=$___MO___($___TCLS___,\'__callStatic\');if($___cso!==null){$___cssp=$___P___[\'classParams\'][$___cso][\'__callStatic\']??[];$___csargs=$___PAD___($___cssp,[$___TM___,$___TARGS___]);$___CALLEDCLS___[]=$___TCLS___;try{$___MCPUSH___($___RUN___($___P___[\'classes\'][$___cso][\'methods\'][\'__callStatic\'],[],null,$___csargs,false,$___P___[\'classET\'][$___cso][\'__callStatic\'] ?? null));}finally{array_pop($___CALLEDCLS___);}}else{$___MCPUSH___(null);}}';
+            case VmOp::SCALL_VAR: return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=$___MCPOP___();}$___TARGS___=array_reverse($___TARGS___);$___TCLS___=$___INS___[1];$___TM___=$___MCPOP___();$___TFWD___=false;if(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00lsb:",5)===0){$___TCLS___=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($___TCLS___,5);}elseif(is_string($___TCLS___)&&strncmp($___TCLS___,"\x00fwd:",5)===0){$___TFWD___=true;$___TCLS___=substr($___TCLS___,5);}$___TCLS___=$___RCLS___($___TCLS___);$___TMO___=is_string($___TM___)?$___MO___($___TCLS___,$___TM___):null;if($___TMO___!==null){if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___TSP___=$___P___[\'classParams\'][$___TMO___][$___TM___]??[];[$___TARGS___,$___TREFS___]=$___BINDARGS___($___TARGS___,$___TSP___,$___VARS___);$___TARGS___=$___PAD___($___TSP___,$___TARGS___);$___EMPTYV___=($___THIS___!==null)?[\'$this\'=>$___THIS___]:[];$___CALLEDCLS___[]=$___TFWD___?(($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:$___TCLS___):$___TCLS___;try{$___TR___=$___RUN___($___P___[\'classes\'][$___TMO___][\'methods\'][$___TM___],$___EMPTYV___,$___THIS___,$___TARGS___,false,$___P___[\'classET\'][$___TMO___][$___TM___] ?? null);}finally{array_pop($___CALLEDCLS___);}foreach($___TREFS___ as $___TI___=>$___TMM___){if(array_key_exists($___TMM___[1],$___EMPTYV___)){$___VARS___[$___TMM___[0]]=$___EMPTYV___[$___TMM___[1]];}}$___MCPUSH___($___TR___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}}elseif(is_string($___TCLS___)&&is_string($___TM___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,$___TM___)){$___TARGS___=$___FIXREF___($___TARGS___,$___TCLS___,$___TM___,$___VARS___);if($___THIS___!==null&&$___THIS___ instanceof $___TCLS___&&!(new \ReflectionMethod($___TCLS___,$___TM___))->isStatic()){$___MCPUSH___((new \ReflectionMethod($___TCLS___,$___TM___))->invoke($___THIS___,...$___TARGS___));}else{$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}}elseif(is_string($___TCLS___)&&is_string($___TM___)&&class_exists($___TCLS___)&&method_exists($___TCLS___,\'__callStatic\')){$___TARGS___=$___FIXREF___($___TARGS___,$___TCLS___,$___TM___,$___VARS___);$___MCPUSH___(call_user_func_array([$___TCLS___,$___TM___],$___TARGS___));}else{$___cso=$___MO___($___TCLS___,\'__callStatic\');if($___cso!==null){$___cssp=$___P___[\'classParams\'][$___cso][\'__callStatic\']??[];$___csargs=$___PAD___($___cssp,[$___TM___,$___TARGS___]);$___CALLEDCLS___[]=$___TCLS___;try{$___MCPUSH___($___RUN___($___P___[\'classes\'][$___cso][\'methods\'][\'__callStatic\'],[],null,$___csargs,false,$___P___[\'classET\'][$___cso][\'__callStatic\'] ?? null));}finally{array_pop($___CALLEDCLS___);}}elseif(is_string($___TCLS___)&&class_exists($___TCLS___)){throw new \Error("Call to undefined method {$___TCLS___}::{$___TM___}()");}else{throw new \Error("Class \"".(is_string($___TCLS___)?$___TCLS___:gettype($___TCLS___))."\" not found");}}';
             case VmOp::INSTANCEOF: return '$___TV___=$___MCPOP___();$___MCPUSH___($___INSTOF___($___TV___,$___INS___[1]));';
             // INSTANCEOF_V：动态类名 instanceof（$o instanceof $n）——右值运行期求值。
             // 对象右值取其类名（PHP 语义）；非字符串/对象抛 TypeError。
@@ -1228,18 +1306,114 @@ TPL;
     // ============================================================
 
     /** @param array<string,mixed> $program */
+    /**
+     * 生成器标记：把"含 YIELD / YIELD_FROM 的段"在下标 0 插入 GEN_HEAD。
+     *
+     * 运行期 $RUN 入口凭 [0][0] 识别生成器段，返回原生 Generator 桥而非直接求值
+     * （惰性 + send 双向传值 + getReturn）。标记必须早于一切"会移动指令下标"的变换
+     * （junk 可插到 0、flatten/stateMachine 会重排），故这些变换一律跳过带标记的段。
+     *
+     * 注意：段首插指令会把整段 pc 后移 1，段对应异常表里的绝对 pc（区间起止 + 处理器
+     * 入口）必须同步 +1，否则 try/catch/finally 路由错位。
+     *
+     * @param array<string,mixed> $program
+     */
+    private function markGenerators(array &$program): void
+    {
+        $isGenOp = static fn ($op): bool => $op === VmOp::YIELD || $op === VmOp::YIELD_FROM;
+
+        // $et 为段对应异常表（引用）；有表则整体 pc +1
+        $mark = function (array &$seg, ?array &$et) use ($isGenOp): void {
+            if (!is_array($seg) || $seg === [] || !is_array($seg[0] ?? null)) {
+                return;
+            }
+            if (($seg[0][0] ?? null) === VmOp::GEN_HEAD) {
+                return;
+            }
+            $hit = false;
+            foreach ($seg as $ins) {
+                if (is_array($ins) && $isGenOp($ins[0] ?? null)) {
+                    $hit = true;
+                    break;
+                }
+            }
+            if (!$hit) {
+                return;
+            }
+            array_unshift($seg, [VmOp::GEN_HEAD]);
+            if (is_array($et)) {
+                foreach ($et as &$e) {
+                    if (is_array($e)) {
+                        $e[0] = (int) ($e[0] ?? 0) + 1;
+                        $e[1] = (int) ($e[1] ?? 0) + 1;
+                        $e[2] = (int) ($e[2] ?? 0) + 1;
+                    }
+                }
+                unset($e);
+            }
+        };
+
+        if (isset($program['main']) && is_array($program['main'])) {
+            $mainET = $program['mainET'] ?? [];
+            $mark($program['main'], $mainET);
+            $program['mainET'] = $mainET;
+        }
+        if (!empty($program['funcs']) && is_array($program['funcs'])) {
+            foreach ($program['funcs'] as $fn => &$seg) {
+                $et = $program['funcET'][$fn] ?? [];
+                $mark($seg, $et);
+                if ($et !== []) {
+                    $program['funcET'][$fn] = $et;
+                }
+            }
+            unset($seg);
+        }
+        if (!empty($program['classes']) && is_array($program['classes'])) {
+            foreach ($program['classes'] as $cn => &$cls) {
+                if (empty($cls['methods']) || !is_array($cls['methods'])) {
+                    continue;
+                }
+                foreach ($cls['methods'] as $mn => &$seg) {
+                    $et = $program['classET'][$cn][$mn] ?? [];
+                    $mark($seg, $et);
+                    if ($et !== []) {
+                        $program['classET'][$cn][$mn] = $et;
+                    }
+                }
+                unset($seg);
+            }
+            unset($cls);
+        }
+        if (!empty($program['embeds']) && is_array($program['embeds'])) {
+            foreach ($program['embeds'] as $i => &$seg) {
+                $et = $program['embedET'][$i] ?? [];
+                $mark($seg, $et);
+                if ($et !== []) {
+                    $program['embedET'][$i] = $et;
+                }
+            }
+            unset($seg);
+        }
+    }
+
+    /** 段是否为生成器段（段首 GEN_HEAD） */
+    private function isGenSeg($seg): bool
+    {
+        return is_array($seg) && isset($seg[0]) && is_array($seg[0]) && ($seg[0][0] ?? null) === VmOp::GEN_HEAD;
+    }
+
     private function flattenProgram(array &$program): void
     {
         // 含异常表（try/catch/finally）的段：异常表以绝对 pc 区间记录处理器，
         // 平坦化会重排/插入指令使 pc 失真，故整段不做平坦化（ISA/常量池等不改变 pc 的
         // 混淆层仍生效）。无异常表的段照常平坦化。
-        if (count($program['main'] ?? []) <= self::FLATTEN_CAP && empty($program['mainET'])) {
+        if (!$this->isGenSeg($program['main'] ?? []) && count($program['main'] ?? []) <= self::FLATTEN_CAP && empty($program['mainET'])) {
             $program['main'] = $this->flattenSegment($program['main'] ?? []);
         }
         // 注意：`?? []` 的引用 foreach 是副本、写不回 program，必须先判存在再直接遍历
         if (!empty($program['funcs']) && is_array($program['funcs'])) {
             foreach ($program['funcs'] as $fn => &$seg) {
-                if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['funcET'][$fn] ?? [])) {
+                if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['funcET'][$fn] ?? [])) {
                     $seg = $this->flattenSegment($seg);
                 }
             }
@@ -1249,7 +1423,7 @@ TPL;
             foreach ($program['classes'] as $cname => &$cls) {
                 if (!empty($cls['methods']) && is_array($cls['methods'])) {
                     foreach ($cls['methods'] as $mn => &$seg) {
-                        if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['classET'][$cname][$mn] ?? [])) {
+                        if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['classET'][$cname][$mn] ?? [])) {
                             $seg = $this->flattenSegment($seg);
                         }
                     }
@@ -1261,7 +1435,7 @@ TPL;
         // include 嵌入段自包含（相对跳转段内有效），一并平坦化
         if (!empty($program['embeds']) && is_array($program['embeds'])) {
             foreach ($program['embeds'] as $eid => &$seg) {
-                if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['embedET'][$eid] ?? [])) {
+                if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['embedET'][$eid] ?? [])) {
                     $seg = $this->flattenSegment($seg);
                 }
             }
@@ -1423,13 +1597,13 @@ TPL;
     private function stateMachineProgram(array &$program): void
     {
         // 含异常表的段不做状态机化：状态机同样重排/插入指令使绝对 pc 失真（见 flattenProgram 注释）。
-        if (count($program['main'] ?? []) <= self::FLATTEN_CAP && empty($program['mainET'])) {
+        if (!$this->isGenSeg($program['main'] ?? []) && count($program['main'] ?? []) <= self::FLATTEN_CAP && empty($program['mainET'])) {
             $program['main'] = $this->stateMachineSegment($program['main'] ?? []);
         }
         // 同 flattenProgram：`?? []` 引用 foreach 写不回，必须先判存在再直接遍历
         if (!empty($program['funcs']) && is_array($program['funcs'])) {
             foreach ($program['funcs'] as $fn => &$seg) {
-                if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['funcET'][$fn] ?? [])) {
+                if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['funcET'][$fn] ?? [])) {
                     $seg = $this->stateMachineSegment($seg);
                 }
             }
@@ -1439,7 +1613,7 @@ TPL;
             foreach ($program['classes'] as $cname => &$cls) {
                 if (!empty($cls['methods']) && is_array($cls['methods'])) {
                     foreach ($cls['methods'] as $mn => &$seg) {
-                        if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['classET'][$cname][$mn] ?? [])) {
+                        if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['classET'][$cname][$mn] ?? [])) {
                             $seg = $this->stateMachineSegment($seg);
                         }
                     }
@@ -1451,7 +1625,7 @@ TPL;
         // include 嵌入段自包含，一并状态机化
         if (!empty($program['embeds']) && is_array($program['embeds'])) {
             foreach ($program['embeds'] as $eid => &$seg) {
-                if (is_array($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['embedET'][$eid] ?? [])) {
+                if (is_array($seg) && !$this->isGenSeg($seg) && count($seg) <= self::FLATTEN_CAP && empty($program['embedET'][$eid] ?? [])) {
                     $seg = $this->stateMachineSegment($seg);
                 }
             }

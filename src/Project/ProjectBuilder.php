@@ -54,12 +54,15 @@ final class ProjectBuilder
 
         $table = new SymbolTable();
         // manifest 复用：增量重建沿用旧映射，保持多次迭代间符号名兼容
+        // （version 2 = 类名混淆 v2 的 FQCN 键；旧版短名键不可混用，忽略重建）
         if ($manifestPath !== null && is_file($manifestPath)) {
             try {
                 $m = json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
-                if (isset($m['symbols']) && is_array($m['symbols'])) {
+                if ((int) ($m['version'] ?? 0) >= 2 && isset($m['symbols']) && is_array($m['symbols'])) {
                     $table = SymbolTable::fromArray($m['symbols']);
                     $this->logger->info('已载入 manifest，沿用既有符号映射');
+                } else {
+                    $this->logger->info('manifest 版本过旧（或缺失），重建符号表');
                 }
             } catch (Throwable $e) {
                 $this->logger->warn('manifest 读取失败，将重建符号表：' . $e->getMessage());
@@ -70,14 +73,17 @@ final class ProjectBuilder
         $collectorF = new FunctionObfuscator($this->salt, $this->logger, $table);
         $collectorC = new ClassObfuscator($this->salt, $this->logger, $table);
         $dynamic = [];
-        foreach ($files as $abs) {
+        $declByFile = []; // rel => list<FQCN>（供 PSR-4 文件重命名）
+        foreach ($files as $rel => $abs) {
             $tokens = Parser::tokenize((string) file_get_contents($abs));
             foreach (array_keys($collectorF->collectDeclared($tokens)) as $n) {
                 $table->addFunction($n);
             }
-            foreach (array_keys($collectorC->collectDeclared($tokens)) as $n) {
+            $declC = array_keys($collectorC->collectDeclared($tokens));
+            foreach ($declC as $n) {
                 $table->addClass($n);
             }
+            $declByFile[$rel] = $declC;
             foreach (array_keys(DynamicSymbols::fromTokens($tokens)) as $lit) {
                 $dynamic[$lit] = true;
             }
@@ -86,10 +92,32 @@ final class ProjectBuilder
         $table->build($this->salt, (int) $this->config->get('func_length'), 10);
         $this->logger->info('全局符号表：函数 ' . count($table->funcMap()) . ' 个，类/接口 ' . count($table->classMap()) . ' 个（动态引用排除 ' . count($dynamic) . ' 个候选）');
 
-        // ---- Pass 2：统一映射混淆 ----
+        // ---- Pass 2：统一映射混淆（文件路径保持原样，不改名）----
         $obf = new Obfuscator($this->config, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
         $ok = 0;
         $fail = 0;
+        $classMap = $table->classMap();
+        $autoloadName = 'awaphp_autoload.php';
+        // 类映射自动加载器：类改名后 PSR-4 按「命名空间 + 新短名」找不到原文件，
+        // 同时外部动态类名（路由字符串 / 容器绑定）仍按原名查找 —— 两个名字都映射到原文件，
+        // 文件内 class_alias 回挂把原名接到新类上。仅工程模式生成（跨文件改名才需要）。
+        $fileMap = [];   // FQCN（新名与原名）=> rel 路径
+        foreach ($declByFile as $rel => $fqcns) {
+            foreach ($fqcns as $fqcn) {
+                $fqcn = (string) $fqcn;
+                $newShort = $classMap[$fqcn] ?? null;
+                if ($newShort === null || $newShort === ClassObfuscator::shortOf($fqcn)) {
+                    continue; // 未改名：PSR-4 原样命中，无需映射
+                }
+                $ns = str_contains($fqcn, '\\') ? substr($fqcn, 0, (int) strrpos($fqcn, '\\')) : '';
+                $newFqcn = $ns !== '' ? $ns . '\\' . $newShort : $newShort;
+                $fileMap[$newFqcn] = $rel;
+                $fileMap[$fqcn] = $rel;
+            }
+        }
+        if ($fileMap !== []) {
+            $this->writeAutoloadMap($outDir . '/' . $autoloadName, $fileMap);
+        }
         foreach ($files as $rel => $abs) {
             $dest = $outDir . '/' . $rel;
             if (!is_dir(dirname($dest))) {
@@ -99,6 +127,9 @@ final class ProjectBuilder
                 // 登记主文件路径：供 VM include 解析（baseDir）与 __DIR__/__FILE__ 折值
                 $obf->setSourceFile($abs);
                 $res = $obf->run((string) file_get_contents($abs));
+                if ($fileMap !== []) {
+                    $res = $this->injectAutoloadRequire($res, $rel, $autoloadName);
+                }
                 file_put_contents($dest, $res);
                 $ok++;
                 $this->logger->info("已混淆: {$rel}");
@@ -111,7 +142,7 @@ final class ProjectBuilder
         // ---- manifest 沉淀 ----
         if ($manifestPath !== null) {
             file_put_contents($manifestPath, json_encode([
-                'version'      => 1,
+                'version'      => 2,
                 'tool'         => $this->toolName,
                 'tool_version' => $this->toolVersion,
                 'salt'         => $this->salt->getSalt(),
@@ -123,6 +154,56 @@ final class ProjectBuilder
         }
 
         return ['files' => $ok, 'failed' => $fail, 'funcs' => count($table->funcMap()), 'classes' => count($table->classMap())];
+    }
+
+    /**
+     * 落盘类映射自动加载器：新名与原名都映射到原文件路径（文件不改名），
+     * require 之后由文件内 class_alias 把原名接到新类上。
+     *
+     * @param array<string,string> $fileMap FQCN（新名 + 原名）=> rel 路径
+     */
+    private function writeAutoloadMap(string $path, array $fileMap): void
+    {
+        ksort($fileMap, SORT_STRING);
+        $rows = [];
+        foreach ($fileMap as $fqcn => $rel) {
+            $rows[] = '        ' . var_export((string) $fqcn, true) . ' => ' . var_export(str_replace('\\', '/', (string) $rel), true) . ',';
+        }
+        $code = "<?php\n"
+            . "// 嗷呜awaのphp混淆 · 类映射自动加载器（构建自动生成，请勿手改）\n"
+            . "// 类名混淆后 PSR-4 按「命名空间 + 新短名」找不到原文件（文件名保持原样），\n"
+            . "// 这里把新名/原名都映射到原文件；文件内 class_alias 负责原名到新类的衔接。\n"
+            . "spl_autoload_register(function (\$__c) {\n"
+            . "    static \$__m = [\n"
+            . implode("\n", $rows) . "\n"
+            . "    ];\n"
+            . "    if (isset(\$__m[\$__c])) {\n"
+            . "        require_once __DIR__ . '/' . \$__m[\$__c];\n"
+            . "    }\n"
+            . "});\n";
+        file_put_contents($path, $code);
+        $this->logger->info('类映射自动加载器已写入: ' . $path . '（' . count($fileMap) . ' 条映射）');
+    }
+
+    /**
+     * 在产物头部注入 `require_once` 类映射自动加载器。
+     * 注入点由 DeclareHoist::headInsertIndex 给出：declare/namespace 之后、
+     * 括号式 namespace 时落在块内第一条语句位——不会把 declare/namespace 挤成非首语句，
+     * 也早于文件内任何类声明的链接（extends/接口的跨文件自动加载需要先注册）。
+     */
+    private function injectAutoloadRequire(string $res, string $rel, string $autoloadName): string
+    {
+        $tokens = token_get_all($res);
+        $idx = DeclareHoist::headInsertIndex($tokens);
+        if ($idx < 0) {
+            return $res; // 无开标签的片段流：不注入
+        }
+        $dir = str_replace('\\', '/', dirname($rel));
+        $depth = ($dir === '.' || $dir === '') ? 0 : substr_count($dir, '/') + 1;
+        $prefix = str_repeat('../', $depth);
+        $line = "require_once __DIR__ . '/{$prefix}{$autoloadName}';";
+        array_splice($tokens, $idx, 0, [$line]);
+        return implode('', array_map(static fn($t): string => is_array($t) ? (string) $t[1] : (string) $t, $tokens));
     }
 
     /** @return array<string,string> rel => abs（按相对路径排序，保证可复现） */

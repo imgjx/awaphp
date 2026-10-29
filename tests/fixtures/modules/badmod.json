@@ -2,6 +2,7 @@
   "name": "badmod",
   "match": ["bad_call"],
   "entry": "badmod.php",
+  "deps": ["missing_helper.php"],
   "replace": true,
   "priority": 1
 }

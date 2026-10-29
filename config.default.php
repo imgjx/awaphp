@@ -19,6 +19,8 @@ return [
     'var_length'   => 8,      // 变量名混淆后长度
     'var_enc_length' => 0,    // 变量名编码长度别名（>0 时覆盖 var_length）
     'var_split'    => 1,      // 变量值拆分段数（>1 生效）
+    'var_keep_props' => false, // 保留类实例属性名（框架应用建议开：属性跨文件/框架按原文访问）
+    'var_keep_params' => false, // 保留函数/方法参数名（框架应用建议开：路由/DI/命名参数按名匹配）
 
     // 函数
     'func_length'  => 10,     // 函数名混淆后长度
@@ -64,14 +66,16 @@ return [
     'junk_funcs'   => 0,       // 诱饵函数数量（>0 生效）
     'goto_trap'    => 2,       // GOTO 诱饵死状态数（0-4，每个分派器注入不可达分支）
     'struct_poison' => false,  // 结构指纹毒化壳（指纹进密钥派生；篡改即解出乱码）
-    'newline_poison' => false,  // 换行缠绕壳：注入大量换行符（原始行数 1/10，至少 2000）纠缠进代码与载荷，配合结构毒化壳
-    'newline_poison_min' => 2000,    // 换行缠绕最少注入数量
-    'newline_poison_ratio' => 0.1,   // 换行缠绕数量 = max(原始行数 × ratio, min)
+    'newline_poison' => false,  // 换行缠绕壳：注入大量换行符纠缠进代码与载荷（配合结构毒化壳/自校验，删空白即出错）
+    'newline_poison_divisor' => 5,   // 换行数 = ceil(输入源码字节数 / divisor)，默认 1/5（30KB → 6000 个）
+    'newline_poison_min' => 0,       // 换行数下限（0=不设下限，仅极小文件可设个位数兜底）
     'honeypot'     => 0,       // 蜜罐函数数量（拟真高价值命名 + 深循环拖慢 + 伪密钥）
     'shell_shield' => true,    // 逐层壳自保护：每层壳的解码逻辑再被外层混淆护住（破一层要先被恶心一层）
     'shell_shield_intensity' => 2, // 自保护语义变换强度 1-3（仅影响语义层；变量重命名始终开启）
 
     // ===== Confrontation-LLM：反 LLM 静态分析 =====
+    'mutual_comments' => true,   // 互斥注释：成对投放互相矛盾的注释（死代码 vs 唯一活路径、归属/版本/覆盖率…），藏在各层壳内部的密文里
+    'mutual_intensity' => 2,     // 互斥注释强度 1~3（每层壳投放 1/2/4 对）
     'confrontation_llm'       => false, // 注入误导性注释（假 @deprecated/@see/@todo/@fixme + 伪造 CHANGELOG）并散布生僻 CJK，误导 LLM 优先级判断
     'confrontation_intensity' => 2,     // 反 LLM 注入强度 1-3（越大注释越密）
 

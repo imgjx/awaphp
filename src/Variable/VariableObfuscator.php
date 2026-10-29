@@ -34,6 +34,18 @@ final class VariableObfuscator
      */
     private array $declaredProps = [];
 
+    /**
+     * 是否保留（不重命名）类实例属性名。框架应用（ThinkPHP 等）与父类/框架代码按原始属性名
+     * 访问（如 $controller->request / $this->middleware），且属性重命名是"每文件独立随机"，
+     * 跨文件继承时声明与引用会得到不同新名 → 运行期动态属性告警/属性丢失。开启后属性名保持
+     * 原样，局部变量仍照常重命名（局部变量函数内作用域，跨文件无耦合）。
+     */
+    private bool $keepProps = false;
+
+    /** 是否保留（不重命名）函数/方法参数名。框架按参数名做路由绑定 / 依赖注入 / 命名参数，
+     * 参数名被改名会报"方法参数错误"。开启后参数名保持原样，方法体内的非参数局部变量仍重命名。 */
+    private bool $keepParams = false;
+
     public function __construct(
         private Salt $salt,
         private Logger $logger
@@ -53,6 +65,23 @@ final class VariableObfuscator
 
         $this->collectExclusions($tokens);
         $this->collectDeclaredProps($tokens);
+
+        // 框架应用：保留属性名（见 $keepProps 说明）。把全部已声明属性名加入排除集，
+        // 属性声明 T_VARIABLE 与 `$this->prop` 引用都不再重命名。
+        $this->keepProps = (bool) $config->get('var_keep_props');
+        if ($this->keepProps) {
+            foreach ($this->declaredProps as $p => $_) {
+                $this->excluded[$p] = true;
+            }
+        }
+        // 框架应用：保留参数名（路由/DI/命名参数按名匹配）。仅排除参数名，
+        // 方法体内其它局部变量照常重命名（局部变量不跨边界，重命名安全）。
+        $this->keepParams = (bool) $config->get('var_keep_params');
+        if ($this->keepParams) {
+            foreach ($this->collectParamNames($tokens) as $p => $_) {
+                $this->excluded[$p] = true;
+            }
+        }
 
         // 收集待混淆变量名（按首次出现顺序）
         $names = [];
@@ -385,11 +414,68 @@ final class VariableObfuscator
     }
 
     /**
+     * 收集所有函数/方法（含闭包）参数列表顶层的变量名（带 $ 前缀）。
+     * 用于 var_keep_params：参数名是框架/命名参数的公共契约，不能改名。
+     * 实现：定位每个 T_FUNCTION，找到参数左括号，再按括号深度收集 depth=1 的 T_VARIABLE。
+     * @param array<int,mixed> $tokens
+     * @return array<string,true>
+     */
+    private function collectParamNames(array $tokens): array
+    {
+        $names = [];
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $tok = $tokens[$i];
+            if (!is_array($tok) || $tok[0] !== T_FUNCTION) {
+                continue;
+            }
+            // 找到参数左括号（跳过可选 & 与函数名、返回引用等）
+            $j = $i + 1;
+            while ($j < $n) {
+                $t = $tokens[$j];
+                if (is_string($t)) {
+                    if ($t === '(') {
+                        break;
+                    }
+                    if ($t === '{' || $t === ';') {
+                        $j = -1;
+                        break;
+                    }
+                }
+                $j++;
+            }
+            if ($j < 0 || $j >= $n) {
+                continue;
+            }
+            $depth = 0;
+            for ($k = $j; $k < $n; $k++) {
+                $t = $tokens[$k];
+                if (is_string($t)) {
+                    if ($t === '(') {
+                        $depth++;
+                    } elseif ($t === ')') {
+                        $depth--;
+                        if ($depth === 0) {
+                            break;
+                        }
+                    }
+                } elseif (is_array($t) && $t[0] === T_VARIABLE && $depth === 1) {
+                    $names[$t[1]] = true;
+                }
+            }
+        }
+        return $names;
+    }
+
+    /**
      * 若 $name 是已声明属性且在映射表中，返回改名后的属性名（不带 $ 前缀）；否则 null。
      * @param array<string,string> $map
      */
     private function propRenameFor(string $name, array $map): ?string
     {
+        if ($this->keepProps) {
+            return null;
+        }
         $var = '$' . $name;
         if (!isset($this->declaredProps[$var]) || !isset($map[$var])) {
             return null;

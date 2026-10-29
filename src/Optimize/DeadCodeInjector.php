@@ -34,18 +34,18 @@ final class DeadCodeInjector
         $out = [];
         $awaitBody = false;
         $topInserted = false;
+        // 顶部插入点必须越过前导 declare/namespace（否则 declare 不再是首语句直接致命）
+        $topInsAt = DeclareHoist::headInsertIndex($tokens);
 
         for ($i = 0; $i < count($tokens); $i++) {
             $tok = $tokens[$i];
 
-            // 文件顶部（第一个 T_OPEN_TAG 之后）插入废代码
-            if (!$topInserted && is_array($tok) && $tok[0] === T_OPEN_TAG) {
-                $out[] = $tok;
+            // 文件顶部（declare/namespace 之后）插入废代码（无开标签的片段流不插）
+            if (!$topInserted && $topInsAt >= 0 && $i === $topInsAt) {
                 for ($d = 0; $d < $density; $d++) {
                     $out[] = $this->makeDead($rand, $style);
                 }
                 $topInserted = true;
-                continue;
             }
 
             // 标记：下一个 '{' 是函数/方法体开头

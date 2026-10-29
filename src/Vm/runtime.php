@@ -41,7 +41,9 @@ function __VMRUN__($__P)
     $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
     // FCC（PHP 8.1+ 一等可调用方法语法）
     $MECALL_FCC=141;$SCALL_FCC=142;$MECALL_FCC_VAR=143;$SCALL_FCC_VAR=144;$SCALL_FCC_DYN=145;
-    $CLONE=150;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;$ARRAY_SPREAD=153;$EMPTY_ANY=154;$PROPGET_DYN=155;$PROPSET_DYN=156;
+    $CLONE=150;$MAKE_CLOSURE=157;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;$ARRAY_SPREAD=153;$EMPTY_ANY=154;$PROPGET_DYN=155;$PROPSET_DYN=156;
+    // 生成器：YIELD(158)/YIELD_FROM(159)/GEN_HEAD(160),段首 GEN_HEAD 由 __exec 入口识别
+    $YIELD=158;$YIELD_FROM=159;$GEN_HEAD=160;
 
     $__META = "\x01__cls";
 
@@ -696,9 +698,16 @@ function __VMRUN__($__P)
     };
 
     // 索引读取
+    // 字符串偏移：支持负下标（PHP 7.1+ 的 `$s[-1]` = 末字符）与非负越界返回 null。
+    // 越界返回 null 是 VM 的既定语义（模块里的 `while ($s[$i] !== null)` 依赖它）。
     $__idxGet = function($arr,$k){
         if (is_array($arr)) { return $arr[$k] ?? null; }
-        if (is_string($arr)) { return $k===(int)$k && $k>=0 && $k<strlen($arr) ? $arr[$k] : null; }
+        if (is_string($arr)) {
+            if (!is_int($k) && !(is_string($k) && preg_match('/^-?\d+$/',$k))) { return null; }
+            $k = (int)$k; $L = strlen($arr);
+            if ($k < 0) { $k += $L; }
+            return ($k >= 0 && $k < $L) ? $arr[$k] : null;
+        }
         if (is_object($arr)) { return $arr->$k ?? null; }
         return null;
     };
@@ -715,6 +724,13 @@ function __VMRUN__($__P)
             } elseif (is_object($v)) {
                 if (!isset($v->$k)) { $found = false; return null; }
                 $v = $v->$k;
+            } elseif (is_string($v)) {
+                // isset($s[$i]) / empty($s[$i])：字符串偏移也走键路径（否则恒为 false）
+                if (!is_int($k) && !(is_string($k) && preg_match('/^-?\d+$/',$k))) { $found = false; return null; }
+                $k = (int)$k; $L = strlen($v);
+                if ($k < 0) { $k += $L; }
+                if ($k < 0 || $k >= $L) { $found = false; return null; }
+                $v = $v[$k];
             } else { $found = false; return null; }
         }
         $found = true;
@@ -727,7 +743,7 @@ function __VMRUN__($__P)
     // includer 可见），对象/数组在帧内为引用传递，与 PHP 变量语义一致。
     // $__seg：当前段附带的跳转表 / 调度表（控制流平坦化、指令重排用），明文模式为 null
     // $__exTab：当前段的异常表（try/catch/finally 分发依据），无则 null
-    $__exec = function($__codeArr,&$__vars,$__this,$__init,$__seg=null,$__isG=false,$__exTab=null) use (
+    $__exec = function($__codeArr,&$__vars,$__this,$__init,$__seg=null,$__isG=false,$__exTab=null,$__nw=false) use (
         &$__exec,$__P,$__META,$__STN,$__bin,$__inc,$__propGet,$__propSet,$__newObj,$__callFunc,$__callMethod,$__idxGet,$__pathGet,$__toStr,$__instanceof,$__constOwner,$__methodOwner,$__bindArgs,$__bindNative,&$__pad,&$__code,
         $PUSH_C,$PUSH_V,$POP_V,$DUP,$DROP,$LOAD_THIS,$PUSH_NULL,
         $ADD,$SUB,$MUL,$DIV,$MOD,$POW,$CONCAT,$NEG,$BW_NOT,
@@ -741,17 +757,38 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$ARRAY_SPREAD,$EMPTY_ANY,$PROPGET_DYN,$PROPSET_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$MAKE_CLOSURE,$YIELD,$YIELD_FROM,$GEN_HEAD,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$ARRAY_SPREAD,$EMPTY_ANY,$PROPGET_DYN,$PROPSET_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
     ){
         $__mcKey = substr(hash('sha256', (string)microtime(true).(string)memory_get_usage(), true), 0, 16);
 $__mcPlain=[];$__mcFlags=[];
-$__mcEnc=function($v)use(&$__mcKey,&$__mcPlain){if(is_object($v)||is_resource($v)||$v===null){$__mcPlain[]=$v;return count($__mcPlain)-1;}try{$__mcs=serialize($v);}catch(\Throwable $__e){$__mcPlain[]=$v;return count($__mcPlain)-1;}$__mcn=strlen($__mcs);$__mco='';for($__mci=0;$__mci<$__mcn;$__mci++){$__mco.=$__mcs[$__mci]^$__mcKey[$__mci%16];}return $__mco;};
-$__mcDec=function($v)use(&$__mcKey){if(is_object($v)||is_resource($v)||$v===null){return $v;}$__mcn=strlen($v);$__mco='';for($__mci=0;$__mci<$__mcn;$__mci++){$__mco.=$v[$__mci]^$__mcKey[$__mci%16];}return unserialize($__mco);};
+$__mcEnc=function($v)use(&$__mcKey,&$__mcPlain){if(is_object($v)||is_resource($v)||$v===null){$__mcPlain[]=$v;return count($__mcPlain)-1;}if(is_string($v)&&strlen($v)>4096){return ['#',$v];}if(is_array($v)&&count($v)>128){return ['#',$v];}try{$__mcs=serialize($v);}catch(\Throwable $__e){$__mcPlain[]=$v;return count($__mcPlain)-1;}$__mcn=strlen($__mcs);if($__mcn===0){return '';}return $__mcs^substr(str_repeat($__mcKey,(int)(($__mcn+15)/16)),0,$__mcn);};
+$__mcDec=function($v)use(&$__mcKey){if(is_object($v)||is_resource($v)||$v===null){return $v;}$__mcn=strlen($v);if($__mcn===0){return false;}return unserialize($v^substr(str_repeat($__mcKey,(int)(($__mcn+15)/16)),0,$__mcn));};
 $__stack=[];$__mcFlags=[];
-foreach($__init as $__iv){$__e=$__mcEnc($__iv);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:0;}
-$__mcPush=function($v)use(&$__stack,&$__mcFlags,&$__mcEnc){$__e=$__mcEnc($v);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:0;};
-$__mcPop=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__f=array_pop($__mcFlags);$__s=array_pop($__stack);return $__f===1?$__mcPlain[$__s]:$__mcDec($__s);};
-$__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count($__stack);if(!$__c)return null;$__f=$__mcFlags[$__c-1];$__s=$__stack[$__c-1];return $__f===1?$__mcPlain[$__s]:$__mcDec($__s);};
+foreach($__init as $__iv){$__e=$__mcEnc($__iv);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:(is_array($__e)?2:0);}
+$__mcPush=function($v)use(&$__stack,&$__mcFlags,&$__mcEnc){$__e=$__mcEnc($v);$__stack[]=$__e;$__mcFlags[]=is_int($__e)?1:(is_array($__e)?2:0);};
+$__mcPop=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__f=array_pop($__mcFlags);$__s=array_pop($__stack);return $__f===1?$__mcPlain[$__s]:($__f===2?$__s[1]:$__mcDec($__s));};
+$__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count($__stack);if(!$__c)return null;$__f=$__mcFlags[$__c-1];$__s=$__stack[$__c-1];return $__f===1?$__mcPlain[$__s]:($__f===2?$__s[1]:$__mcDec($__s));};
+        // —— 生成器入口（段首 GEN_HEAD）——
+        // 该段是含 yield 的函数/方法/闭包体：不执行，返回原生 Generator 作桥。
+        // 桥内以 $__nw=true 重入（GEN_HEAD 执行即空操作），不剥离标记——剥离会使绝对 pc
+        // 与异常表错位，导致 try/catch/finally 路由错乱。
+        // 首次取项才创建 Fiber 启动解释器；YIELD 经 Fiber::suspend 交出 (key,value)，
+        // 桥再 yield 给调用方；send() 值经 Fiber::resume 回注——原生生成器语义完整保留。
+        if (!$__nw && isset($__codeArr[0][0]) && $__codeArr[0][0] === $GEN_HEAD) {
+            $__gcode = $__codeArr;
+            return (function ($__gc, &$__gv, $__gt, $__gi, $__gs, $__gsg, $__ge) use (&$__exec) {
+                $__fb = new \Fiber(function () use (&$__exec, $__gc, &$__gv, $__gt, $__gi, $__gs, $__gsg, $__ge) {
+                    return $__exec($__gc, $__gv, $__gt, $__gi, $__gs, $__gsg, $__ge, true);
+                });
+                $__cv = $__fb->start();
+                while (!$__fb->isTerminated()) {
+                    $__sv = yield $__cv[0] => $__cv[1];
+                    $__cv = $__fb->resume($__sv);
+                }
+                return $__fb->getReturn();
+            })($__gcode, $__vars, $__this, $__init, $__seg, $__isG, $__exTab);
+        }
+        $__yak = 0;
         $__pc = 0;
         $__n = count($__codeArr);
         $__ret = null; $__retSet = false;
@@ -771,7 +808,7 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                 case $PUSH_REF_EL: $__mcPush(['__vmrefel__', $__ins[1]]); break;
                 case $POP_V:    $__vars[$__ins[1]] = $__mcPop(); break;
                 case $DUP:      $__mcPush($__mcPeek()); break;
-                case $DROP:     $__mcPop(); break;
+                case $DROP:     if ($__stack) { $__mcPop(); } break;
                 case $LOAD_THIS:$__mcPush($__this); break;
                 case $PUSH_NULL:$__mcPush(null); break;
                 case $ADD: case $SUB: case $MUL: case $DIV: case $MOD: case $POW:
@@ -784,6 +821,62 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                 case $NEG: $__mcPush(-$__mcPop()); break;
                 case $BW_NOT: $__mcPush(~$__mcPop()); break;
                 case $CLONE: $__mcPush(clone $__mcPop()); break;
+                case $MAKE_CLOSURE:
+                    // 闭包 / 箭头函数：把 Program 内的匿名函数段包装成真实 Closure
+                    $__cn = $__ins[2]; $__cf = $__ins[3]; $__cap = [];
+                    if ($__cn === '*') {
+                        foreach ($__vars as $__ck => $__cv) {
+                            if ($__ck === '$this' || strpos($__ck, "\x01") === 0) { continue; }
+                            $__cap[$__ck] = $__cv;
+                        }
+                    } elseif ($__cn !== '') {
+                        foreach (explode(',', $__cn) as $__ci => $__ck) {
+                            if ($__cf !== '' && ($__cf[$__ci] ?? '0') === '1') {
+                                $__cap[$__ck] = &$__vars[$__ck];
+                            } else {
+                                $__cap[$__ck] = $__vars[$__ck] ?? null;
+                            }
+                        }
+                    }
+                    $__csg = $__P['funcs'][$__ins[1]] ?? null;
+                    $__csp = $__P['funcParams'][$__ins[1]] ?? [];
+                    $__cet = $__P['funcET'][$__ins[1]] ?? null;
+                    $__cself = $__ins[4] ? null : $__this;
+                    $__mcPush(function (...$__ca) use (&$__exec, &$__pad, $__csg, $__cap, $__csp, $__cet, $__cself) {
+                        $__cvars = $__cap;
+                        if ($__csp !== []) { $__ca = $__pad($__csp, $__ca); }
+                        return $__exec($__csg, $__cvars, $__cself, $__ca, false, $__cet);
+                    });
+                    break;
+
+                case $YIELD:
+                    // 生成器挂起：栈 [key?, value]（value 在顶）。Fiber::suspend 把 (key,value)
+                    // 交给桥接原生 Generator；恢复时返回 send() 值，压栈作为 yield 表达式结果。
+                    if ((int) ($__ins[1] ?? 0) === 1) { $__yv = $__mcPop(); $__yk = $__mcPop(); }
+                    else { $__yv = $__mcPop(); $__yk = $__yak++; }
+                    $__mcPush(\Fiber::suspend([$__yk, $__yv]));
+                    break;
+
+                case $YIELD_FROM:
+                    // 逐项转发：Generator 走 rewind/valid/send 保留 send 语义与 return 值，
+                    // 数组与其它可迭代对象按 foreach 转发（send 值丢弃，同 PHP）。
+                    $__yg = $__mcPop(); $__yret = null;
+                    if ($__yg instanceof \Generator) {
+                        $__yg->rewind();
+                        while ($__yg->valid()) {
+                            $__ys = \Fiber::suspend([$__yg->key(), $__yg->current()]);
+                            if ($__ys === null) { $__yg->next(); } else { $__yg->send($__ys); }
+                        }
+                        $__yret = $__yg->getReturn();
+                    } elseif (is_array($__yg) || $__yg instanceof \Traversable) {
+                        foreach ($__yg as $__yk2 => $__yv2) { \Fiber::suspend([$__yk2, $__yv2]); }
+                    }
+                    $__mcPush($__yret);
+                    break;
+
+                case $GEN_HEAD:
+                    // 段首标记：真执行路径上已被入口剥离，此处为空操作（防御取指落到标记上）
+                    break;
                 case $BOOL_NOT: $__mcPush(!$__mcPop()); break;
                 case $BOOL_XOR:
                     // xor 非短路：两侧均求值后做布尔异或（结果恒为 bool，与 PHP 一致）
@@ -928,7 +1021,19 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                         $__mcPush($__r);
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     } elseif (is_string($__cls) && class_exists($__cls) && method_exists($__cls, $__m)) {
-                        // 原生类静态方法：同样需展平/去标记（同 SCALL_VAR / CALL_VAR 原生路径）
+                        // 原生类方法：需展平/去标记（同 SCALL_VAR / CALL_VAR 原生路径）。
+                        // 实例上下文里的 C::m() / parent::m()（非静态）按 PHP 语义绑定 $this 转发，
+                        // 否则 call_user_func_array 的静态形态直接 "cannot be called statically"。
+                        [$__a,] = $__bindArgs($__a, null, $__vars);
+                        if ($__this !== null && $__this instanceof $__cls && !(new \ReflectionMethod($__cls, $__m))->isStatic()) {
+                            // 非虚派发：直接调【指定类】的实现（parent:: 语义——
+                            // $this->$m() 会虚分发回子类重写版，形成无限递归）。
+                            $__mcPush((new \ReflectionMethod($__cls, $__m))->invoke($__this, ...$__a));
+                        } else {
+                            $__mcPush(call_user_func_array([$__cls, $__m], $__a));
+                        }
+                    } elseif (is_string($__cls) && class_exists($__cls) && method_exists($__cls, '__callStatic')) {
+                        // 原生类的魔术静态分发（ThinkPHP Facade：Db::name() / Cache::get() 全走这里）
                         [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__mcPush(call_user_func_array([$__cls, $__m], $__a));
                     } else {
@@ -944,8 +1049,10 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                             } finally {
                                 array_pop($__calledCls);
                             }
+                        } elseif (is_string($__cls) && class_exists($__cls)) {
+                            throw new \Error("Call to undefined method {$__cls}::{$__m}()");
                         } else {
-                            $__mcPush(null);
+                            throw new \Error('Class "' . (is_string($__cls) ? $__cls : gettype($__cls)) . '" not found');
                         }
                     }
                     break;
@@ -993,6 +1100,16 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                         if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     } elseif (is_string($__cls) && is_string($__m) && class_exists($__cls) && method_exists($__cls, $__m)) {
                         [$__a,] = $__bindArgs($__a, null, $__vars);
+                        if ($__this !== null && $__this instanceof $__cls && !(new \ReflectionMethod($__cls, $__m))->isStatic()) {
+                            // 非虚派发：直接调【指定类】的实现（parent:: 语义——
+                            // $this->$m() 会虚分发回子类重写版，形成无限递归）。
+                            $__mcPush((new \ReflectionMethod($__cls, $__m))->invoke($__this, ...$__a));
+                        } else {
+                            $__mcPush(call_user_func_array([$__cls, $__m], $__a));
+                        }
+                    } elseif (is_string($__cls) && is_string($__m) && class_exists($__cls) && method_exists($__cls, '__callStatic')) {
+                        // 原生类魔术静态分发（动态方法名版）
+                        [$__a,] = $__bindArgs($__a, null, $__vars);
                         $__mcPush(call_user_func_array([$__cls, $__m], $__a));
                     } else {
                         // __callStatic 魔术分发（同 SCALL）：仅当魔术方法存在才走
@@ -1006,8 +1123,10 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                             } finally {
                                 array_pop($__calledCls);
                             }
+                        } elseif (is_string($__cls) && class_exists($__cls)) {
+                            throw new \Error("Call to undefined method {$__cls}::{$__m}()");
                         } else {
-                            $__mcPush(null);
+                            throw new \Error('Class "' . (is_string($__cls) ? $__cls : gettype($__cls)) . '" not found');
                         }
                     }
                     break;

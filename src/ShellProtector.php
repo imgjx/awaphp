@@ -51,7 +51,10 @@ final class ShellProtector
             $tokens = self::normalizeLineComments($tokens);
             if ($mode !== 'norename') {
                 // 变量重命名（full / caseonly 都可带——但 caseonly 默认也跑，增强混淆）
-                $cfg = new Config(['var_length' => 12]);
+                // var_keep_props=true：壳层自保护作用于【整个产物】，其中可能含类保留 VM 生成
+                // 的真实类桩（protected $x / $this->x 等）。属性名必须保持原样，否则桩的声明
+                // 与引用被各自改名而脱节 → 运行期动态属性告警/属性丢失。局部变量仍照常重命名。
+                $cfg = new Config(['var_length' => 12, 'var_keep_props' => true, 'var_keep_params' => true]);
                 $tokens = (new VariableObfuscator($salt, $logger))->process($tokens, $cfg);
             }
             if ($mode !== 'caseonly') {
@@ -80,6 +83,14 @@ final class ShellProtector
         }
         $check = (new Validator($logger))->checkSyntaxString($out);
         if (!$check['ok']) {
+            // 调试钩子：OBF_SHELL_DUMP=<目录> 时把非法产物与原始输入落盘，便于定位
+            $dumpDir = getenv('OBF_SHELL_DUMP');
+            if (is_string($dumpDir) && $dumpDir !== '') {
+                @mkdir($dumpDir, 0777, true);
+                $tag = date('His') . '_' . substr(md5($out), 0, 6);
+                @file_put_contents($dumpDir . '/' . $tag . '.bad.php', $out);
+                @file_put_contents($dumpDir . '/' . $tag . '.in.php', $before);
+            }
             $logger->warn('[壳层自保护] 产物未通过 php -l，回滚');
             return $before;
         }
@@ -101,7 +112,7 @@ final class ShellProtector
             if (is_array($tok) && $tok[0] === T_OPEN_TAG) {
                 $text = rtrim($text) . ' ';
             }
-            if ($prevChar !== '' && self::needsSpace($prevTok, $prevChar, $text)) {
+            if ($prevChar !== '' && self::needsSpace($prevTok, $prevChar, $text, $tok)) {
                 $out .= ' ';
             }
             $out .= $text;
@@ -136,9 +147,9 @@ final class ShellProtector
         return $tokens;
     }
 
-    private static function needsSpace($prevTok, string $prevChar, string $text): bool
+    private static function needsSpace($prevTok, string $prevChar, string $text, $tok = null): bool
     {
-        $wordy = fn (string $c) => ctype_alnum($c) || $c === '_' || $c === '$';
+        $wordy = fn (string $c) => $c !== '' && (ctype_alnum($c) || $c === '_' || $c === '$' || ord($c) >= 0x80);
         if ($wordy($prevChar) && $wordy($text[0])) {
             return true;
         }
@@ -146,7 +157,9 @@ final class ShellProtector
         // 压缩去空白会变成 `new\stdClass` —— PHP 词法器把它当成"函数调用"而非对象实例化，
         // 直接报 "Call to undefined function new\stdClass()"。故词素单词后接 `\` 起头的
         // 命名空间名必须补空格。
-        if ($wordy($prevChar) && $text[0] === '\\') {
+        // 但只对【名字类 token】生效：双引号插值里的转义字面量（T_ENCAPSED_AND_WHITESPACE
+        // 的 "\n" / "\t"）文本也以反斜杠开头，补空格会改掉字符串内容（"$v\n"→"$v \n"）。
+        if ($wordy($prevChar) && $text[0] === '\\' && self::isNameToken($tok)) {
             return true;
         }
         if ($text[0] === '.' && is_array($prevTok)
@@ -154,5 +167,20 @@ final class ShellProtector
             return true;
         }
         return false;
+    }
+
+    /** 是否为"名字类" token（命名空间名 / 类名 / 裸分隔符）。 */
+    private static function isNameToken($tok): bool
+    {
+        if (!is_array($tok)) {
+            return false;
+        }
+        $types = [T_STRING, T_NS_SEPARATOR];
+        foreach (['T_NAME_QUALIFIED', 'T_NAME_FULLY_QUALIFIED', 'T_NAME_RELATIVE'] as $c) {
+            if (defined($c)) {
+                $types[] = constant($c);
+            }
+        }
+        return in_array($tok[0], $types, true);
     }
 }

@@ -92,28 +92,49 @@ if ($okU) {
 
 echo "===== [4] 换行缠绕壳（--newline-poison，配合结构毒化壳）=====\n";
 $npSrc = (string) file_get_contents($fixture);
-$npNeed = max((int) ceil((substr_count($npSrc, "\n") + 1) * 0.1), 2000);
+// v1.0.9 起：换行总数 = ceil(输入源码字节数 / divisor)，默认 divisor=5（即 1/5）
+$npNeed = (int) ceil(strlen($npSrc) / 5);
 
-// [4a] 独立模式（非分层）：换行在最终文件中可见
+/** 从 --verbose 日志里累加"本层实际注入"的换行数（分层分摊后总和须等于配额）。 */
+function np_injected(string $entry, string $in, string $out, string $args): array
+{
+    $cmd = sprintf('php %s --input=%s --output=%s %s --format=text --verbose 2>&1',
+        escapeshellarg($entry), escapeshellarg($in), escapeshellarg($out), $args);
+    exec($cmd, $o, $ec);
+    $txt = implode("\n", $o);
+    $sum = 0;
+    $layers = 0;
+    if (preg_match_all('/本层注入 (\d+) 个/u', $txt, $m)) {
+        foreach ($m[1] as $v) { $sum += (int) $v; }
+        $layers = count($m[1]);
+    }
+    if (preg_match('/头部补 (\d+) 个/u', $txt, $m2)) {
+        $sum += (int) $m2[1];
+    }
+    return [$ec === 0 && is_file($out), $sum, $layers];
+}
+
+// [4a] 独立模式（非分层）：配额全落进代码内部，最终文件里可见
 $o4 = "$tmp/newline.php";
-$okN = build($entry, $fixture, $o4, "--newline-poison --salt=np110");
+[$okN, $inj4, $ly4] = np_injected($entry, $fixture, $o4, "--newline-poison --salt=np110");
 ok($okN, "构建 --newline-poison（独立）");
 if ($okN) {
     $lint = (string) shell_exec('php -l ' . escapeshellarg($o4) . ' 2>&1');
     ok(str_contains($lint, 'No syntax errors'), "newline php -l 通过");
     ok(trim(run($o4)) === $native, "newline 运行输出一致", 'got=' . substr(trim(run($o4)), 0, 60));
+    ok(abs($inj4 - $npNeed) <= 1, "换行配额 = 字节数/5（注入 {$inj4} ≈ {$npNeed}）");
     $nl = substr_count((string) file_get_contents($o4), "\n");
-    ok($nl >= $npNeed, "newline 数量达标（{$nl} >= {$npNeed}）");
+    ok($nl >= $npNeed, "newline 可见数量达标（{$nl} >= {$npNeed}）");
 }
 
-// [4b] 分层 mid + 换行缠绕：换行落在编码壳之后 → 最终文件可见
+// [4b] 分层 mid + 换行缠绕：配额按层平均分摊（每层各注入一份，多数被编码壳吞进密文）
 $o5 = "$tmp/newline_mid.php";
-$okN2 = build($entry, $fixture, $o5, "--level=mid --newline-poison --salt=np110m");
+[$okN2, $inj5, $ly5] = np_injected($entry, $fixture, $o5, "--level=mid --newline-poison --salt=np110m");
 ok($okN2, "构建 --level=mid --newline-poison");
 if ($okN2) {
     ok(trim(run($o5)) === $native, "newline+mid 运行输出一致", 'got=' . substr(trim(run($o5)), 0, 60));
-    $nl2 = substr_count((string) file_get_contents($o5), "\n");
-    ok($nl2 >= $npNeed, "newline+mid 数量达标（{$nl2} >= {$npNeed}）");
+    ok(abs($inj5 - $npNeed) <= 1, "newline+mid 配额守恒（注入 {$inj5} ≈ {$npNeed}）");
+    ok($ly5 >= 3, "newline+mid 分摊到多层壳（{$ly5} 层）");
 }
 
 // [4c] 分层 max + 换行缠绕：换行随内层一同被结构毒化壳加密进密文（仍须正确运行）

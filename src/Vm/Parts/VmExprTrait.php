@@ -1574,6 +1574,12 @@ trait VmExprTrait
                 }
                 $this->parseExpr($key, $code);
                 $code[] = [VmOp::INDEX_GET];
+            } elseif ($c->is('(')) {
+                // 表达式结果直接调用：make(3)() / ($f)() / $arr['f']() / foo()()。
+                // 栈上已是【被调值】（闭包 / 可调用数组 / 函数名字符串），实参依次压在其上，
+                // CALL_VAR 先弹实参再弹被调值，与「变量函数调用 $f(...)」同一套分发。
+                $argc = $this->compileArgs($c, $code);
+                $code[] = [VmOp::CALL_VAR, $argc];
             } elseif ($c->is(T_INC)) {
                 $c->next();
                 $last = end($code);
@@ -1938,6 +1944,16 @@ trait VmExprTrait
                     $code[] = [VmOp::PRINT_];
                     return;
                 case T_STATIC:
+                    // static 闭包：static function () {} / static fn () => ...
+                    // （PHP 8.1+ 的 static 是 T_STATIC；8.0- 由下方 T_STRING 分支同判）
+                    $nx = $c->peekSigAt(1);
+                    if (is_array($nx) && ($nx[0] === T_FUNCTION || $nx[0] === T_FN)) {
+                        $c->next(); // static
+                        $c->skipWs();
+                        $isFn = is_array($c->peek()) && $c->peek()[0] === T_FN;
+                        $this->parseClosure($c, $code, $isFn, true);
+                        return;
+                    }
                     // static:: 延迟静态绑定（PHP 8.1+ 分词；8.0- 的 static 是
                     // T_STRING 'static'，走下方 T_STRING 分支的同类判定）
                     if ($this->peekIsDoubleColon($c, 1)) {
@@ -1945,6 +1961,45 @@ trait VmExprTrait
                         return;
                     }
                     throw new VmUnsupported('VM 不支持的词法：T_STATIC');
+                case T_NS_SEPARATOR:
+                    // 以 `\` 起头的完全限定名：`\Foo\Bar::m()` / `\json(...)` / `\PHP_EOL`。
+                    // PHP 8 会把这类名字合并成单个 T_NAME_FULLY_QUALIFIED；编译器入口的
+                    // normalizeTokens() 已把它拆回「T_NS_SEPARATOR + T_STRING...」的 7.4 形态，
+                    // 故这里必须显式支持"前导反斜杠"——否则框架里随处可见的 `\think\facade\Db`
+                    // 会让整文件回退。
+                    if ($this->peekDoubleColonAfterName($c)) {
+                        $this->parseStaticMember($c, $code);
+                        return;
+                    }
+                    $fqn = '';
+                    while (!$c->eof()) {
+                        $tk = $c->peek();
+                        if (is_array($tk) && $tk[0] === T_NS_SEPARATOR) { $fqn .= '\\'; $c->next(); continue; }
+                        if (is_array($tk) && $tk[0] === T_STRING) { $fqn .= $tk[1]; $c->next(); continue; }
+                        break;
+                    }
+                    $bare = ltrim($fqn, '\\');
+                    if ($bare === '') {
+                        throw new VmUnsupported('VM 不支持的词法：T_NS_SEPARATOR');
+                    }
+                    if ($c->peekSig() === '(') {
+                        $c->skipWs();
+                        $argc = $this->compileArgs($c, $code, self::NATIVE_REF_POS[strtolower($bare)] ?? [], $bare);
+                        $refPos = self::NATIVE_REF_POS[strtolower($bare)] ?? [];
+                        $refMask = 0;
+                        foreach ($refPos as $rp) {
+                            if ($rp < $argc) {
+                                $refMask |= 1 << $rp;
+                            }
+                        }
+                        $code[] = [VmOp::CALL_NATIVE, $this->natIdx($bare), $argc, $refMask];
+                        return;
+                    }
+                    if (defined($bare)) {
+                        $code[] = [VmOp::PUSH_C, constant($bare)];
+                        return;
+                    }
+                    throw new VmUnsupported('VM 不支持的标识符：\\' . $bare);
                 case T_STRING:
                     // 关键字 true/false/null，或函数调用，或常量
                     $up = strtolower($t[1]);
@@ -1962,8 +2017,11 @@ trait VmExprTrait
                         $this->parseStaticMember($c, $code);
                         return;
                     }
-                    // 函数调用？看下一个是 '('
-                    $nx = $c->peek2();
+                    // 函数调用？看下一个【有效】token 是 '('
+                    // 注意必须跳空白/注释：`json ( ... )` 这种写法（或壳间注入的注释把
+                    // 名字与括号隔开）用原始下标 peek2() 会看到 T_WHITESPACE，
+                    // 于是把内置函数误判成"不支持的标识符"、整文件回退。
+                    $nx = $c->peekSigAt(1);
                     if ($nx === '(') {
                         $name = $t[1];
                         $c->next();
@@ -2063,6 +2121,56 @@ trait VmExprTrait
                     }
                     $this->emitPushVar($name, $code);
                     return;
+                case T_FUNCTION:
+                    // 匿名函数（闭包）表达式。命名函数声明不会出现在表达式位置，
+                    // 能走到这里的一定是 `function (...) use (...) {...}`。
+                    $this->parseClosure($c, $code, false);
+                    return;
+                case T_FN:
+                    // 箭头函数 fn (...) => expr（PHP 7.4+）
+                    $this->parseClosure($c, $code, true);
+                    return;
+                case T_YIELD:
+                    // yield / yield $v / yield $k => $v —— 生成器挂起点。
+                    // 段内含 YIELD 会在构建期被 markGenerators 打上 GEN_HEAD，
+                    // 运行期由 $RUN 入口包装成原生 Generator（见 RuntimeGenerator）。
+                    $c->next();
+                    $nx = $c->peekSig();
+                    if ($nx === null || (is_string($nx) && in_array($nx, [';', ',', ')', ']', '}'], true))) {
+                        $code[] = [VmOp::PUSH_NULL];
+                        $code[] = [VmOp::YIELD, 0];
+                        return;
+                    }
+                    [$toks, $hasKey] = $c->collectYieldOperand(true);
+                    if ($toks === []) {
+                        $code[] = [VmOp::PUSH_NULL];
+                        $code[] = [VmOp::YIELD, 0];
+                        return;
+                    }
+                    if ($hasKey) {
+                        $c->next(); // 消费 '=>'
+                        $this->parseExpr($toks, $code); // 键先压栈
+                        [$vtoks] = $c->collectYieldOperand(false);
+                        if ($vtoks === []) {
+                            throw new VmUnsupported('VM 不支持空的 yield 值');
+                        }
+                        $this->parseExpr($vtoks, $code); // 值后压栈（栈顶）
+                        $code[] = [VmOp::YIELD, 1];
+                    } else {
+                        $this->parseExpr($toks, $code);
+                        $code[] = [VmOp::YIELD, 0];
+                    }
+                    return;
+                case T_YIELD_FROM:
+                    // yield from $iterable —— 逐项转发，结束压入子生成器 return 值。
+                    $c->next();
+                    [$ftoks] = $c->collectYieldOperand(false);
+                    if ($ftoks === []) {
+                        throw new VmUnsupported('VM 不支持空的 yield from 操作数');
+                    }
+                    $this->parseExpr($ftoks, $code);
+                    $code[] = [VmOp::YIELD_FROM];
+                    return;
                 case T_NEW:
                     $c->next();
                     $this->parseNew($c, $code);
@@ -2113,6 +2221,26 @@ trait VmExprTrait
      *  - self::CONST / self::$p / 显式 C::X → 编译期解析（不延迟）。
      * @param array<int,array<int,mixed>> $code
      */
+    /**
+     * 光标处若是「（可带命名空间的）名字 + ::」，返回 true（用于区分 `\Foo\Bar::m()`）。
+     * 只前瞻不消费。
+     */
+    private function peekDoubleColonAfterName(Cursor $c): bool
+    {
+        $i = 0;
+        while (true) {
+            $tk = $c->peekSigAt($i);
+            if ($tk === null) {
+                return false;
+            }
+            if (is_array($tk) && in_array($tk[0], [T_STRING, T_NS_SEPARATOR, T_STATIC], true)) {
+                $i++;
+                continue;
+            }
+            return is_array($tk) ? $tk[0] === T_DOUBLE_COLON : $tk === '::';
+        }
+    }
+
     private function parseStaticMember(Cursor $c, array &$code): void
     {
         // 类名可能带命名空间分隔符：Foo\Bar；PHP 8.1+ 的 static 是 T_STATIC
@@ -2147,6 +2275,10 @@ trait VmExprTrait
                 $cls = $this->curClass;
             }
             $fwdCls = "\x00fwd:" . $cls;
+        } else {
+            // 显式类名（Cache / Db / OrderService …）：按 namespace + use 别名补全为 FQN，
+            // 否则运行期在全局命名空间里找不到真实类（VM 产物整体运行在 namespace {} 里）。
+            $cls = $this->resolveClassRef($cls);
         }
         $c->expect(T_DOUBLE_COLON);
         $mem = $c->peek();
@@ -2439,7 +2571,13 @@ trait VmExprTrait
                 }
                 $cls = VmOp::LSB_MARK . $this->curClass;
             } else {
-                $cls = $this->resolveStaticClassName($cls) ?? $cls;
+                // self/static/parent 由 resolveStaticClassName 折值（null=无法解析）；
+                // 其余类名一律按 namespace + use 别名补全为 FQN。
+                $cls = $this->resolveStaticClassName($cls);
+                if ($cls === null) {
+                    throw new VmUnsupported('VM 无法解析 new 的类上下文（已回退）');
+                }
+                $cls = $this->resolveClassRef($cls);
             }
             $argc = $this->compileArgs($c, $code);
             $code[] = [VmOp::NEW, $cls, $argc];

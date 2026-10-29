@@ -33,6 +33,7 @@ require_once __DIR__ . '/Parts/VmLitTrait.php';
 require_once __DIR__ . '/Parts/VmTokTrait.php';
 require_once __DIR__ . '/Parts/VmIncTrait.php';
 require_once __DIR__ . '/Parts/VmControlTrait.php';
+require_once __DIR__ . '/Parts/VmClosureTrait.php';
 require_once __DIR__ . '/Cursor.php';
 
 final class VmCompiler
@@ -123,6 +124,7 @@ final class VmCompiler
     use VmTokTrait;
     use VmIncTrait;
     use VmControlTrait;
+    use VmClosureTrait;
 
     /** 原生函数名 → natTbl 索引（首次登记分配 idx） */
     private function natIdx(string $name): int
@@ -254,6 +256,17 @@ final class VmCompiler
     /** 当前段异常表引用（按编译上下文指向 mainET / funcET[n] / classET[c][m]） */
     private array $curSegET = [];
     /**
+     * 当前段选择器：'main' / "f\0函数名" / "c\0类名\0方法名"。
+     * 闭包编译是"段中段"，编译完必须把 curSegET 的引用重新指回外层段——
+     * 只保存数组值无法还原引用身份（赋值会写穿到闭包自己的槽位），故记录选择器。
+     */
+    private string $curSegSel = 'main';
+
+    /** 当前命名空间（顶层 namespace 声明；空=全局） */
+    private string $curNs = '';
+    /** @var array<string,string> 顶层 use 别名（小写短名 => 完全限定名） */
+    private array $useMap = [];
+    /**
      * try/finally 嵌套栈：每项 ['finallyPc'=>int|null, 'retJmps'=>array, 'hasFinally'=>bool]
      * finallyPc 为 finally 块起始占位索引（编译后回填）；retJmps 收集保护区内被延后返回的
      * JMP 占位（最终都指向 finallyPc）；hasFinally 标记本 try 是否带 finally（决定返回拦截）。
@@ -266,6 +279,257 @@ final class VmCompiler
     /**
      * @return array{consts:array,funcs:array,funcParams:array,classes:array,classParams:array,main:array,globals:array,natTbl:array}
      */
+    /**
+     * PHP 8 合并令牌归一化（7.4 兼容形态）。
+     *
+     * 8.0 起 `\A\B` / `A\B` / `namespace\A` 分别被词法器合并成 T_NAME_FULLY_QUALIFIED /
+     * T_NAME_QUALIFIED / T_NAME_RELATIVE，`&` 也分成 T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG 与
+     * T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG（后者用于区分"引用参数 &$x"与"交集类型 A&B"，
+     * 必须原样保留，故这里不动 `&` 系列令牌）。本编译器的名字解析是按 7.4 的
+     * "T_STRING + T_NS_SEPARATOR" 形态写的，直接遇到合并令牌会抛
+     * "VM 不支持的词法" 而整文件回退。这里统一拆回旧形态，一处归一、全局受益。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    /**
+     * 切换"当前段"异常表引用。段选择器：
+     *   'main'）/ "f\0函数名" / "c\0类名\0方法名"
+     *
+     * 用选择器而不是保存数组值，是为了让闭包（段中段）编译完能真正把引用
+     * 重新指回外层段——保存/回写数组值只会写穿到闭包自己的槽位，外层后续的
+     * try/catch 会错记到闭包表里。
+     */
+    private function bindSeg(string $sel): void
+    {
+        $this->curSegSel = $sel;
+        if ($sel === 'main') {
+            $this->curSegET = &$this->mainET;
+            return;
+        }
+        $parts = explode("\x00", $sel);
+        if ($parts[0] === 'f') {
+            $name = $parts[1] ?? '';
+            $this->funcET[$name] ??= [];
+            $this->curSegET = &$this->funcET[$name];
+            return;
+        }
+        $owner = $parts[1] ?? '';
+        $mn = $parts[2] ?? '';
+        $this->classET[$owner][$mn] ??= [];
+        $this->curSegET = &$this->classET[$owner][$mn];
+    }
+
+    /**
+     * 预扫描命名空间上下文：当前 namespace + 顶层 use 别名表。
+     *
+     * 为什么需要：VM 产物整体运行在全局命名空间里（`namespace { ... }`），
+     * 源码里的短类名（`new OrderService()` / `Cache::get()`）一旦原样进字节码，
+     * 运行期就变成"在全局命名空间里找 OrderService"——而它实际是
+     * `app\service\OrderService`（由 `use app\service\OrderService;` 导入）。
+     * 编译期把名字补全成 FQN，运行期才找得到真实类。
+     *
+     * 只登记顶层（深度 0）的 namespace / use；闭包参数里的 `use (...)` 不在
+     * 语句起始位置，天然不会被误判。
+     *
+     * @param array<int,array<int,mixed>> $stmts
+     */
+    private function prescanNamespaceContext(array $stmts): void
+    {
+        foreach ($stmts as $stmt) {
+            $sig = [];
+            foreach ($stmt as $t) {
+                if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                $sig[] = $t;
+            }
+            if ($sig === [] || !is_array($sig[0])) {
+                continue;
+            }
+            if ($sig[0][0] === T_NAMESPACE) {
+                $ns = '';
+                for ($i = 1, $n = count($sig); $i < $n; $i++) {
+                    $t = $sig[$i];
+                    if (is_array($t) && ($t[0] === T_STRING || $t[0] === T_NS_SEPARATOR)) {
+                        $ns .= $t[1];
+                        continue;
+                    }
+                    break;
+                }
+                $this->curNs = trim($ns, '\\');
+                continue;
+            }
+            if ($sig[0][0] === T_USE) {
+                $this->scanUseStatement($sig);
+            }
+        }
+    }
+
+    /**
+     * 解析一条顶层 use 语句，填充别名表（键统一小写：PHP 类名大小写不敏感）。
+     * 支持 `use A\B;`、`use A\B as C;`、`use A\{B, C as D};`；
+     * `use function ...` / `use const ...` 不参与类名解析，直接跳过。
+     *
+     * @param array<int,mixed> $sig
+     */
+    private function scanUseStatement(array $sig): void
+    {
+        $n = count($sig);
+        $i = 1;
+        if ($i < $n && is_array($sig[$i]) && in_array($sig[$i][0], [T_FUNCTION, T_CONST], true)) {
+            return;
+        }
+        $prefix = '';
+        $name = '';
+        $alias = '';
+        // 状态：0=收集名字 1=AS 之后收集别名
+        $state = 0;
+        for (; $i < $n; $i++) {
+            $t = $sig[$i];
+            if (is_array($t) && $t[0] === T_AS) {
+                $state = 1;
+                $alias = '';
+                continue;
+            }
+            if (is_array($t) && ($t[0] === T_STRING || $t[0] === T_NS_SEPARATOR)) {
+                if ($state === 1) {
+                    $alias .= $t[1];
+                } else {
+                    $name .= $t[1];
+                }
+                continue;
+            }
+            if (is_string($t) && $t === '{') {
+                // 组语法 use A\{B, C as D};
+                $prefix = rtrim($name, '\\');
+                $name = '';
+                continue;
+            }
+            if (is_string($t) && ($t === ',' || $t === '}' || $t === ';')) {
+                if ($name !== '' || $alias !== '') {
+                    $fqn = trim(($prefix !== '' ? $prefix . '\\' : '') . trim($name, '\\'), '\\');
+                    if ($fqn !== '') {
+                        $p = strrpos($fqn, '\\');
+                        $short = $alias !== '' ? $alias : ($p !== false ? substr($fqn, $p + 1) : $fqn);
+                        $this->useMap[strtolower($short)] = $fqn;
+                    }
+                }
+                $name = '';
+                $alias = '';
+                $state = 0;
+                if ($t === '}') {
+                    $prefix = '';
+                }
+                continue;
+            }
+        }
+        // 语句末尾（无 ';' 的极端情况）补登记
+        if ($name !== '') {
+            $fqn = trim(($prefix !== '' ? $prefix . '\\' : '') . trim($name, '\\'), '\\');
+            if ($fqn !== '') {
+                $short = $alias !== '' ? $alias : (($p = strrpos($fqn, '\\')) !== false ? substr($fqn, $p + 1) : $fqn);
+                $this->useMap[strtolower($short)] = $fqn;
+            }
+        }
+    }
+
+    /**
+     * 类名引用补全（编译期）：把源码里的类名解析成运行期可用的名字。
+     *
+     * 规则与 PHP 一致（按优先级）：
+     *   1. 前导 `\` → 已是完全限定名，去掉前导反斜杠；
+     *   2. 本文件声明的类/trait/interface → 保留短名（VM 类表按短名寻址）；
+     *   3. 顶层 use 别名命中 → 展开为导入的 FQN；
+     *   4. 名字自带命名空间（A\B）→ 相对当前命名空间展开；
+     *   5. 否则 → 当前命名空间 + 短名（全局命名空间下保持原样）。
+     *
+     * 运行期对"补全后仍不存在"的名字会再退回短名（PHP 的"命名空间内找不到
+     * 就去全局找"回退语义），故此处只需给出首选名字。
+     */
+    private function resolveClassRef(string $name): string
+    {
+        if ($name === '') {
+            return $name;
+        }
+        if ($name[0] === '\\') {
+            return ltrim($name, '\\');
+        }
+        // 内置类型/关键字不是类名，绝不能做命名空间补全——
+        // `int $n`、`fn(int $x)`、`A|int` 联合类型等都会流经类引用改写，
+        // 补全成 app\demo\int 会直接 "Cannot use ... as class name as it is reserved"。
+        static $builtins = [
+            'int' => 1, 'float' => 1, 'string' => 1, 'bool' => 1, 'array' => 1,
+            'object' => 1, 'mixed' => 1, 'void' => 1, 'never' => 1, 'null' => 1,
+            'false' => 1, 'true' => 1, 'iterable' => 1, 'callable' => 1,
+            'self' => 1, 'static' => 1, 'parent' => 1,
+        ];
+        if (isset($builtins[strtolower($name)])) {
+            return $name;
+        }
+        if (isset($this->classes[$name]) || isset($this->traits[$name]) || isset($this->interfaces[$name])) {
+            return $name;
+        }
+        $low = strtolower($name);
+        if (isset($this->useMap[$low])) {
+            return $this->useMap[$low];
+        }
+        if ($this->curNs === '') {
+            return $name;
+        }
+        return $this->curNs . '\\' . $name;
+    }
+
+    private function normalizeTokens(array $tokens): array
+    {
+        $out = [];
+        foreach ($tokens as $t) {
+            if (!is_array($t)) {
+                $out[] = $t;
+                continue;
+            }
+            $id = $t[0];
+            // 注释一律丢弃：VM 只关心语义，带注释反而会让"光标看下一个 token"的判断
+            // （peek2 / ::判定 等）被注释卡住——例如壳间注入的注释插在 `json` 与 `(`
+            // 之间，就会被误判成"不支持的标识符 json"。
+            if ($id === T_COMMENT || $id === T_DOC_COMMENT) {
+                continue;
+            }
+            if ($id === T_NAME_FULLY_QUALIFIED || $id === T_NAME_QUALIFIED
+                || (defined('T_NAME_RELATIVE') && $id === T_NAME_RELATIVE)) {
+                $name = (string) $t[1];
+                $lead = ($id === T_NAME_FULLY_QUALIFIED);
+                $rel = (defined('T_NAME_RELATIVE') && $id === T_NAME_RELATIVE);
+                $parts = explode('\\', ltrim($name, '\\'));
+                if ($rel) {
+                    // namespace\Foo → namespace \ Foo
+                    array_unshift($parts, '');
+                }
+                if ($lead) {
+                    $out[] = [T_NS_SEPARATOR, '\\'];
+                }
+                $n = count($parts);
+                for ($i = 0; $i < $n; $i++) {
+                    $seg = $parts[$i];
+                    if ($seg === '' && $rel && $i === 0) {
+                        $out[] = [T_NAMESPACE, 'namespace'];
+                        $out[] = [T_NS_SEPARATOR, '\\'];
+                        continue;
+                    }
+                    if ($i > 0) {
+                        $out[] = [T_NS_SEPARATOR, '\\'];
+                    }
+                    if ($seg !== '') {
+                        $out[] = [T_STRING, $seg];
+                    }
+                }
+                continue;
+            }
+            $out[] = $t;
+        }
+        return $out;
+    }
+
     public function compile(string $code): array
     {
         $this->tokens = Parser::tokenize('<?php ' . $code);
@@ -277,6 +541,10 @@ final class VmCompiler
             }
             $body[] = $t;
         }
+        // PHP 8 合并令牌归一化：把 T_NAME_* / T_AMPERSAND_* 展开成 7.4 时代的
+        // "T_STRING + T_NS_SEPARATOR" 序列与裸 '&'，使整套旧分词逻辑（专为 7.4 编写）
+        // 无需逐处改造即可消费 8.0+ 源码，显著减少"VM 不支持的词法"回退。
+        $body = $this->normalizeTokens($body);
         $this->tokens = $body;
         $this->pos = 0;
         // main 作用域的 goto/label 状态（函数/方法作用域在各自入口换新）
@@ -364,6 +632,9 @@ final class VmCompiler
         // 记录期校验（compileStatementInner 内）覆盖常规路径；此处兜底
         // 「标签所在外层语句被 EVAL_STMT 化、记录期校验不可达」的角落。
         $this->prescanDuplicateLabels($this->tokens);
+        // 命名空间上下文预扫描：类名补全（new / 静态调用 / instanceof / catch 类型）
+        // 依赖它，必须在任何类/函数体编译之前完成。
+        $this->prescanNamespaceContext($stmts);
         foreach ($stmts as $stmt) {
             $this->compileTopStatement($stmt);
         }
@@ -421,7 +692,7 @@ final class VmCompiler
             return;
         }
         // 顶层普通语句：异常表指向 main 段，控制栈复位
-        $this->curSegET = &$this->mainET;
+        $this->bindSeg('main');
         $this->tryStack = [];
         $this->inFinally = false;
         $this->compileStatement($stmt, $this->main);

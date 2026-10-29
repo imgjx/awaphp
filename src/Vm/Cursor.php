@@ -261,20 +261,95 @@ final class Cursor
     }
 
     /**
-     * 收集直到顶层 ';' 或结构结束（用于 return/echo 的剩余部分）。
+     * 收集直到【顶层】终止符（用于 return/echo/throw/属性默认值等"取剩余表达式"）。
+     *
+     * 深度感知是必须的：闭包/箭头函数的函数体里也带 `;`（`return array_map(function($x){
+     * return $x; }, $a);`），naive 版本会在闭包体内的第一个 `;` 处截断，导致外层调用的
+     * 右括号丢失、编译器报"期望 ) 但已到末尾"。括号/方括号/花括号内的 `;` 从来不是
+     * 语句终止符，故一律跳过；只有全部归零时的 term 才停（不消费）。
+     *
      * @return array<int,mixed>
      */
     public function untilTerminator(string $term): array
     {
         $out = [];
+        $pd = 0; // 圆括号
+        $bd = 0; // 方括号
+        $d  = 0; // 花括号（含字符串插值的 T_CURLY_OPEN）
         while (!$this->eof()) {
             $tok = $this->peek();
-            if (is_string($tok) && $tok === $term) {
-                break;
+            if (is_string($tok)) {
+                // 块结束：所在语句（如 if 体内的 return）到 '}' 为止，不消费
+                if ($d === 0 && $pd === 0 && $bd === 0 && $tok === '}') {
+                    break;
+                }
+                if ($pd === 0 && $bd === 0 && $d === 0 && $tok === $term) {
+                    break;
+                }
+                if ($tok === '(') {
+                    $pd++;
+                } elseif ($tok === ')') {
+                    $pd = max(0, $pd - 1);
+                } elseif ($tok === '[') {
+                    $bd++;
+                } elseif ($tok === ']') {
+                    $bd = max(0, $bd - 1);
+                } elseif ($tok === '{') {
+                    $d++;
+                } elseif ($tok === '}') {
+                    $d = max(0, $d - 1);
+                }
+            } elseif (is_array($tok) && ($tok[0] === T_CURLY_OPEN || $tok[0] === T_DOLLAR_OPEN_CURLY_BRACES)) {
+                $d++;
             }
             $out[] = $this->next();
         }
         return $out;
+    }
+
+    /**
+     * 收集 yield / yield from 的操作数 token：直到【顶层】的 ';' ',' ')' ']' '}'
+     * 或（$allowArrow 时）'=> '。返回 [tokens, 是否命中顶层 '=>']。
+     * 停止符本身不消费，由调用方决定（命中 '=>' 时调用方需自行 next()）。
+     *
+     * @return array{0:array<int,mixed>,1:bool}
+     */
+    public function collectYieldOperand(bool $allowArrow): array
+    {
+        $out = [];
+        $pd = 0;
+        $bd = 0;
+        $d  = 0;
+        while (!$this->eof()) {
+            $tok = $this->peek();
+            if (is_string($tok)) {
+                if ($pd === 0 && $bd === 0 && $d === 0
+                    && ($tok === ';' || $tok === ',' || $tok === ')' || $tok === ']' || $tok === '}')) {
+                    break;
+                }
+                if ($tok === '(') {
+                    $pd++;
+                } elseif ($tok === ')') {
+                    $pd = max(0, $pd - 1);
+                } elseif ($tok === '[') {
+                    $bd++;
+                } elseif ($tok === ']') {
+                    $bd = max(0, $bd - 1);
+                } elseif ($tok === '{') {
+                    $d++;
+                } elseif ($tok === '}') {
+                    $d = max(0, $d - 1);
+                }
+            } elseif (is_array($tok)) {
+                if ($tok[0] === T_CURLY_OPEN || $tok[0] === T_DOLLAR_OPEN_CURLY_BRACES) {
+                    $d++;
+                } elseif ($allowArrow && $pd === 0 && $bd === 0 && $d === 0 && $tok[0] === T_DOUBLE_ARROW) {
+                    break;
+                }
+            }
+            $out[] = $this->next();
+        }
+        return [$out, $this->is(T_DOUBLE_ARROW)];
     }
 
     public function untilEnd(): array

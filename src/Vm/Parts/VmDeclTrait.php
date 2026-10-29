@@ -44,8 +44,7 @@ trait VmDeclTrait
             $this->funcRef[$name] = true;
         }
         // 本函数异常表引用 + 异常控制栈复位（每个函数/方法是独立控制流边界）
-        $this->funcET[$name] ??= [];
-        $this->curSegET = &$this->funcET[$name];
+        $this->bindSeg("f\x00" . $name);
         $this->tryStack = [];
         $this->inFinally = false;
         $c->expect('(');
@@ -296,8 +295,14 @@ trait VmDeclTrait
                     if (is_array($t) && $t[0] === T_NS_SEPARATOR) { $name .= '\\'; $c->next(); continue; }
                     break;
                 }
-                $name = ltrim($name, '\\');
-                return $name !== '' ? $name : null;
+                if ($name === '') {
+                    return null;
+                }
+                // parent:: 运行期要按【真名】分发：短名经 use/命名空间解析成 FQN
+                // （`extends Handle` + `use think\exception\Handle;` → think\exception\Handle），
+                // 前导 '\' 的绝对名直接去前导反斜杠。同文件 VM 类解析后仍是短名
+                // （resolveClassRef 对文件内声明保留短名，VM 类表按短名寻址）。
+                return $this->resolveClassRef($name);
             }
             $c->next();
         }
@@ -471,8 +476,7 @@ trait VmDeclTrait
                 $this->curScopeId = $owner . '::' . $mn;
                 $this->curStatic = [];
                 // 本方法异常表引用 + 异常控制栈复位（每个方法独立控制流边界）
-                $this->classET[$owner][$mn] ??= [];
-                $this->curSegET = &$this->classET[$owner][$mn];
+                $this->bindSeg("c\x00" . $owner . "\x00" . $mn);
                 $this->tryStack = [];
                 $this->inFinally = false;
                 // 预登记方法签名（'C::m'）：$this->m() / self::m() / C::m() 调用点据此
@@ -1183,7 +1187,14 @@ trait VmDeclTrait
             // 引用参数标记（&$x），也可能是交集类型（A&B，PHP 8.1+ 用
             // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG 表示）；若在此吞掉，
             // `&$x` 的引用语义会被静默丢弃（实参按值传入、调用方看不到修改）。
-            while (($t = $c->peek()) !== null) {
+            // 注意：每一轮都必须先 skipWs()——`array &$arr` 里类型与 `&` 之间隔着空白，
+            // 不跳过会看到 T_WHITESPACE 而提前 break，随后把 `&` 当成"期望 T_VARIABLE"报错。
+            while (true) {
+                $c->skipWs();
+                $t = $c->peek();
+                if ($t === null) {
+                    break;
+                }
                 if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_ARRAY, T_CALLABLE], true)) {
                     $c->next();
                     continue;

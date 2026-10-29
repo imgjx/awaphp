@@ -86,17 +86,12 @@ final class LicenseGuard
 
         $blob = base64_encode((string) gzdeflate($g, 9));
         $stmt = "@eval(gzinflate(base64_decode('" . $blob . "')));\n";
-        $body = (string) preg_replace('/^\s*<\?(php)?/i', '', $code, 1);
 
-        // declare(strict_types=1) 必须是文件第一条语句，守卫若插在它前面会直接致命错误，
-        // 因此遇到首条 declare 时把守卫放到它之后。
-        if (preg_match('/^\s*declare\s*\(\s*strict_types\s*=\s*1\s*\)\s*;/i', $body, $m)) {
-            $head = $m[0];
-            $rest = substr($body, strlen($m[0]));
-            $out = '<?php ' . $head . $stmt . $rest;
-        } else {
-            $out = '<?php ' . $stmt . $body;
-        }
+        // declare(strict_types=1) 必须是文件第一条语句、namespace 必须紧随 declare——
+        // 守卫行插到它们之前会直接致命。统一用 DeclareHoist 切出前缀（开标签 + 前导
+        // declare/namespace），守卫插在前缀之后。
+        $split = DeclareHoist::split($code);
+        $out = $split['prefix'] . "\n" . $stmt . $split['body'];
 
         $this->logger->debug('已注入授权绑定守卫（域名 ' . count($list) . ' 个，有效期 ' . ($ts > 0 ? date('Y-m-d H:i:s', $ts) : '不限') . '）');
         return ['code' => $out, 'applied' => true];

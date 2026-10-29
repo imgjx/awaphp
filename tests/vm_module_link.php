@@ -215,11 +215,20 @@ $noAlias = strpos($progJson, 'my_strlen') === false
 $hasAliasFn = strpos($progJson, '_ml') !== false;   // 别名函数已注册
 $check('no_alias_trace', $noAlias && $hasAliasFn, $noAlias && $hasAliasFn ? '原始名已抹除（仅存别名）' : "noAlias=" . var_export($noAlias, true) . " hasAliasFn=" . var_export($hasAliasFn, true));
 
-// ---------- 10) 不支持的模块 → 跳过且不致命 ----------
+// ---------- 10) 链接失败的模块 → 跳过且不致命（原生兜底内嵌） ----------
+// 注：v1.0.9 起 VM 已支持 yield 生成器，原先「模块含不支持的 yield」不再失败，
+// 故此用例改用仍然真实存在的失败路径：清单声明的 deps 文件缺失。
 $code = 'echo bad_call("z") . "|";';
 $art = buildVm($code);
 $vm = runVm($code);
 $check('badmod_skip', $vm === runNative($code) && isset($art['linker']['skips']['bad_call']), 'skip=' . ($art['linker']['skips']['bad_call'] ?? 'none'));
+
+// ---------- 10b) 含生成器的模块 → 正常链接（GEN_HEAD/YIELD + Fiber 桥） ----------
+$code = '$o = ""; foreach (gen_seq(3) as $k => $v) { $o .= $k . ":" . $v . ","; } echo $o . "|";';
+$art = buildVm($code);
+$vm = runVm($code);
+$check('gen_module', $vm === runNative($code) && isset($art['linker']['hits']['gen_seq']),
+    'hits=' . json_encode(array_keys($art['linker']['hits'])) . ' vm=' . $vm);
 
 // ---------- 11) 模块顶层语句 → 告警忽略，函数仍可链接 ----------
 $code = 'echo tl_add(2, 3) . "|";';

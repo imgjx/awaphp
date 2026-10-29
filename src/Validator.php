@@ -26,6 +26,13 @@ final class Validator
         }
         file_put_contents($tmp, $code);
         $result = $this->checkSyntaxFile($tmp);
+        if (!$result['ok']) {
+            $dir = getenv('OBF_LINT_DUMP');
+            if (is_string($dir) && $dir !== '') {
+                @mkdir($dir, 0777, true);
+                @copy($tmp, rtrim($dir, '/') . '/' . date('His') . '_' . substr(md5($code), 0, 6) . '.php');
+            }
+        }
         @unlink($tmp);
         return $result;
     }

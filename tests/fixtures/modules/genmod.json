@@ -1,0 +1,7 @@
+{
+  "name": "genmod",
+  "match": ["gen_seq"],
+  "entry": "genmod.php",
+  "replace": true,
+  "priority": 5
+}

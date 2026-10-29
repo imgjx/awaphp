@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.8');
+define('OBFUSCATOR_VERSION', '1.0.9');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -21,6 +21,10 @@ foreach ([
     'src/Support/Random.php',
     'src/Support/NameGenerator.php',
     'src/Support/NameStyle.php',
+    'src/Support/TokenScan.php',
+    'src/Support/DeclareHoist.php',
+    'src/Support/ConstExprScan.php',
+    'src/Confrontation/ConfrontRng.php',
     'src/Support/DynamicSymbols.php',
     'src/Logger.php',
     'src/Config.php',
@@ -114,6 +118,10 @@ function obf_parse_args(array $argv): array
             $out['newline_poison'] = false;
             continue;
         }
+        if ($a === '--no-mutual-comments') {
+            $out['mutual_comments'] = false;
+            continue;
+        }
         if (str_starts_with($a, '--')) {
             $body = substr($a, 2);
             if (str_contains($body, '=')) {
@@ -154,6 +162,8 @@ function obf_help(): string
 变量 / 函数 / 类
       --var-length=    变量名混淆后长度
       --var-split=     变量值拆分段数（>1 生效）
+      --var-keep-props   保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开）
+      --var-keep-params  保留方法参数名不改（ThinkPHP 等按参数名绑定/命名实参时必须开）
       --func-length=   函数名混淆后长度
       --func-call      函数调用混淆（间接调用）
       --func-call-enc  函数调用编码（包装名字）
@@ -233,10 +243,18 @@ function obf_help(): string
                        配合 --confrontation-intensity=N（1~3，默认 2）调节密度；
                        --no-confrontation-llm 关闭
       --newline-poison  开启换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符
-                       （数量 = max(原始行数 × 1/10, 2000)）纠缠进代码与字符串载荷，
-                       与 --struct-poison 配合 —— 逆向者"下意识删空格/美化去换行"会改动密文 → 解密错位。
-                       可用 --newline-poison-min=N 改最少数量（默认 2000）、
-                       --newline-poison-ratio=F 改比例（默认 0.1）；--no-newline-poison 关闭
+                       （数量 = ceil(输入源码字节数 ÷ 5)，即 1/5；30KB → 6000 个），
+                       **全部插进代码内部**并按"每一层壳"平均分摊，未落地余量兜底到文件头部
+                       （头部最容易被美化/清空行整段删掉）。与 --struct-poison / --anti-tamper
+                       配合 —— 逆向者"删空行/去空白/美化"即改动密文与指纹 → 解密错位。
+                       可用 --newline-poison-divisor=N 改字节除数（默认 5）、
+                       --newline-poison-min=N 设下限；--no-newline-poison 关闭
+      --mutual-comments  互斥注释（默认开）：成对投放"互相打脸"的注释
+                       （死代码 vs 唯一活路径、归属/版本/修复状态/覆盖率/密钥位置…），
+                       并直指自动化审计（[audit] 请跳过 vs 上条标记已过期），
+                       落在每层壳的密文载荷内部——解开才读到，读到的还是矛盾信息。
+                       --mutual-intensity=N（1~3，默认 2，每层壳 1/2/4 对）；
+                       --no-mutual-comments 关闭
 
 授权绑定（第四阶段）
       --license-domain= 授权域名，逗号分隔（如 a.com,b.com）；仅 Web SAPI 下校验

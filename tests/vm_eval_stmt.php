@@ -89,11 +89,21 @@ $cases = [
     'compound_nested' => ['$a = ["x"=>["y"=>"1"]]; $a["x"]["y"] .= "z"; echo $a["x"]["y"] . "|";', [], true, false],
     'in_block'        => ['$s = "0"; if (true) { $arr = []; $arr["x"] .= "q"; $s = $arr["x"]; echo "inner:" . $s . ";"; } echo "outer:" . $s . "|";', [], false, true],
     'in_func'         => ['function f($v) { $d = ["n"=>$v]; $d["n"] .= "!"; return $d["n"]; } echo f("ok") . "|";', [], false, false],
-    'list_dest'       => ['[$a, $b] = [1, 2]; echo $a . "," . $b . "|";', [], true, false],
+    // v1.0.9 后：list()/[] 解构支持表达式键（字符串层把 'k' 编码成括号表达式也可直接编译），
+    // heredoc 插值同样已原生编译——两例不再走 EVAL_STMT 回退，保护面反而更大。
+    'list_dest'       => ['[$a, $b] = [1, 2]; echo $a . "," . $b . "|";', [], false, false],
+    'list_dest_exprkey' => ['[(("k")) => $v] = ["k" => 7]; echo $v . "|";', [], false, false],
     'heredoc'         => ['$m = "M"; $s = <<<EOT
 line $m
 EOT;
-echo $s . "|";', [], true, false],
+echo $s . "|";', [], false, false],
+    // EVAL_STMT 兜底类引用 FQCN 化：use 别名（SD）在 eval 单元里不可见（use 是
+    // 按文件的编译期导入），兜底文本必须改写为 \stdClass 才能命中全局类。
+    'eval_alias_class' => ['namespace app\t;
+use stdClass as SD;
+$a = ["x" => ["y" => "1"]];
+$a["x"]["y"] .= (new SD()) ? "z" : "w";
+echo $a["x"]["y"] . "|" . get_class(new SD()) . "|";', [], true, false],
     'mixed'           => ['echo strlen("ok") . "|"; $a = []; $a["k"] .= "v"; echo $a["k"] . "|"; echo strlen("ok2") . "|";', [], false, true],
     'writeback'       => ['$x = "a"; $y = []; $y["k"] .= "b"; $x = $y["k"]; echo $x . "|";', [], false, true],
     'sm_eval'         => ['$a = ["k"=>"v"]; $a["k"] .= "y"; echo $a["k"] . "|";', ['stateMachine' => true], false, false],

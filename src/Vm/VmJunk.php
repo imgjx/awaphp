@@ -92,6 +92,12 @@ final class VmJunk
      * @param array<string,mixed> $program
      * @return int 实际注入的垃圾指令条数（含片段内的每条 opcode）
      */
+    /** 段是否为生成器段（段首 GEN_HEAD）：此类段不可插指令，标记须恒在下标 0 */
+    private static function isGenSeg(array $seg): bool
+    {
+        return isset($seg[0]) && is_array($seg[0]) && ($seg[0][0] ?? null) === VmOp::GEN_HEAD;
+    }
+
     public function inject(array &$program, int $count): int
     {
         $count = max(0, $count);
@@ -104,13 +110,15 @@ final class VmJunk
             $paths[] = ['main'];
         }
         foreach (($program['funcs'] ?? []) as $name => $seg) {
-            if (is_array($seg) && $seg !== []) {
+            // 生成器段（段首 GEN_HEAD）不插垃圾：标记必须恒定位于下标 0，运行期入口靠它识别。
+            if (is_array($seg) && $seg !== [] && !self::isGenSeg($seg)) {
                 $paths[] = ['funcs', $name];
             }
         }
         foreach (($program['classes'] ?? []) as $cname => $cls) {
             foreach (($cls['methods'] ?? []) as $mname => $seg) {
-                if (is_array($seg) && $seg !== []) {
+                // 同上：生成器段豁免
+                if (is_array($seg) && $seg !== [] && !self::isGenSeg($seg)) {
                     $paths[] = ['classes', $cname, 'methods', $mname];
                 }
             }

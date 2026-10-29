@@ -21,6 +21,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/DeclareHoist.php';
+
 final class AntiDebug
 {
     public function __construct(
@@ -57,8 +59,11 @@ final class AntiDebug
         $openPos = (int) $m[0][1];
         $openLen = strlen($m[0][0]);
 
-        $prefix = substr($code, 0, $openPos + $openLen);   // "<?php"
-        $body   = substr($code, $openPos + $openLen);
+        // 前导 declare(strict_types=1) 必须留在最前面：守卫行插到它【之后】，
+        // 否则产物直接 "strict_types declaration must be the very first statement"。
+        $split  = DeclareHoist::split($code);
+        $prefix = $split['prefix'];
+        $body   = $split['body'];
 
         // 命名拟真化（NameStyle），去除 __awa_dbg_ 指纹
         $style = new NameStyle($this->salt);

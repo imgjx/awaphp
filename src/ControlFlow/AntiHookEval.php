@@ -23,6 +23,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/DeclareHoist.php';
+
 final class AntiHookEval
 {
     public function __construct(
@@ -48,8 +50,10 @@ final class AntiHookEval
         $openPos = (int) $m[0][1];
         $openLen = strlen($m[0][0]);
 
-        $prefix = substr($code, 0, $openPos + $openLen);   // "<?php"
-        $body   = substr($code, $openPos + $openLen);      // 开标签之后的全部内容
+        // 前导 declare(strict_types=1) 必须仍在最前面（守卫行插到它之后）
+        $split  = DeclareHoist::split($code);
+        $prefix = $split['prefix'];
+        $body   = $split['body'];      // 开标签（+ 前导 declare）之后的全部内容
 
         // 随机量由 salt 派生：同一 salt 可复现；不同 salt 互不相同。
         // 命名全部拟真化（NameStyle），去除 __awa_ 指纹。

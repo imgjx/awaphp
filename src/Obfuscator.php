@@ -35,6 +35,17 @@ declare(strict_types=1);
 
 final class Obfuscator
 {
+    /**
+     * 本工具 VM 产物的"构建标记"：追加在产物末尾的短注释。
+     *
+     * 用途：真·嵌套 VM（vm_layers>=2）时识别"上一层已经是 VM 产物"。这种产物绝不能
+     * 再走一遍普通编译——那等于把运行期解释器本身编译成字节码（VM 类语义、$GLOBALS
+     * 桥、by-ref 形参数组都没有等价表达），实测会静默挂死。带标记时改走不透明载荷嵌套。
+     *
+     * 标记本身不含工具指纹，删掉它也不会改变产物语义（只是退化为"重新编译"）。
+     */
+    private const VM_ARTIFACT_MARK = '/*@vmb:2f9c*/';
+
     public function __construct(
         private Config $config,
         private Salt $salt,
@@ -73,6 +84,12 @@ final class Obfuscator
         if ($this->config->hasLayers()) {
             return $this->runLayered($code);
         }
+        // 换行缠绕配额：= 输入源码字节数 / divisor（默认 5），按"每一层壳"平均分摊
+        $this->mcActive = true;
+        $this->nlInit(
+            $this->config->get('newline_poison') ? strlen($code) : 0,
+            $this->nlPlanSingle()
+        );
         $repeat = max(1, (int) $this->config->get('repeat'));
         $current = $code;
         $lastGood = $code;
@@ -97,6 +114,9 @@ final class Obfuscator
         }
 
         // ===== 字符串级外壳（依次包裹；每步 php -l 校验，失败回滚） =====
+        // 说明：每层壳包裹前先注入"本层分内的换行"（poisonTick），使换行散落在每一层壳里，
+        // 而不是集中成一段——越内层的换行会被后续壳一并加密进密文，成为载荷的一部分。
+        $current = $this->injectTicks($current, 'phpver');
         $phpVer = new PhpVersion($this->logger, $this->salt);
         $phpVer->setTarget((string) $this->config->get('php_version'));
         $current = $this->shell($current, '目标PHP版本外壳', fn ($c) => $phpVer->wrap($c), 'phpver');
@@ -108,10 +128,12 @@ final class Obfuscator
                 'probes'    => (string) $this->config->get('ad_probes'),
                 'intensity' => (int) $this->config->get('ad_intensity'),
             ];
+            $current = $this->injectTicks($current, 'anti_debug');
             $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts), 'anti_debug');
         }
         if ($this->config->get('anti_hook')) {
             $ahOpts = ['strict' => (bool) $this->config->get('ah_strict')];
+            $current = $this->injectTicks($current, 'anti_hook');
             $current = $this->shell($current, '防hook eval守卫', fn ($c) => (new AntiHookEval($this->salt, $this->logger))->wrap($c, $ahOpts)['code'], 'anti_hook');
         }
         if ($this->config->get('vm')) {
@@ -140,9 +162,11 @@ final class Obfuscator
                 // VM opcode 组合执行（--vm-combo）：单 opcode 拆等价多指令序列，抗反编译。0=关。
                 'combo'          => (int) $this->config->get('vm_combo'),
             ];
-            $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
+            $current = $this->injectTicks($current, 'vm');
+        $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
         }
         if ($this->config->get('eval')) {
+            $current = $this->injectTicks($current, 'eval');
             $current = $this->shell($current, 'EVAL加壳', fn ($c) => (new EvalShell($this->salt, $this->logger))->wrap($c, (int) $this->config->get('eval_layers')), 'eval');
         }
         if ($this->config->get('gz')) {
@@ -150,12 +174,14 @@ final class Obfuscator
                 'decoy'  => (bool) $this->config->get('gz_decoy'),
                 'chunks' => (int) $this->config->get('gz_chunks'),
             ];
+            $current = $this->injectTicks($current, 'gz');
             $current = $this->shell($current, 'GZ压缩加壳', fn ($c) => (new GzEncoder($this->logger, $this->salt))->wrap($c, $gzOpts), 'gz');
         }
         // 诱饵函数：拟真命名 + 拟真函数体，整体编码进 gzinflate/base64 壳（不暴露明文），
         // 永不调用、零运行期开销；追加在加壳之后、自校验之前，使防篡改基线包含该壳行。
         $junk = (int) $this->config->get('junk_funcs');
         if ($junk > 0) {
+            $current = $this->injectTicks($current, 'junk');
             $current = $this->shell($current, '诱饵函数', fn ($c) => (new JunkFunctions($this->salt, $this->logger))->inject($c, $junk), 'junk');
         }
 
@@ -182,25 +208,21 @@ final class Obfuscator
             if (!class_exists(Honeypot::class, false)) {
                 require_once __DIR__ . '/ControlFlow/Honeypot.php';
             }
+            $current = $this->injectTicks($current, 'honeypot');
             $current = $this->shell($current, '蜜罐函数', fn ($c) => (new Honeypot($this->logger, $this->salt))->inject($c, $hp), 'honeypot');
         }
 
-        // 换行缠绕壳：须在结构毒化壳【之前】注入，使换行随内层代码一同被加密进密文
-        // （配合毒化壳：删除空白 → 密文错位解出乱码）。壳内仅换行符，跳过自保护以免换新行被抹平。
+        // 换行缠绕壳：配额已在前面的每一层壳前按 1/N 分摊注入（poisonTick），
+        // 此处补上"换行层自己那一份"，并把它压在毒化壳之前——
+        // 使换行随内层代码一同被加密进密文（配合毒化壳：删空白 → 密文/指纹错位）。
         if ($this->config->get('newline_poison')) {
-            if (!class_exists(NewlinePoison::class, false)) {
-                require_once __DIR__ . '/Encode/NewlinePoison.php';
-            }
-            $current = $this->shell($current, '换行缠绕壳', fn ($c) => (new NewlinePoison($this->logger, $this->salt))->wrap($c, [
-                'ratio'        => (float) $this->config->get('newline_poison_ratio'),
-                'min'          => (int) $this->config->get('newline_poison_min'),
-                'string_ratio' => 0.4,
-            ]), 'newline_poison');
+            $current = $this->injectTicks($current, 'newline_poison');
         }
 
         // 结构指纹毒化壳（真最外层）：指纹对象 = 除自身载荷外的完整最终文件，
         // 文件被美化/篡改 → 密钥错位解出乱码（校验结果进数据流，无分支可绕）。
         if ($this->config->get('struct_poison')) {
+            $current = $this->injectTicks($current, 'structpoison');
             if (!class_exists(StructPoison::class, false)) {
                 require_once __DIR__ . '/Encode/StructPoison.php';
             }
@@ -257,7 +279,7 @@ final class Obfuscator
                 $npLayer = [
                     'name'   => 'shell:newline_poison',
                     'params' => [
-                        'ratio'        => (float) $this->config->get('newline_poison_ratio'),
+                        'divisor'      => (int) $this->config->get('newline_poison_divisor'),
                         'min'          => (int) $this->config->get('newline_poison_min'),
                         'string_ratio' => 0.4,
                     ],
@@ -278,6 +300,12 @@ final class Obfuscator
             }
         }
         $layers = $this->orderShellLayers($rawLayers);
+        // 换行缠绕配额：输入源码字节数 / divisor，按"每一层壳"平均分摊（见 poisonTick）
+        $this->mcActive = true;
+        $this->nlInit(
+            $this->config->get('newline_poison') ? strlen($code) : 0,
+            $this->nlPlanLayered($layers)
+        );
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
 
@@ -374,6 +402,274 @@ final class Obfuscator
         return array_merge($head, $keep, $pre, $tail);
     }
 
+    // ============================================================
+    //  换行缠绕配额分摊（NewlinePoison）
+    // ============================================================
+    //
+    //  规则（1.0.9）：换行总数 = ceil(输入源码字节数 / newline_poison_divisor)，默认 1/5。
+    //  这些换行**全部插进代码内部**，并按"每一层壳"平均分摊：每层壳包裹前先注入自己那一份，
+    //  于是换行散落在 vm/eval/gz/毒化/自校验…各层之间，而不是集中成一段可被整体删除的死区。
+    //  越内层的换行会被后续壳一并加密进密文，删掉即改动密文/指纹 → 触发毒化。
+    //  未能落地的余量（候选边界不足等）兜底到**文件头部**（紧跟 <?php 之后）：
+    //  头部是美化/清空行时最先被删的位置，比尾部死区更容易被误删。
+
+    /** @var array<int,string> 尚未消费的分摊点（按管线顺序） */
+    private array $nlPoints = [];
+    private int $nlBase = 0;
+    private int $nlTick = 0;
+    private int $nlRem = 0;
+    private int $nlCarry = 0;
+    private bool $nlActive = false;
+
+    /**
+     * 计算本次运行的分摊计划。
+     *
+     * @param int                 $bytes  输入源码字节数（0 = 不启用）
+     * @param array<int,string>   $points 分摊点（按管线顺序，须全部位于指纹/自校验壳之前）
+     */
+    private function nlInit(int $bytes, array $points): void
+    {
+        $this->nlPoints = array_values($points);
+        $this->nlBase = 0;
+        $this->nlTick = 0;
+        $this->nlRem = 0;
+        $this->nlCarry = 0;
+        $this->nlActive = false;
+        if ($bytes <= 0 || $this->nlPoints === []) {
+            return;
+        }
+        if (!class_exists(NewlinePoison::class, false)) {
+            require_once __DIR__ . '/Encode/NewlinePoison.php';
+        }
+        $total = NewlinePoison::targetFor($bytes, [
+            'divisor' => (int) $this->config->get('newline_poison_divisor'),
+            'min'     => (int) $this->config->get('newline_poison_min'),
+        ]);
+        if ($total <= 0) {
+            return;
+        }
+        $cnt = count($this->nlPoints);
+        $this->nlBase = intdiv($total, $cnt);
+        $this->nlRem = $total % $cnt;
+        $this->nlActive = true;
+        $this->logger->debug(sprintf(
+            '换行缠绕配额：输入 %d 字节 → 共 %d 个换行，分摊到 %d 层壳（每层 %d%s）',
+            $bytes,
+            $total,
+            $cnt,
+            $this->nlBase,
+            $this->nlRem > 0 ? " + 前 {$this->nlRem} 层各多 1" : ''
+        ));
+    }
+
+    /**
+     * 散装（非分层）管线的分摊点，顺序须与下面的包裹顺序一致。
+     * @return array<int,string>
+     */
+    private function nlPlanSingle(): array
+    {
+        $pts = ['phpver'];
+        if ($this->config->get('anti_debug')) {
+            $pts[] = 'anti_debug';
+        }
+        if ($this->config->get('anti_hook')) {
+            $pts[] = 'anti_hook';
+        }
+        if ($this->config->get('vm')) {
+            $pts[] = 'vm';
+        }
+        if ($this->config->get('eval')) {
+            $pts[] = 'eval';
+        }
+        if ($this->config->get('gz')) {
+            $pts[] = 'gz';
+        }
+        if ((int) $this->config->get('junk_funcs') > 0) {
+            $pts[] = 'junk';
+        }
+        if ((int) $this->config->get('honeypot') > 0) {
+            $pts[] = 'honeypot';
+        }
+        if ($this->config->get('newline_poison')) {
+            $pts[] = 'newline_poison';
+        }
+        if ($this->config->get('struct_poison')) {
+            $pts[] = 'structpoison';
+        }
+        return $pts;
+    }
+
+    /**
+     * 分层管线的分摊点：所有 shell:* 层，但排除 anti_tamper / license
+     * （它们位于最外层且自带区段哈希，其后再插换行会让运行期哈希失配）。
+     *
+     * @param array<int,array{name:string,params:array,inject:array}> $layers 已排序的层
+     * @return array<int,string>
+     */
+    private function nlPlanLayered(array $layers): array
+    {
+        $pts = [];
+        foreach ($layers as $l) {
+            $name = (string) ($l['name'] ?? '');
+            if (LayerRegistry::kind($name) !== 'shell') {
+                continue;
+            }
+            $key = substr($name, 6);
+            if ($key === 'anti_tamper' || $key === 'license') {
+                continue;
+            }
+            $pts[] = $key;
+        }
+        return $pts;
+    }
+
+    /**
+     * 在某一层壳包裹前注入"本层分内的换行"。
+     * 返回值：注入了换行的代码；未命中分摊点 / 注入失败则原样返回（配额转入后续层）。
+     */
+    private function poisonTick(string $code, string $key): string
+    {
+        // 封死壳：结构指纹毒化 / 自校验防篡改 / 授权绑定会把"当时的文件字节"写进指纹或
+        // 区段哈希，其后哪怕只多一个换行，运行期校验也会失配（解出乱码 / 误报被篡改）。
+        // 故在它们之前把未落地的配额一次性兜到文件头部，然后彻底停止注入。
+        $sealing = ($key === 'structpoison' || $key === 'anti_tamper' || $key === 'license');
+        if ($sealing) {
+            $code = $this->poisonFlushHead($code, $key);
+        }
+        if (!$this->nlActive) {
+            return $code;
+        }
+        $idx = array_search($key, $this->nlPoints, true);
+        if ($idx === false) {
+            if ($sealing) {
+                $this->nlActive = false;
+            }
+            return $code; // 不是分摊点（或已消费过）
+        }
+        // 该点消费掉：即便本层注入失败也不再重复（避免同一层被注入两份）
+        array_splice($this->nlPoints, $idx, 1);
+        $isLast = $this->nlPoints === [];   // 最后一个点：余量兜到头部
+
+        $share = $this->nlBase + ($this->nlTick < $this->nlRem ? 1 : 0);
+        $this->nlTick++;
+        $carry = $this->nlCarry;
+        $this->nlCarry = 0;
+        $head = 0;
+        if ($isLast) {
+            $head = $carry;           // 兜底：头部块
+        } else {
+            $share += $carry;         // 其余点：把上一层的余量就地吸收
+        }
+        if ($share <= 0 && $head <= 0) {
+            if ($sealing) {
+                $this->nlActive = false;
+            }
+            return $code;
+        }
+
+        if (!class_exists(NewlinePoison::class, false)) {
+            require_once __DIR__ . '/Encode/NewlinePoison.php';
+        }
+        $np = new NewlinePoison($this->logger, $this->salt);
+        $out = $np->wrap($code, [
+            'count'        => max(0, $share),
+            'head'         => max(0, $head),
+            'string_ratio' => 0.4,
+            'seed_tag'     => $key,
+        ]);
+        if ($np->lastCount <= 0 || $out === $code) {
+            $this->nlCarry += $share + $head;
+            if ($sealing) {
+                $this->nlActive = false;
+            }
+            return $code;
+        }
+        $check = (new Validator($this->logger))->checkSyntaxString($out);
+        if (!$check['ok']) {
+            $this->logger->debug("[换行缠绕:{$key}] 产物未通过 php -l，本层注入回滚（配额转后续层）");
+            $this->nlCarry += $share + $head;
+            if ($sealing) {
+                $this->nlActive = false;
+            }
+            return $code;
+        }
+        $this->nlCarry += max(0, $share + $head - $np->lastCount);
+        if ($sealing) {
+            $this->nlActive = false; // 已进指纹/哈希区，之后一个字节都不能再动
+        }
+        $this->logger->debug(sprintf('换行缠绕[%s]：本层注入 %d 个', $key, $np->lastCount));
+        return $out;
+    }
+
+    /**
+     * 任意 shell 层包裹前的统一注入点：先投互斥注释，再注换行缠绕。
+     * 两者都必须发生在【指纹/自校验壳之前】——那之后任何字节改动都会让运行期校验失配。
+     */
+    private function injectTicks(string $code, string $key): string
+    {
+        $code = $this->mutualTick($code, $key);
+        return $this->poisonTick($code, $key);
+    }
+
+    /** 互斥注释的投放开关（结构毒化壳之后必须关闭，否则指纹失配） */
+    private bool $mcActive = true;
+
+    /**
+     * 互斥注释（Confrontation 家族）：把"互相打脸"的成对注释投进【壳内部】。
+     * 越往后投放的注释会被更外层的壳再加密一层，明文文件里看不到、解开才读到。
+     */
+    private function mutualTick(string $code, string $key): string
+    {
+        if (!$this->mcActive || !$this->config->get('mutual_comments')) {
+            return $code;
+        }
+        $sealing = ($key === 'structpoison' || $key === 'anti_tamper' || $key === 'license');
+        $intensity = max(1, min(3, (int) $this->config->get('mutual_intensity')));
+        $pairs = [1 => 1, 2 => 2, 3 => 4][$intensity];
+        if (!class_exists(MutualComments::class, false)) {
+            require_once __DIR__ . '/Confrontation/MutualComments.php';
+        }
+        try {
+            $out = (new MutualComments($this->logger, $this->salt))->inject($code, $pairs, $key);
+        } catch (Throwable $e) {
+            $this->logger->debug("[互斥注释:{$key}] 注入失败，跳过：" . $e->getMessage());
+            $out = $code;
+        }
+        if ($sealing) {
+            $this->mcActive = false; // 已进指纹区，此后一个字节都不能再动
+        }
+        return $out;
+    }
+
+    /**
+     * 兜底：把所有未落地的换行配额一次性补到文件头部（紧跟 <?php 之后）。
+     * 必须在指纹/自校验壳之前调用，否则会破坏其区段哈希。
+     *
+     * @param string $tag 日志标记（说明是在哪个壳之前兜底的）
+     */
+    private function poisonFlushHead(string $code, string $tag = ''): string
+    {
+        if (!$this->nlActive || $this->nlCarry <= 0) {
+            return $code;
+        }
+        $n = $this->nlCarry;
+        $this->nlCarry = 0;
+        if (!class_exists(NewlinePoison::class, false)) {
+            require_once __DIR__ . '/Encode/NewlinePoison.php';
+        }
+        $np = new NewlinePoison($this->logger, $this->salt);
+        $out = $np->wrap($code, ['count' => 0, 'head' => $n, 'seed_tag' => 'head:' . $tag]);
+        if ($np->lastCount <= 0) {
+            return $code;
+        }
+        $check = (new Validator($this->logger))->checkSyntaxString($out);
+        if (!$check['ok']) {
+            return $code;
+        }
+        $this->logger->debug(sprintf('换行缠绕兜底：头部补 %d 个（%s 之前）', $np->lastCount, $tag !== '' ? $tag : '末层'));
+        return $out;
+    }
+
     /**
      * @param array{name:string,params:array,inject:array} $layer
      * @param array<int,mixed>|null $tokens 引用：连续 token 层在此累积
@@ -407,7 +703,14 @@ final class Obfuscator
                 $tokens = null;
             }
             if ($kind === 'shell') {
-                $code = $this->applyShellLayer($name, $params, $code);
+                $key = substr($name, 6);
+                // 换行缠绕：每层壳包裹前注入本层分内的一份（散落各层，而非集中于尾部）
+                $code = $this->injectTicks($code, $key);
+                if ($name === 'shell:newline_poison' && $this->nlActive) {
+                    // 本层配额已由 poisonTick 注入，避免重复注入
+                } else {
+                    $code = $this->applyShellLayer($name, $params, $code);
+                }
                 // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住（破解需先破外层混淆）
                 $code = $this->shieldIfNeeded($code, $name);
             }
@@ -587,10 +890,13 @@ final class Obfuscator
                 if (!class_exists(NewlinePoison::class, false)) {
                     require_once __DIR__ . '/Encode/NewlinePoison.php';
                 }
+                // 独立使用（未走 Obfuscator 的每层分摊）时，按本层代码字节数算配额
                 return (new NewlinePoison($this->logger, $this->salt))->wrap($code, [
-                    'ratio'        => (float) ($params['ratio'] ?? 0.1),
-                    'min'          => (int) ($params['min'] ?? 2000),
+                    'bytes'        => strlen($code),
+                    'divisor'      => (int) ($params['divisor'] ?? $this->config->get('newline_poison_divisor')),
+                    'min'          => (int) ($params['min'] ?? 0),
                     'string_ratio' => (float) ($params['string_ratio'] ?? 0.4),
+                    'seed_tag'     => 'layer:newline_poison',
                 ]);
             case 'structpoison':
                 if (!class_exists(StructPoison::class, false)) {
@@ -640,35 +946,59 @@ final class Obfuscator
      */
     private function shellVmOnce(array $params, string $code): string
     {
+        // 顶层 return（配置 / provider / route / service 等"return 数组"的文件）：VM 壳把整份
+        // 代码包进 (function(){ ... })(); ，顶层 return 只会从该 IIFE 返回、被丢弃，include 该项目
+        // 文件于是返回 1 而非数组（框架 App::bind(include provider.php) 收到 int → 致命）。这类
+        // 文件不走 VM 壳，保留原样（仍经过 token 级混淆），确保顶层 return 语义正确。
+        if (TokenScan::hasTopLevelReturn($code)) {
+            return $code;
+        }
+        // 类保留 VM：含类声明的文件走"真实类桩 + 方法体 VM"，保持框架（ThinkPHP 等）
+        // 的 class_exists / new $class / 反射 / 依赖注入兼容，同时方法体仍被 VM 保护。
+        if (!class_exists(ClassPreservingVm::class, false)) {
+            require_once __DIR__ . '/Vm/ClassPreservingVm.php';
+        }
+        // 已经是"上一层 VM/类保留壳的产物"时，绝不能再把它当成普通源码重新编译：那会把
+        // 运行期解释器本身编译成字节码（VM 类语义、$GLOBALS 桥、by-ref 形参数组全都没有
+        // 等价表达），实测会静默挂死。嵌套层的正确做法是【不透明载荷嵌套】——整段产物作为
+        // 密文载荷，由外层 VM 解码后 _PHPRUN 执行，语义 100% 原生。
+        if (str_contains($code, self::VM_ARTIFACT_MARK)
+            || str_contains($code, '__awa_vmmethod_') || str_contains($code, '__awa_realcls_')
+            || str_contains($code, '__awa_run_') || str_contains($code, '__awa_prog_')) {
+            $nested = $this->vmPayloadNest($code, $this->vmOpts($params));
+            if ($nested !== null) {
+                $this->logger->info('shell:vm 嵌套层：上一层产物作为不透明载荷编入 VM');
+                return $nested;
+            }
+        }
+        if (ClassPreservingVm::hasClasses($code)) {
+            $dumpCpv = getenv('OBF_VM_SRC');
+            if (is_string($dumpCpv) && $dumpCpv !== '') {
+                @mkdir($dumpCpv, 0777, true);
+                @file_put_contents(rtrim($dumpCpv, '/') . '/' . date('His') . '_cpv_' . substr(md5($code), 0, 6) . '.php', $code);
+            }
+            $cp = ClassPreservingVm::wrap($code, $this->vmOpts($params), $this->salt);
+            if ($cp !== null && trim($cp) !== '' && $cp !== $code) {
+                $dbgOut = getenv('OBF_CPV_OUT');
+                if (is_string($dbgOut) && $dbgOut !== '') {
+                    @mkdir($dbgOut, 0777, true);
+                    @file_put_contents(rtrim($dbgOut, '/') . '/' . date('His') . '_cpvo_' . substr(md5($code), 0, 6) . '.php', $cp);
+                }
+                return $cp;
+            }
+        }
         $src = preg_replace('/^\s*<\?php/i', '', $code, 1);
         $src = preg_replace('/\?>\s*$/', '', $src);
         if (trim($src) === '') {
             return $code;
         }
-        $opts = [
-            'flatten'      => (bool) ($params['flatten'] ?? false),
-            'stateMachine' => (bool) ($params['stateMachine'] ?? false),
-            'chunks'      => (int) ($params['chunks'] ?? 3),
-            // include 解析：基目录取主文件所在目录；未登记（库内直调）时退化为空
-            'baseDir'     => $this->srcFile !== '' ? dirname($this->srcFile) : '',
-            'curFile'     => $this->srcFile,
-            // P6: ModuleLinker 模块目录（分层参数键 modules；散装键 vm_linker 已折算）。
-            // 未显式指定时，若启用内置模块（vm_link_modules），回退到内置模块目录。
-            'moduleDir'   => $this->resolveModuleDir($this->effectiveModuleDir(
-                (string) ($params['modules'] ?? $params['moduleDir'] ?? '')
-            )),
-            // P7/P8: 字节码垃圾 + 五个架构方向（分层参数键直通）
-            'junk'         => (int) ($params['junk'] ?? 0),
-            'keychain'       => (bool) ($params['keychain'] ?? false),
-            'builtinReplace' => (bool) ($params['builtinReplace'] ?? false),
-            'morph'          => (bool) ($params['morph'] ?? false),
-            'fakeFog'        => (int) ($params['fakeFog'] ?? 0),
-            'probe'          => (int) ($params['probe'] ?? 0),
-            // VM 常量池加密（默认开；分层参数键 cpool）
-            'cpool'          => (bool) ($params['cpool'] ?? true),
-            // VM opcode 组合执行（--vm-combo）：分层参数键 combo 直通；散装模式回退到全局 config
-            'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
-        ];
+        $opts = $this->vmOpts($params);
+        $dumpSrc = getenv('OBF_VM_SRC');
+        if (is_string($dumpSrc) && $dumpSrc !== '') {
+            @mkdir($dumpSrc, 0777, true);
+            @file_put_contents(rtrim($dumpSrc, '/') . '/' . date('His') . '_' . substr(md5($src), 0, 6) . '.php', $src);
+            @file_put_contents(rtrim($dumpSrc, '/') . '/' . date('His') . '_' . substr(md5($src), 0, 6) . '.opts.json', json_encode($opts, JSON_UNESCAPED_SLASHES));
+        }
         try {
             $art = (new VmRuntimeGenerator($this->salt))->buildArtifact($src, $opts);
             foreach ($art['includes'] as $w) {
@@ -681,11 +1011,78 @@ final class Obfuscator
             foreach ($art['linker']['skips'] as $fn => $reason) {
                 $this->logger->warn("shell:vm module-link 跳过 {$fn}: {$reason}");
             }
-            return $art['php'];
+            return $this->markArtifact($art['php']);
         } catch (Throwable $e) {
+            // 直接编译失败（典型：带 `namespace X { ... }` 块 / 真实类声明的产物，
+            // 这类结构无法等价表达成 VM 字节码）。绝不能"原样返回"——那等于这一层
+            // 完全没有保护。改为【不透明载荷嵌套】：把整份源码 base64+gz 后编进 VM，
+            // 程序只做 decode + _PHPRUN 执行，语义 100% 原生（namespace/类声明在
+            // eval 单元里依旧合法），而字节码仍只有 VM 能跑。
+            $nested = $this->vmPayloadNest($code, $opts);
+            if ($nested !== null) {
+                $this->logger->info('shell:vm 改为不透明载荷嵌套（源码不直接编译）：' . $e->getMessage());
+                return $nested;
+            }
             $this->logger->warn('shell:vm 编译失败，回退到未 VM 化代码: ' . $e->getMessage());
             return $code;
         }
+    }
+
+    /**
+     * 把整份源码作为【不透明载荷】编进 VM：外层字节码只负责 gzinflate+base64 解码与
+     * `_PHPRUN` 执行。适用于无法直接编译为 VM 字节码的源码（带 bracketed 命名空间块、
+     * 或在 namespace 块里声明真实类的"类保留 VM"产物）——这些结构在 VM 的分类/方法
+     * 语义里没有等价表达，但作为字符串载荷执行时与原生完全一致。
+     *
+     * @param array<string,mixed> $opts 与普通 VM 相同的构建选项（分片/常量池/垃圾指令等照常生效）
+     */
+    private function vmPayloadNest(string $code, array $opts): ?string
+    {
+        $src = preg_replace('/^\s*<\?php/i', '', $code, 1);
+        $src = preg_replace('/\?>\s*$/', '', (string) $src);
+        if (trim((string) $src) === '') {
+            return null;
+        }
+        $dumpNest = getenv('OBF_VM_NEST');
+        if (is_string($dumpNest) && $dumpNest !== '') {
+            @mkdir($dumpNest, 0777, true);
+            @file_put_contents(rtrim($dumpNest, '/') . '/' . date('His') . '_' . substr(md5((string) $src), 0, 6) . '.php', (string) $src);
+        }
+        $payload = base64_encode((string) gzdeflate((string) $src, 9));
+        // 载荷切成若干段再在运行期拼接：单条超长字面量既不利常量池分片，也容易在
+        // 编辑器/审计工具里被截断；分段后每段都只是池里的一条密文。
+        $pieces = str_split($payload, 8192);
+        $expr = '';
+        foreach ($pieces as $p) {
+            $expr .= ($expr === '' ? '' : '.') . "base64_decode('" . $p . "')";
+        }
+        $loader = "<?php\n_PHPRUN(gzinflate(" . $expr . "));";
+        $loaderSrc = preg_replace('/^\s*<\?php/i', '', $loader, 1);
+        // 这段 loader 是【混淆器自己生成的解码管线】，不是用户源码：
+        //   - 模块链接（ModuleLinker）只服务于"隐藏用户代码里的内置函数调用"，
+        //     对 loader 里的 base64_decode/gzinflate 毫无隐藏收益；
+        //   - 代价却极大：内置模块是 PHP 版重实现（base64 逐字符解码），把几万字
+        //     节的密文交给它解，运行期从毫秒级劣化到数十分钟（O(n²) 量级），
+        //     表现出来就是"嵌套层产物跑不动"。
+        // 故 loader 一律不挂模块目录；载荷本身（上一层产物）已在它自己那层完成过
+        // 模块内联，这里不损失任何混淆强度。
+        $loaderOpts = $opts;
+        $loaderOpts['moduleDir'] = '';
+        try {
+            $art = (new VmRuntimeGenerator($this->salt))->buildArtifact((string) $loaderSrc, $loaderOpts);
+        } catch (Throwable $e) {
+            return null;
+        }
+        return $this->markArtifact($art['php']);
+    }
+
+    /** 给 VM 产物打上构建标记（供嵌套层识别"这已经是产物"，见 VM_ARTIFACT_MARK）。 */
+    private function markArtifact(string $php): string
+    {
+        if (str_contains($php, self::VM_ARTIFACT_MARK)) {
+            return $php;
+        }
+        return rtrim($php) . "\n" . self::VM_ARTIFACT_MARK . "\n";
     }
 
     /**
@@ -706,6 +1103,29 @@ final class Obfuscator
             return rtrim($base, '/\\') . '/' . $dir;
         }
         return $dir;
+    }
+
+    /** 组装 VM 壳的编译选项（类保留 VM 与普通 VM 共用）。 */
+    private function vmOpts(array $params): array
+    {
+        return [
+            'flatten'      => (bool) ($params['flatten'] ?? false),
+            'stateMachine' => (bool) ($params['stateMachine'] ?? false),
+            'chunks'      => (int) ($params['chunks'] ?? 3),
+            'baseDir'     => $this->srcFile !== '' ? dirname($this->srcFile) : '',
+            'curFile'     => $this->srcFile,
+            'moduleDir'   => $this->resolveModuleDir($this->effectiveModuleDir(
+                (string) ($params['modules'] ?? $params['moduleDir'] ?? '')
+            )),
+            'junk'         => (int) ($params['junk'] ?? 0),
+            'keychain'       => (bool) ($params['keychain'] ?? false),
+            'builtinReplace' => (bool) ($params['builtinReplace'] ?? false),
+            'morph'          => (bool) ($params['morph'] ?? false),
+            'fakeFog'        => (int) ($params['fakeFog'] ?? 0),
+            'probe'          => (int) ($params['probe'] ?? 0),
+            'cpool'          => (bool) ($params['cpool'] ?? true),
+            'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
+        ];
     }
 
     /**
@@ -905,6 +1325,10 @@ final class Obfuscator
      */
     private function emit(array $tokens): string
     {
+        // 序言归一安全网：任何注入器把语句错插进 declare/namespace 序言区的，
+        // 在 token 流出口统一搬回序言之后（否则产物 "namespace must be the very
+        // first statement" 直接致命）。
+        $tokens = DeclareHoist::normalizeTokens($tokens);
         $out = '';
         $prevChar = '';
         $prevTok = null;
@@ -913,7 +1337,7 @@ final class Obfuscator
             if ($text === '') {
                 continue;
             }
-            if ($prevChar !== '' && $this->needsSpace($prevTok, $prevChar, $text)) {
+            if ($prevChar !== '' && $this->needsSpace($prevTok, $prevChar, $text, $tok)) {
                 $out .= ' ';
             }
             $out .= $text;
@@ -923,9 +1347,9 @@ final class Obfuscator
         return $out;
     }
 
-    private function needsSpace($prevTok, string $prevChar, string $text): bool
+    private function needsSpace($prevTok, string $prevChar, string $text, $tok = null): bool
     {
-        $wordy = fn (string $c) => ctype_alnum($c) || $c === '_' || $c === '$';
+        $wordy = fn (string $c) => $c !== '' && (ctype_alnum($c) || $c === '_' || $c === '$' || ord($c) >= 0x80);
         if ($wordy($prevChar) && $wordy($text[0])) {
             return true;
         }
@@ -939,9 +1363,28 @@ final class Obfuscator
         // 词素单词后紧跟 `\` 起头的命名空间名（如 `new \stdClass()`）：压缩去空白后
         // 变成 `new\stdClass`，PHP 词法器误判为函数调用而报
         // "Call to undefined function new\stdClass()"，必须补空格。
-        if ($wordy($prevChar) && $text[0] === '\\') {
+        // 仅对【名字类 token】生效：字符串插值里的转义字面量（T_ENCAPSED_AND_WHITESPACE
+        // 的 "\n" / "\t" / "\x41"）文本同样以反斜杠开头，但补空格会直接改掉字符串内容
+        // （"$v\n" → "$v \n"），运行期输出就多了个空格——这是语义破坏，不是压缩需要。
+        if ($wordy($prevChar) && $text[0] === '\\' && self::isNameToken($tok)) {
             return true;
         }
         return false;
+    }
+
+    /** 是否为"名字类" token（命名空间名 / 类名 / 裸分隔符），用于判断补空格的必要性。 */
+    private static function isNameToken($tok): bool
+    {
+        if (!is_array($tok)) {
+            return false; // 裸字符 token（含字符串插值的裸 `"`、`\`）
+        }
+        $id = $tok[0];
+        $types = [T_STRING, T_NS_SEPARATOR];
+        foreach (['T_NAME_QUALIFIED', 'T_NAME_FULLY_QUALIFIED', 'T_NAME_RELATIVE'] as $c) {
+            if (defined($c)) {
+                $types[] = constant($c);
+            }
+        }
+        return in_array($id, $types, true);
     }
 }

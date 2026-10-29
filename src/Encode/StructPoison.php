@@ -53,6 +53,10 @@ final class StructPoison
         $inner = preg_replace('/^\s*<\?(php)?\s*/i', '', $code);
         $inner = preg_replace('/\?>\s*$/', '', $inner);
         $inner = (string) $inner;
+        // 顶层 return（provider/event 等"return 数组"文件）：eval 会吞掉返回值，
+        // include 退化为返回 1 → 框架致命。载荷有顶层 return 时壳尾改 `return @eval(...)`
+        // 把 eval 返回值透传回文件顶层（语义与原生 include 一致）。
+        $propagate = TokenScan::hasTopLevelReturn($inner);
 
         $deflated = (string) gzdeflate($inner, 9);
         // base64 密文定长（(n+2)/3*4），据此生成等长占位串
@@ -85,7 +89,7 @@ final class StructPoison
         // ---- 骨架：载荷位置为占位串 ----
         // 注意：$vLoad 的值本身已带 '$' 前缀，这里绝不能写成 "\${$vLoad}"
         // （会拼出 $$__spXXX 可变变量 → 壳体变量永不赋值）
-        $body = "{$sm}{$vLoad}='{$placeholder}';" . $this->runtime($rounds, $v, $sm, $em) . $em;
+        $body = "{$sm}{$vLoad}='{$placeholder}';" . $this->runtime($rounds, $v, $sm, $em, $propagate) . $em;
         $full = "<?php " . $body;
 
         // ---- 逐层壳自保护：在指纹计算前对整段施加混淆（变量重命名 + token 形态 + 语义）----
@@ -127,7 +131,7 @@ final class StructPoison
      *
      * @param array<string,string> $v 拟真变量名表
      */
-    private function runtime(int $rounds, array $v, string $sm, string $em): string
+    private function runtime(int $rounds, array $v, string $sm, string $em, bool $propagate = false): string
     {
         $code = '';
         // 读自身文件（函数名拆串 + 变量间接调用，规避 grep 指纹）
@@ -157,15 +161,16 @@ final class StructPoison
         $code .= "{$v['ks']}=hex2bin({$v['seed']});";
         $code .= "{$v['raw']}=base64_decode({$v['load']});";
         $code .= "for({$v['i']}=0,{$v['n']}=strlen({$v['raw']});{$v['i']}<{$v['n']};{$v['i']}++){{$v['raw']}[{$v['i']}]={$v['raw']}[{$v['i']}]^{$v['ks']}[{$v['i']}%32];}";
+        $ret = $propagate ? 'return ' : '';
         switch ($form) {
             case 0:
-                $code .= "@eval(gzinflate({$v['raw']}));";
+                $code .= $ret . "@eval(gzinflate({$v['raw']}));";
                 break;
             case 1:
-                $code .= "{$v['fn']}='gzin'.'flate';@eval({$v['fn']}({$v['raw']}));";
+                $code .= "{$v['fn']}='gzin'.'flate';" . $ret . "@eval({$v['fn']}({$v['raw']}));";
                 break;
             default:
-                $code .= "{$v['fn']}=function(\$x){return gzinflate(\$x);};@eval({$v['fn']}({$v['raw']}));";
+                $code .= "{$v['fn']}=function(\$x){return gzinflate(\$x);};" . $ret . "@eval({$v['fn']}({$v['raw']}));";
         }
         return $code;
     }

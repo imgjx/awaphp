@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.0.8-blue)
+![Version](https://img.shields.io/badge/version-1.0.9-blue)
 ![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -27,7 +27,8 @@
 
 ### 标识符混淆
 - 变量 / 函数 / 类 / 接口 / trait 名称混淆，全局一致替换。
-- **跨文件符号一致**：`--manifest` 两遍扫描生成全局符号表，同 salt 下跨文件符号对齐，支持增量重建。
+- **FQCN 感知类改名**（类名混淆默认开）：按「命名空间全限定名」粒度改名，`app\service\PriceCalculator → app\service\_x7f3a…`，声明点 `class_alias` 把原名回挂（反射 / 字符串类名 / `class_exists` 照常命中）；目录级构建自动生成 **classmap 自动加载器 `awaphp_autoload.php`**（新名 / 原名双向映射到原 rel 路径），各产物头部自动 `require_once`——**文件名 / 目录结构保持原样**，框架按路径加载不受影响。
+- **跨文件符号一致**：`--manifest` 两遍扫描生成全局符号表，同 salt 下跨文件符号对齐，支持增量重建。**同 salt 下各文件独立混淆仍全局一致**（映射由 salt 确定性派生）。
 - **动态符号保守排除**：名字以字符串字面量出现过的函数 / 类（`call_user_func('f')`、`new $cls()`）一律不重命名，杜绝「能过 `php -l`、一运行就崩」。
 - **拟真命名**：守卫 / 诱饵 / 版本校验变量从业务词池生成，产物中不再出现 `__awa_*`、`$__CODE` 等一眼识别串。
 
@@ -68,6 +69,7 @@
 - **反调试 / 反篡改探针矩阵**（`--vm-probe=N`）：xdebug / phpdbg / uopz 检测 + 字节码 CRC 自校验。
 - **指令集精简**：41 条同构 opcode 合并为 6 个参数化 opcode（`BINOP` / `UNOP` / `CAST_OP` / `INC_OP` / `VAROP` / `ARRAY_BUILD`）+ 隐藏 sub-id 表，消除「每个 opcode 自报家门」的语义指纹。
 - **opcode 组合执行**（`--vm-combo[=N]`）：把单条 opcode 拆成**等价多指令序列**——`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP+ADD`、`PUSH_C 2,POW→DUP+MUL`、`BOOL_NOT→PUSH_C 0,EQ`——打破 1:1 opcode 映射，抗反编译；N=1~3 为强度（默认 2），运行时等价性经 `tests/vm_gen_probe.php` 全量回归。
+- **复杂语法保真**（v1.0.9 拓展）：`list()/[]` 解构支持**表达式键**（字符串层把 `'k'` 编码成括号表达式后仍直接编译）；生成器方法 / `yield from` / 闭包生成器 / Fiber 生成器桥；`parent::` 非虚派发；闭包 `use` 引用写回；trait 方法体保真；heredoc 插值。个别暂不支持的语句走 **EVAL_STMT 语句级兜底**——兜底文本中的类引用自动 **FQCN 化**（`use` 别名展开、命名空间补全），eval 单元（全局作用域）里照常解析；头部序言（`declare` / `namespace`）经归一化安全网恒在最前。
 
 ### 反 LLM 静态分析（Confrontation-LLM）
 现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：
@@ -181,7 +183,8 @@ php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-sa
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
 php tests/hardening_test.php    # 加固专项：32 项
-php tests/hardening_v108.php     # v1.0.8 加固：语法兼容 + combo + confrontation + newline-poison（35 项）
+php tests/hardening_v108.php     # v1.0.8 加固：语法兼容 + combo + confrontation + newline-poison（37 项）
+php tests/hardening_v109.php     # v1.0.9 加固：生成器/闭包/引用形参 + 壳层头部约束 + 换行配额 + 互斥注释 + 边界保真（59 项）
 php tests/vm_syntax_probe.php    # VM 语法探测：656 例三态（真编译/回退/失败）
 php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多强度）
 ```
@@ -193,6 +196,8 @@ php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多�
 ## 文档
 
 - [`docs/VM_FEATURES.md`](docs/VM_FEATURES.md)：虚拟机保护的设计细节、局限与已知修复记录（含 heredoc 支持、do-while 修复、指令集精简等）。
+- [`docs/THINKPHP8_GUIDE.md`](docs/THINKPHP8_GUIDE.md)：ThinkPHP8 项目混淆实战教程——配置推荐（`--var-keep-props` / `--var-keep-params`）、FQCN 类改名与 classmap 自动加载机制、基线验证方法与常见边界。
+- [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)：全部命令行开关清单。
 
 ---
 

@@ -35,19 +35,30 @@ final class EvalShell
         $layers = max(1, $layers);
         $style = new NameStyle($this->salt);
         $cur = $code;
+
+        // 顶层 return（provider / event / middleware / service 等"return 数组"文件）：
+        // `include` 的调用方靠文件顶层 return 拿到数组（如 ThinkPHP App::bind(include provider.php)）。
+        // 壳体 @eval(...) 会把该 return 变成"从 eval 返回"、值被丢弃，include 退化为返回 1 →
+        // 框架致命。修法不是跳过壳，而是【返回值透传】：载荷有顶层 return 时，每层壳尾改写为
+        // `return @eval($d);`——eval 的返回值经层层 return 透传到文件顶层，语义与原生 include
+        // 完全一致，壳层保护完整保留（多层时内层的 return 位于外层 eval 内，逐层向上冒泡）。
+        $probe = preg_replace('/^\s*<\?php/i', '', $cur, 1);
+        $probe = preg_replace('/\?>\s*$/', '', $probe);
+        $propagate = TokenScan::hasTopLevelReturn((string) $probe);
+
         for ($i = 0; $i < $layers; $i++) {
             $inner = preg_replace('/^\s*<\?php/i', '', $cur, 1);
             $inner = preg_replace('/\?>\s*$/', '', $inner);
             if ($inner === '') {
                 $inner = ' ';
             }
-            $cur = "<?php " . $this->buildLayer($inner, $i, $style);
+            $cur = "<?php " . $this->buildLayer($inner, $i, $style, $propagate);
         }
-        $this->logger->debug("已应用 EVAL 加壳 v2（{$layers} 层）");
+        $this->logger->debug("已应用 EVAL 加壳 v2（{$layers} 层" . ($propagate ? '，返回值透传' : '') . '）');
         return $cur;
     }
 
-    private function buildLayer(string $inner, int $idx, NameStyle $style): string
+    private function buildLayer(string $inner, int $idx, NameStyle $style, bool $propagate = false): string
     {
         $scheme = $this->pick('eval-scheme-' . $idx, 0, 3);
         $seed = $this->bytes('eval-seed-' . $idx, 8);
@@ -100,7 +111,7 @@ final class EvalShell
         for ($j = 1; $j < count($parts); $j++) {
             $src .= '.' . $vars[$j];
         }
-        $src .= ';' . $decode . '@eval($d);';
+        $src .= ';' . $decode . ($propagate ? 'return @eval($d);' : '@eval($d);');
         return $src;
     }
 

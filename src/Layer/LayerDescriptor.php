@@ -190,6 +190,7 @@ final class LayerDescriptor
                     'fakeFog'        => ['label' => '诱饵函数', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 200, 'hint' => '注入 N 个永不调用的栈平衡假函数，淹没真实 opcode 集合、膨胀函数表'],
                     'probe'          => ['label' => '反分析探针', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 50, 'hint' => '反调试/反篡改探针矩阵（xdebug/phpdbg/uopz 检测 + 字节码 crc 自校验），命中即静默停止'],
                     'cpool'          => ['label' => '常量池加密', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'PUSH_C 字面量抽入独立常量池（索引引用），池以独立密钥加密，静态分析看不到明文常量'],
+                    'combo'          => ['label' => 'opcode 组合执行', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 3, 'hint' => '把单条 opcode 拆成等价多指令序列（0=关，越高越密）'],
                 ],
                 'tags' => ['VM'],
             ],
@@ -275,11 +276,11 @@ final class LayerDescriptor
             'shell:newline_poison' => [
                 'kind'  => 'shell',
                 'label' => '换行缠绕壳（结构毒化配套）',
-                'desc'  => '注入大量换行符（max(原始行数×ratio, min) 个）纠缠进代码与字符串载荷；与结构指纹毒化壳配合——逆向者删空白/去换行即改动密文 → 解密错位',
+                'desc'  => '注入大量换行符（= ceil(输入字节数/divisor)，默认 1/5），全部插进代码内部并按每一层壳平均分摊、余量兜底到文件头部；与结构毒化壳/自校验配合——逆向者美化、去空行、删空白即改动密文与指纹 → 解密错位',
                 'params' => [
-                    'ratio' => ['label' => '比例', 'type' => self::T_FLOAT, 'default' => 0.1, 'min' => 0.01, 'max' => 1.0, 'hint' => '换行数 = 原始行数 × 该比例'],
-                    'min'   => ['label' => '最少换行', 'type' => self::T_INT, 'default' => 2000, 'min' => 1, 'max' => 100000, 'hint' => '换行数下限（保底数量）'],
-                    'string_ratio' => ['label' => '串内占比', 'type' => self::T_FLOAT, 'default' => 0.4, 'min' => 0.0, 'max' => 1.0, 'hint' => '有多大比例换行嵌进字符串字面量（其余作语句间空行）'],
+                    'divisor' => ['label' => '字节除数', 'type' => self::T_INT, 'default' => 5, 'min' => 2, 'max' => 64, 'hint' => '换行数 = ceil(输入源码字节数 ÷ 该值)，默认 5（即 1/5）'],
+                    'min'     => ['label' => '最少换行', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 100000, 'hint' => '换行数下限（0=不设下限）'],
+                    'string_ratio' => ['label' => '串内占比', 'type' => self::T_FLOAT, 'default' => 0.4, 'min' => 0.0, 'max' => 1.0, 'hint' => '有多大比例换行嵌进 base64_decode() 载荷字面量（其余散布在 token 边界）'],
                 ],
                 'tags' => ['反分析'],
             ],

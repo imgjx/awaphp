@@ -25,7 +25,7 @@
 | 类别 | 支持的写法 | 说明 / 备注 |
 |------|-----------|-------------|
 | **变量** | `$x = 1; $x; $arr[$k]; $this->prop`；实例方法内 `$this` | 标量、数组、对象属性均可读写；实例方法序章发 `LOAD_THIS` 把对象注入 `$this` 帧槽（见 §11.1），静态方法内 `$this` 触发整文件回退 |
-| **复合赋值** | `$x += 1; $x -= ; *= /= %= .=` | 仅**简单变量**支持；数组/属性的复合赋值会回退 |
+| **复合赋值** | `$x += 1; $x -= ; *= /= %= .=` | 简单变量与**单维数组/属性下标**（`$a['k'] .= x`、`$o->p .= x`）均已真编译（LVRead 双容器 + `INDEX_SET`/`PROPSET` 写回）；**多维嵌套**（`$a['x']['y'] .= x`）仍走 EVAL_STMT 兜底 |
 | **数组** | `[1,2,3]`、`array(1,2)`、`['k'=>v]`、`$a[]=v`、`$a[$k]=v`、`$a[$k]` | 索引数组 / 关联数组 / push / 下标读写 |
 | **数组函数** | `count()`、`array_push()` 等 | 作为内建函数调用（见下） |
 | **函数** | `function f($a,$b){ return ...; }`、递归、`$f()` 变量函数 | 每次调用获得**独立变量帧**，无跨函数污染 |
@@ -59,9 +59,8 @@
 
 | 特性 | 回退原因 |
 |------|---------|
-| 匿名函数 `function(){}` / 箭头函数 `fn()=>` | 外层 VM 壳直接跳过整段（等价语法：命名函数 / 函数调用可正常 VM 化） |
+| 多维嵌套复合赋值 `$a['x']['y'] .= x` | 单维已真编译；嵌套左值链仍走 EVAL_STMT 兜底（语句级，语义保真） |
 | `$this->prop[]` 属性数组追加 | 不支持属性 push |
-| 数组/属性复合赋值 `$a['k'] += x`、`$this->p *= 2` | 仅简单变量支持 `+=` 等 |
 | 复杂表达式上的后缀 `++/--`（如 `$a[0]++`） | 仅简单变量支持 |
 | 动态属性读取 `$obj->$name()` 形式之外的动态成员 | 运行期类型不可知 |
 | `self::$p[]` 静态属性数组读取 | 未实现该形态 |
@@ -530,5 +529,28 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - 实测：独立 `--newline-poison` 产物 ≈ 2039 换行、运行输出与原生逐字节一致；`--level=mid --newline-poison` ≈ 2004 换行同样一致；`--level=max --newline-poison` 换行被吸入密文、运行一致。
 
 - **CLI / 预设 / 配置集成**：新增 `--vm-combo[=N]` / `--no-vm-combo`、`--confrontation-llm` / `--no-confrontation-llm` / `--confrontation-intensity=N`、`--newline-poison` / `--no-newline-poison` / `--newline-poison-min=N` / `--newline-poison-ratio=F`；`config.default.php` 与 `src/Config.php` 归一化补齐 `vm_combo`(0-3)、`confrontation_llm`(bool)、`confrontation_intensity`(1-3)、`newline_poison`(bool)、`newline_poison_min`、`newline_poison_ratio`；max/ultra 预设启用 confrontation（ultra 另开 `vm_combo=3`）。
+
+### 11.14 v1.0.9：ThinkPHP8 级工程兼容 + 生成器/闭包真编译 + EVAL_STMT 兜底加固
+
+- **FQCN 感知类改名（工程级，与 VM 类表协同）**：
+  - 类改名按「命名空间全限定名」粒度进行，`namespace` 声明保持原样；声明点 `class_alias(新名, 原名)` 把原名回挂——`class_exists` / 反射 / 字符串类名实例化照常命中。
+  - 目录级构建自动生成 **classmap 自动加载器 `awaphp_autoload.php`**（新名/原名双向映射到原 rel 路径），各产物头部自动 `require_once`；**文件名 / 目录结构保持**，PSR-4 与框架路径加载不受影响。
+  - 同 salt 下各文件独立混淆、映射确定性一致（`Salt::derive` 派生），增量重建安全。
+  - VM 运行期 `$___RCLS___`：FQN 查 class_exists / VM 类表命中则原样返回，失败降级短名再试（「命名空间内找不到就去全局找」语义）。
+  - `parent::` **非虚派发**：`parent::m()` 沿声明类的父链解析（非 called class），与 PHP 语义一致；SCALL 抛错措辞与原生逐字对齐（`Class "X" not found`）。
+- **生成器 / 闭包结构特性真编译（YIELD / GEN_HEAD + Fiber 生成器桥）**：
+  - 生成器方法 / `yield` / `yield from` / 闭包生成器 / `send` 双向传值 / `getReturn()` / `try/finally` 中 yield / 无限生成器 + `break` 全部真编译，语义探针 8 类场景与原生逐一比对一致（`hardening_v109` [1]）。
+  - 生成器的暂停/恢复经 **Fiber 生成器桥** 实现：VM 帧内 yield 语义由 Fiber 调度承载，`current/key/next/send/throw/getReturn` 行为保真。
+  - 闭包 `use`（值捕获 / 引用捕获）按 PHP 语义修复；`f()()` 表达式结果直接调用、箭头函数、闭包生成器保真；trait `use` 方法体与适配块（`insteadof` / `as`）保真。
+  - 帧栈纪律：`for` init/step 等「求值即丢弃」位置帧结束栈为空，隐式返回恒为 `null`（生成器 `getReturn()` 不会串味）。
+- **解构表达式键（`emitListDestruct` 边界拓展）**：`KEY => TARGET` 的 KEY 支持**任意表达式**——字符串层把 `'usd'` 编码成 `(base64_decode(...)^str_repeat(...))` 括号表达式后，解构键不再「期望 T_VARIABLE」报错回退，单 token 字面量键走常量池、其余走表达式求值 + `INDEX_GET`（动态键）。
+- **EVAL_STMT 兜底类引用 FQCN 化（`rewriteClassRefsForEval`）**：语句级兜底的 eval 文本运行在**全局命名空间**（eval 单元不继承调用方 namespace / use），类引用必须改写：
+  - `new X` / `X::` / `instanceof X` / `extends X` / `implements X` / `catch(X` / 类型提示位 `X $var` / 联合类型位 `A|B` 的名字跨度统一解析后改写为 `\` + FQCN；`use` 别名展开、相对名补全；
+  - **内置类型白名单**：`int / string / array / bool / … / self / static / parent` 不是类名，绝不做命名空间补全（否则 `int $n` 被补成 `app\demo\int` 直接 reserved 致命）；
+  - 无控制逃逸 / 无 self·static·parent / 无本文件 VM 类引用的语句才允许兜底，否则整文件回退。
+- **头部序言归一安全网（`DeclareHoist::normalizeTokens`）**：PHP 硬约束「`declare(strict_types=1)` 必须是首语句、`namespace X;` 必须紧随其后」。token 层注入器（动态垃圾 / 统计钩子 / 字符串密钥安装）若把语句错插进序言区，产物直接致命。两道防线：
+  - **源头**：RuntimeJunk 语句边界过滤——`headInsertIndex`（序言结束点）之前的边界一律不插垃圾；
+  - **出口**：token 流每次 emit 前归一——错位语句整体搬到序言之后（括号式 `namespace X {` 时搬进块内），幂等、对未来任何注入器失误兜底。
+- **回归**：新增 `hardening_v109` 59 项（五等级特性保真含生成器方法/by-ref 写回/heredoc/`f()()`、生成器语义探针、帧栈纪律、壳层头部约束（anti_debug/anti_hook/anti_tamper 产物 declare/namespace 恒在最前）、换行缠绕配额、互斥注释内层性、字符串偏移/静态局部 isset/大值栈保真边界）全绿；`vm_eval_stmt` 新增解构表达式键与 EVAL_STMT 类引用 FQCN 化用例（13 例全绿）；`run_tests` 32、`hardening_v108` 37、`vm_gen_probe` 290、`vm_trycatch_probe` 64、`vm_p8` 77、`vm_junk` 120、`vm_comprehensive` 全绿、`vm_module_link` / `vm_builtin_modules` 205 全绿、`syntax_compat` 7 全绿；TP8 示例项目基线 26/26 逐字节一致。
 
 

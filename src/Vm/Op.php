@@ -290,6 +290,30 @@ final class VmOp
     // PROPSET_DYN：弹出值、弹出属性名、弹出对象，$obj->$name = 值（动态属性写入）。
     public const PROPSET_DYN  = 156;
 
+    // ---- 闭包 / 箭头函数（T_FUNCTION 匿名 / T_FN 真编译）----
+    // MAKE_CLOSURE：创建一个【真实 PHP Closure】，其函数体是同一 Program 内的字节码段。
+    //   操作数: 段名(n)、捕获名CSV(n)、捕获引用位CSV(n)、static位(i)。
+    //   - 段名：编译器为每个闭包生成的合成函数名（"\x01c<n>"），登记于 funcs/funcParams/funcET，
+    //     与普通函数同样可被 CALL/CALL_VAR 调用，也可当 array_map 回调传出去。
+    //   - 捕获名CSV：`use ($a, &$b)` 的变量名（含 `$`，逗号分隔）；箭头函数传 "*"，
+    //     表示按值捕获当前帧全部变量（PHP 箭头函数自动捕获所引用变量，超集捕获语义等价）。
+    //   - 捕获引用位CSV：逐位 '1'/'0' 标记该变量按引用捕获（`&$b`）；空串表示全按值。
+    //   - static位：1=static 闭包（无 $this 绑定）。
+    //   运行期把捕获值塞进新帧的变量表后调用解释器；引用捕获直接绑定为【创建者帧槽位的
+    //   引用】，因此闭包内写 $b 会穿透到创建者的 $b（PHP 引用捕获语义）。
+    public const MAKE_CLOSURE = 157;
+
+    // ---- 生成器（yield / yield from）----
+    // YIELD：操作数 hasKey(0/1)。栈序 [key?, value]（value 在顶）。挂起当前段：
+    //   运行期经 Fiber::suspend 把 (key,value) 交给桥接原生 Generator，恢复后把
+    //   调用方 send() 的值压回栈顶——即 `$x = yield $v` 的表达式值语义。
+    // YIELD_FROM：弹可迭代对象，逐项转发（Generator 走 rewind/send 以保留 send 语义），
+    //   结束后把子生成器的 getReturn() 压栈（`$r = yield from $g`）。
+    // GEN_HEAD：段首标记，仅用于运行期识别"该段是生成器函数体"，解释器执行时为空调试指令。
+    public const YIELD     = 158;
+    public const YIELD_FROM = 159;
+    public const GEN_HEAD  = 160;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，
@@ -394,6 +418,8 @@ final class VmOp
         self::NULLSAFE_PROPGET => ['n'],
         self::NULLSAFE_MECALL  => ['i'],
         self::ARRAY_SPREAD => [], self::EMPTY_ANY => [], self::PROPGET_DYN => [], self::PROPSET_DYN => [],
+        self::MAKE_CLOSURE => ['n', 'n', 'n', 'i'],
+        self::YIELD => ['i'], self::YIELD_FROM => [], self::GEN_HEAD => [],
     ];
 
     /** opcode => 可读名（仅调试用） */
@@ -515,6 +541,10 @@ final class VmOp
         self::EMPTY_ANY    => 'EMPTY_ANY',
         self::PROPGET_DYN  => 'PROPGET_DYN',
         self::PROPSET_DYN  => 'PROPSET_DYN',
+        self::MAKE_CLOSURE => 'MAKE_CLOSURE',
+        self::YIELD        => 'YIELD',
+        self::YIELD_FROM   => 'YIELD_FROM',
+        self::GEN_HEAD     => 'GEN_HEAD',
         self::BINOP         => 'BINOP',
         self::UNOP          => 'UNOP',
         self::CAST_OP       => 'CAST_OP',

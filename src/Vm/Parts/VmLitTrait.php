@@ -298,6 +298,12 @@ trait VmLitTrait
         if (!$closed) {
             throw new VmUnsupported('VM heredoc 未闭合（已回退）');
         }
+        // 收尾字面量必须 flush：最后一个插值之后可能还有正文（如 `{$total} 元`），
+        // 只在"遇到下一个插值时"才入列会把它整段丢掉。
+        if ($buf !== '') {
+            $parts[] = ['lit', $buf];
+            $buf = '';
+        }
         // 弹性缩进 heredoc：体行缩进由编译器剥离；插值路径难以复刻逐行对齐，回退保正确。
         if (preg_match('/^[ \t]/', $endText)) {
             throw new VmUnsupported('VM 暂不支持含插值的缩进 heredoc（已回退）');

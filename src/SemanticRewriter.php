@@ -54,6 +54,9 @@ final class SemanticRewriter
         if ($strength >= 3) {
             $out = $this->applyForToWhile($out);
         }
+        // 数字字面量同义展开（echo 5 → echo strlen("P=po1") 一类）：
+        // 恒等替换，且刻意区分"常量表达式上下文"与"运行期上下文"两种形态。
+        $out = $this->applyNumberObfuscation($out, $strength);
 
         // php -l 兜底：任何一次重建若破坏语法，整体回滚到原始 token 流
         if ($out !== $tokens && !$this->syntaxOk($out)) {
@@ -490,6 +493,158 @@ final class SemanticRewriter
      * @param array<int,array{start:int,end:int,repl:array<int,mixed>}> $matches
      * @return array<int,mixed>
      */
+    // ------------------------------------------------------------------------
+    // 变换 5：数字字面量同义展开
+    //   echo 5;  →  echo strlen("P=po1");
+    //   常量位（const / 属性默认值 / case 标签 / 参数默认值 / static 初始化）只允许
+    //   常量表达式，函数调用会致命错误，故这些位置一律用【算术/位运算】等价式；
+    //   只有 echo / print / return 语句内（必为运行期求值）才用函数调用形态。
+    // 两种形态都与原值严格相等，不改变任何语义。
+    // ------------------------------------------------------------------------
+    /**
+     * @param array<int,mixed> $tk
+     * @return array<int,mixed>
+     */
+    private function applyNumberObfuscation(array $tk, int $strength): array
+    {
+        $out = [];
+        $n = count($tk);
+        // 语句头：echo/print/return 之后到 ';' 之前视为运行期上下文
+        $runtimeStmt = false;
+        // declare(...) 里的值必须是【字面量常量】（strict_types/ticks 等），任何表达式都会被
+        // 内核判为非法（"strict_types declaration must have 0 or 1 as its value"），故整条跳过。
+        $inDeclare = false;
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tk[$i];
+            if (is_string($t)) {
+                if ($t === ';') {
+                    $runtimeStmt = false;
+                    $inDeclare = false;
+                }
+                $out[] = $t;
+                continue;
+            }
+            $id = $t[0];
+            if ($id === T_DECLARE) {
+                $inDeclare = true;
+                $out[] = $t;
+                continue;
+            }
+            if ($inDeclare) {
+                $out[] = $t;
+                continue;
+            }
+            if (($id === T_ECHO || $id === T_PRINT || $id === T_RETURN) && !$runtimeStmt) {
+                $runtimeStmt = true;
+                $out[] = $t;
+                continue;
+            }
+            if ($id === T_LNUMBER && ($r = $this->numberReplacement((string) $t[1], $runtimeStmt, $strength)) !== null) {
+                foreach ($r as $rt) {
+                    $out[] = $rt;
+                }
+                continue;
+            }
+            $out[] = $t;
+        }
+        return $out;
+    }
+
+    /** 生成与字面量等值的表达式 token 序列；无法安全展开时返回 null（保持原样） */
+    private function numberReplacement(string $raw, bool $runtime, int $strength): ?array
+    {
+        $digits = str_replace('_', '', $raw);
+        if ($digits === '' || !ctype_digit($digits)) {
+            return null;   // 十六/二进制等已由 Number 层处理，这里只认十进制
+        }
+        $v = (int) $digits;
+        $ln = static fn (int $x): array => [T_LNUMBER, (string) $x];
+
+        // —— 运行期：函数调用形态（更"像人写的"，最耗 AI 注意力）——
+        if ($runtime && $strength >= 2) {
+            $pick = $this->salt->deriveInt('num-rich-' . $raw . '-' . $v, 0, 5);
+            if ($v <= 64 && $pick <= 1) {
+                // strlen("...")：字符串长度恰为 $v，字符取自安全池（不含引号/反斜杠/$）
+                $pool = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789=+-_.,:;!?#%&*()[]{}<>|~^@';
+                $len = strlen($pool);
+                $str = '';
+                for ($k = 0; $k < $v; $k++) {
+                    $str .= $pool[$this->salt->deriveInt('num-ch-' . $raw . '-' . $k, 0, $len - 1)];
+                }
+                return [[T_STRING, 'strlen'], '(', [T_CONSTANT_ENCAPSED_STRING, '"' . $str . '"'], ')'];
+            }
+            if ($pick === 2 && $v <= 64) {
+                // count([...])：元素个数恰为 $v
+                $r = [[T_STRING, 'count'], '(', '['];
+                for ($k = 0; $k < $v; $k++) {
+                    if ($k > 0) {
+                        $r[] = ',';
+                    }
+                    $r[] = [T_LNUMBER, (string) (($k % 7) + 1)];
+                }
+                $r[] = ']';
+                $r[] = ')';
+                return $r;
+            }
+            if ($pick === 3 && $v > 0) {
+                // array_sum([a,b])：元素和恰为 $v
+                $parts = [$v];
+                if ($v > 1) {
+                    $a = $this->salt->deriveInt('num-as-' . $raw, 1, $v - 1);
+                    $parts = [$a, $v - $a];
+                }
+                $r = [[T_STRING, 'array_sum'], '(', '['];
+                foreach ($parts as $k => $pv) {
+                    if ($k > 0) {
+                        $r[] = ',';
+                    }
+                    $r[] = [T_LNUMBER, (string) $pv];
+                }
+                $r[] = ']';
+                $r[] = ')';
+                return $r;
+            }
+            if ($pick === 4 && $v > 0) {
+                // intdiv(B*V, B)：商恰为 $v
+                $b = $this->salt->deriveInt('num-id-' . $raw, 2, 13);
+                return [[T_STRING, 'intdiv'], '(', $ln($b * $v), ',', $ln($b), ')'];
+            }
+        }
+
+        // —— 常量安全形态：算术 / 位运算（常量表达式与运行期都合法）——
+        if ($strength < 1) {
+            return null;
+        }
+        $mode = $this->salt->deriveInt('num-mode-' . $raw . '-' . $v, 0, 4);
+        switch ($mode) {
+            case 0: // a + b
+                $a = $this->salt->deriveInt('num-a-' . $raw, 0, $v);
+                return ['(', $ln($a), '+', $ln($v - $a), ')'];
+            case 1: // (v+b) - b
+                $b = $this->salt->deriveInt('num-b-' . $raw, 1, 97);
+                return ['(', $ln($v + $b), '-', $ln($b), ')'];
+            case 2: // (v>>b) << b
+                for ($b = 3; $b >= 1; $b--) {
+                    $f = 1 << $b;
+                    if ($v % $f === 0) {
+                        return ['(', $ln(intdiv($v, $f)), '<<', $ln($b), ')'];
+                    }
+                }
+                $a = $this->salt->deriveInt('num-a2-' . $raw, 0, $v);
+                return ['(', $ln($a), '+', $ln($v - $a), ')'];
+            case 3: // a | b（a & b == 0 时 a|b == a+b）
+                $a = $this->salt->deriveInt('num-or-' . $raw, 0, $v);
+                $b = $v - $a;
+                if (($a & $b) === 0 && ($a | $b) === $v) {
+                    return ['(', $ln($a), '|', $ln($b), ')'];
+                }
+                return ['(', $ln($v + 1), '-', $ln(1), ')'];
+            default: // a ^ b（a ^ b == v）
+                $a = $this->salt->deriveInt('num-xor-' . $raw, 0, $v + 64);
+                return ['(', $ln($a ^ $v), '^', $ln($a), ')'];
+        }
+    }
+
     private function rebuild(array $tk, array $matches): array
     {
         if ($matches === []) {

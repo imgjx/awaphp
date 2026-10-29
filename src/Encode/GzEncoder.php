@@ -40,6 +40,10 @@ final class GzEncoder
         $inner = preg_replace('/^\s*<\?(php)?\s*/i', '', $code);
         $inner = preg_replace('/\?>\s*$/', '', $inner);
         $inner = (string) $inner;
+        // 顶层 return（provider/event 等"return 数组"文件）：eval 会吞掉返回值，
+        // include 退化为返回 1 → 框架致命。载荷有顶层 return 时壳尾改 `return @eval(...)`
+        // 把 eval 返回值透传回文件顶层（语义与原生 include 一致）。
+        $propagate = TokenScan::hasTopLevelReturn($inner);
         $payload = base64_encode((string) gzdeflate($inner, 9));
 
         // ---- 分片乱序 + 拟真变量名 ----
@@ -68,7 +72,7 @@ final class GzEncoder
             $src .= '.' . $vars[$j];
         }
         $src .= ';';
-        $src .= $this->decodeExpr();
+        $src .= $this->decodeExpr($propagate);
         $out = "<?php " . $src;
         $this->logger->debug('已应用 GZ 压缩加壳 v2（分片=' . count($parts) . ' 诱饵=' . ($decoy ? 'on' : 'off') . '）');
         return $out;
@@ -79,18 +83,21 @@ final class GzEncoder
      *   A. $d=gzinflate(base64_decode($p));@eval($d);
      *   B. $d=base64_decode($p);@eval(gzinflate($d));
      *   C. $d=base64_decode($p);$f=闭包;@eval($f($d));  （gzinflate 藏进闭包）
+     * $propagate=true（载荷含顶层 return）时以 `return @eval(...)` 收尾，把 eval 的
+     * 返回值透传到文件顶层（include 语义保持）。
      */
-    private function decodeExpr(): string
+    private function decodeExpr(bool $propagate = false): string
     {
         $form = $this->pick('gz-form', 0, 2);
+        $ret = $propagate ? 'return ' : '';
         switch ($form) {
             case 0:
-                return '$d=gzinflate(base64_decode($p));@eval($d);';
+                return '$d=gzinflate(base64_decode($p));' . $ret . '@eval($d);';
             case 1:
-                return '$d=base64_decode($p);@eval(gzinflate($d));';
+                return '$d=base64_decode($p);' . $ret . '@eval(gzinflate($d));';
             default:
                 // 间接解压：gzinflate 藏进闭包，避免与 eval( 相邻的固定指纹
-                return '$d=base64_decode($p);$f=function($c){return gzinflate($c);};@eval($f($d));';
+                return '$d=base64_decode($p);$f=function($c){return gzinflate($c);};' . $ret . '@eval($f($d));';
         }
     }
 

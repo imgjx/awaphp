@@ -31,7 +31,33 @@ final class NumberEncoder
         }
         $rand = new Random($this->salt->getSalt() . ':num');
         $n = count($tokens);
+        // declare(...) 的实参必须是【字面量】：`declare(strict_types=1)` 里的 1 被改写成
+        // `(0x1)` 后，php -l 依然通过（常量表达式），但运行期直接致命：
+        // "declare(strict_types) value must be a literal"。故整条 declare(...) 跳过。
+        $skip = [];
         for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!is_array($t) || $t[0] !== T_DECLARE) {
+                continue;
+            }
+            $d = 0;
+            for ($k = $i + 1; $k < $n; $k++) {
+                $tx = is_array($tokens[$k]) ? $tokens[$k][1] : $tokens[$k];
+                if ($tx === '(') {
+                    $d++;
+                } elseif ($tx === ')') {
+                    $d--;
+                    if ($d === 0) {
+                        break;
+                    }
+                }
+                $skip[$k] = true;
+            }
+        }
+        for ($i = 0; $i < $n; $i++) {
+            if (isset($skip[$i])) {
+                continue;
+            }
             $tok = $tokens[$i];
             if (!is_array($tok)) {
                 continue;

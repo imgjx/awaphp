@@ -24,6 +24,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/DeclareHoist.php';
+
 require_once __DIR__ . '/../ShellProtector.php';
 
 final class AntiTamper
@@ -65,8 +67,10 @@ final class AntiTamper
         $openPos = (int) $m[0][1];
         $openLen = strlen($m[0][0]);
 
-        $prefix = substr($code, 0, $openPos + $openLen);   // "<?php"
-        $body   = substr($code, $openPos + $openLen);
+        // 前导 declare(strict_types=1) 必须仍在最前面（守卫行插到它之后）
+        $split  = DeclareHoist::split($code);
+        $prefix = $split['prefix'];
+        $body   = $split['body'];
         if ($body === '') {
             return ['code' => $code, 'ok' => false];
         }

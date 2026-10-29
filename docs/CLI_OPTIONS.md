@@ -29,10 +29,12 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 |------|------|
 | `--var-length=` | 变量名混淆后长度 |
 | `--var-split=` | 变量值拆分段数（>1 生效） |
+| `--var-keep-props` | 保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开，ThinkPHP8 必开） |
+| `--var-keep-params` | 保留方法参数名不改（按参数名绑定/命名实参的框架必须开，ThinkPHP8 必开） |
 | `--func-length=` | 函数名混淆后长度 |
 | `--func-call` | 函数调用混淆（间接调用） |
 | `--func-call-enc` | 函数调用编码（包装名字） |
-| `--class-obf` | 启用类名混淆 |
+| `--class-obf` | 启用类名混淆（FQCN 感知：namespace 不变、短名改写、声明点 `class_alias` 回挂原名；目录级构建自动生成 classmap 自动加载器 `awaphp_autoload.php`，文件名保持——详见 `docs/THINKPHP8_GUIDE.md`） |
 
 ## 编码与优化
 

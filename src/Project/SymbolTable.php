@@ -57,7 +57,7 @@ final class SymbolTable
     /**
      * 动态符号排除：名字以字符串字面量形式出现在代码里的符号（call_user_func('name')、
      * 可变函数、compact/extract 等）一旦改名就会断链，必须整体排除出重命名。
-     * @param array<string,true> $names
+     * @param array<string,true> $names 字面量内容集合
      */
     public function removeDynamic(array $names): void
     {
@@ -69,6 +69,14 @@ final class SymbolTable
             unset($this->funcs[$n], $this->classes[$n]);
             // 已有映射（manifest 复用）同样剔除，保持"排除"语义在增量重建时依然生效
             unset($this->funcMap[$n], $this->classMap[$n]);
+        }
+        // 类名混淆 v2：符号键为 FQCN。短名以字面量出现同样视为动态引用
+        // （`$c='Request'` 可能拼出 `app\Request`），按短名兜底剔除。
+        foreach (array_keys($this->classes) as $fqcn) {
+            $short = str_contains($fqcn, '\\') ? substr($fqcn, (int) strrpos($fqcn, '\\') + 1) : $fqcn;
+            if (isset($names[$short])) {
+                unset($this->classes[$fqcn], $this->classMap[$fqcn]);
+            }
         }
     }
 

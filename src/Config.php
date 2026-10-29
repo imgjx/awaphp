@@ -35,6 +35,10 @@ final class Config
         }
         $this->data['func_length']   = max(4, $i($this->data['func_length']));
         $this->data['var_split']     = max(1, $i($this->data['var_split']));
+        // 保留属性名（框架应用必需：属性名跨文件/跨框架按原文访问，重命名会脱节）
+        $this->data['var_keep_props'] = $b($this->data['var_keep_props'] ?? false) ?? false;
+        // 保留参数名（框架应用必需：路由绑定 / 依赖注入 / 命名参数按参数名匹配）
+        $this->data['var_keep_params'] = $b($this->data['var_keep_params'] ?? false) ?? false;
         $this->data['str_length']    = max(0, $i($this->data['str_length']));
 
         $this->data['func_call']     = $b($this->data['func_call']) ?? false;
@@ -125,17 +129,24 @@ final class Config
         $this->data['gz_chunks']      = max(1, min(6, $i($this->data['gz_chunks'] ?? 3)));
         // 结构指纹毒化壳：文件指纹参与解密密钥派生（美化/篡改 → 解出乱码，无分支可绕）
         $this->data['struct_poison']  = $b($this->data['struct_poison'] ?? false) ?? false;
-        // 换行缠绕壳：注入大量换行符（原始行数 1/10，至少 min 个，默认 2000）纠缠进代码与载荷，
-        // 配合结构指纹毒化壳（删空白 → 密文错位）。默认关。
-        $this->data['newline_poison']       = $b($this->data['newline_poison'] ?? false) ?? false;
-        $this->data['newline_poison_min']   = max(1, (int) ($this->data['newline_poison_min'] ?? 2000));
-        $this->data['newline_poison_ratio'] = max(0.01, min(1.0, (float) ($this->data['newline_poison_ratio'] ?? 0.1)));
+        // 换行缠绕壳：注入大量换行符，数量 = ceil(输入源码字节数 / divisor)，默认 1/5；
+        // 全部插进代码内部、并按每一层壳平均分摊；未落地余量兜底到文件头部。
+        // 配合结构指纹毒化壳（删空白/去空行 → 密文与指纹错位）。默认关。
+        $this->data['newline_poison']         = $b($this->data['newline_poison'] ?? false) ?? false;
+        $this->data['newline_poison_divisor'] = max(2, min(64, (int) ($this->data['newline_poison_divisor'] ?? 5)));
+        $this->data['newline_poison_min']     = max(0, (int) ($this->data['newline_poison_min'] ?? 0));
+        // 旧参数（按行数比例），1.0.9 起不再参与计算，仅保留以兼容老配置文件
+        $this->data['newline_poison_ratio']   = max(0.0, min(1.0, (float) ($this->data['newline_poison_ratio'] ?? 0.1)));
         // 蜜罐函数：拟真高价值命名的钓鱼假函数，被调用即拖慢调试并返回诱饵密钥
         $this->data['honeypot']       = max(0, $i($this->data['honeypot'] ?? 0));
         // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住；强度 1-3 控制语义变换激进度
         $this->data['shell_shield']          = $b($this->data['shell_shield'] ?? true) ?? true;
         $this->data['shell_shield_intensity'] = max(1, min(3, $i($this->data['shell_shield_intensity'] ?? 2)));
         // Confrontation-LLM：反 LLM 静态分析（误导性注释 + 生僻 CJK 散布）。默认关。
+        // 互斥注释：成对投放互相矛盾的注释（死在 vs 活路径/归属/版本/修复状态/覆盖率…），
+        // 落在每层壳的内部（密文载荷里），迫使静态分析逐条验证、显著抬高成本。默认开。
+        $this->data['mutual_comments']          = $b($this->data['mutual_comments'] ?? true) ?? true;
+        $this->data['mutual_intensity']         = max(1, min(3, $i($this->data['mutual_intensity'] ?? 2)));
         $this->data['confrontation_llm']        = $b($this->data['confrontation_llm'] ?? false) ?? false;
         $this->data['confrontation_intensity']  = max(1, min(3, $i($this->data['confrontation_intensity'] ?? 2)));
         $this->data['level']          = (string) ($this->data['level'] ?? '');

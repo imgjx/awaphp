@@ -58,6 +58,14 @@ final class RuntimeJunk
                     $depth++;
                 }
             }
+            // 序言区约束：declare(strict_types=1) 必须是首语句、namespace 必须紧随 declare，
+            // junk 若插进 declare 与 namespace 之间会直接致命。声明边界（declare 的 ';' 之后）
+            // 恰好是个"顶层语句边界"，必须把 headInsertIndex（declare/namespace 序言结束点）
+            // 之前的边界全部滤掉，保证 junk 一律落在序言之后。
+            $minAt = DeclareHoist::headInsertIndex($tokens);
+            if ($minAt >= 0) {
+                $bounds = array_values(array_filter($bounds, static fn (int $b): bool => $b >= $minAt));
+            }
             if ($bounds !== []) {
                 // 按强度决定插入步长（intensity 越大越密）
                 $step = max(1, (int) ceil(10 / $intensity));
