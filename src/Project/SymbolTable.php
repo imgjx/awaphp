@@ -159,6 +159,33 @@ final class SymbolTable
         return $this->built;
     }
 
+    /**
+     * 白名单保留：把指定函数 / 类名从重命名映射中剔除（同时移除声明登记），
+     * 使这些符号在整套系统内【保持原名】——跨文件引用（动态调用 / 框架按名查找 /
+     * 反射 / DIP 绑定）不再脱节。常用于框架入口、路由回调、容器绑定等绝不能改名的符号。
+     *
+     * @param array<string> $funcNames 原函数名（短名或 FQCN 均可，按原名匹配）
+     * @param array<string> $classNames 原类名（短名或 FQCN 均可）
+     */
+    public function preserve(array $funcNames, array $classNames): void
+    {
+        foreach ($funcNames as $n) {
+            $n = (string) $n;
+            unset($this->funcs[$n], $this->funcMap[$n]);
+        }
+        foreach ($classNames as $n) {
+            $n = (string) $n;
+            unset($this->classes[$n], $this->classMap[$n]);
+            // FQCN 键的类：同时按短名兜底剔除（白名单给短名时也能命中）
+            foreach (array_keys($this->classes) as $fqcn) {
+                $short = str_contains($fqcn, '\\') ? substr($fqcn, (int) strrpos($fqcn, '\\') + 1) : $fqcn;
+                if ($short === $n) {
+                    unset($this->classes[$fqcn], $this->classMap[$fqcn]);
+                }
+            }
+        }
+    }
+
     /** @return array<string,string> */
     public function funcMap(): array
     {

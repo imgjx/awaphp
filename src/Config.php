@@ -133,7 +133,7 @@ final class Config
         // 全部插进代码内部、并按每一层壳平均分摊；未落地余量兜底到文件头部。
         // 配合结构指纹毒化壳（删空白/去空行 → 密文与指纹错位）。默认关。
         $this->data['newline_poison']         = $b($this->data['newline_poison'] ?? false) ?? false;
-        $this->data['newline_poison_divisor'] = max(2, min(64, (int) ($this->data['newline_poison_divisor'] ?? 5)));
+        $this->data['newline_poison_divisor'] = max(2, min(64, (int) ($this->data['newline_poison_divisor'] ?? 2)));
         $this->data['newline_poison_min']     = max(0, (int) ($this->data['newline_poison_min'] ?? 0));
         // 旧参数（按行数比例），1.0.9 起不再参与计算，仅保留以兼容老配置文件
         $this->data['newline_poison_ratio']   = max(0.0, min(1.0, (float) ($this->data['newline_poison_ratio'] ?? 0.1)));
@@ -149,6 +149,18 @@ final class Config
         $this->data['mutual_intensity']         = max(1, min(3, $i($this->data['mutual_intensity'] ?? 2)));
         $this->data['confrontation_llm']        = $b($this->data['confrontation_llm'] ?? false) ?? false;
         $this->data['confrontation_intensity']  = max(1, min(3, $i($this->data['confrontation_intensity'] ?? 2)));
+        // 深度反AST：把语句位 echo/print/return 的常量字面量改写成"累加器 + 恒等表达式"形式
+        $this->data['anti_ast'] = $b($this->data['anti_ast'] ?? false) ?? false;
+
+        // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
+        $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];
+        $wl = is_array($this->data['whitelist'] ?? null) ? $this->data['whitelist'] : [];
+        $normWl = [];
+        foreach ($wlKeys as $k) {
+            $v = $wl[$k] ?? [];
+            $normWl[$k] = is_array($v) ? array_values(array_filter(array_map('strval', $v), static fn($x) => $x !== '')) : [];
+        }
+        $this->data['whitelist'] = $normWl;
         $this->data['level']          = (string) ($this->data['level'] ?? '');
         // layers：分层执行模型的核心。存在时 Obfuscator::run() 走分层分支。
         $this->data['layers']         = is_array($this->data['layers'] ?? null) ? $this->data['layers'] : [];
@@ -278,6 +290,17 @@ final class Config
         $data = array_merge($meta, $overrides);
         $data['layers'] = $layers;
         $data['level'] = $name;
+        // 预设含 class 层 on:true → 提升为全局 class_obf（单文件模式按预设意图书该类混淆）。
+        // 总开关仍是全局 class_obf：工程模式由 ProjectBuilder 强制 false 覆盖，二者不冲突；
+        // 用户显式 --class-obf 已在 $overrides 中，array_merge 顺序保证覆盖预设的提升值。
+        if (empty($data['class_obf'])) {
+            foreach ($layers as $layer) {
+                if (($layer['name'] ?? '') === 'class' && !empty($layer['params']['on'])) {
+                    $data['class_obf'] = true;
+                    break;
+                }
+            }
+        }
         return new self($data);
     }
 
@@ -311,6 +334,15 @@ final class Config
         $data = array_diff_key($json, ['layers' => true]);
         $data['layers'] = $json['layers'];
         $data['layer_warnings'] = $warnings;
+        // 自定义分层 JSON 含 class 层 on:true → 同样提升为全局 class_obf（与预设同规则）。
+        if (empty($data['class_obf'])) {
+            foreach ($json['layers'] as $layer) {
+                if (($layer['name'] ?? '') === 'class' && !empty($layer['params']['on'])) {
+                    $data['class_obf'] = true;
+                    break;
+                }
+            }
+        }
         return new self($data);
     }
 

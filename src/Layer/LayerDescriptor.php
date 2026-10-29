@@ -133,6 +133,13 @@ final class LayerDescriptor
                 'params' => [],
                 'tags' => ['结构'],
             ],
+            'anti_ast' => [
+                'kind'  => 'token',
+                'label' => '深度反AST',
+                'desc'  => '语句位的 echo/print/return 常量字面量改写为"累加器 + 恒等表达式"（如 strlen(md5(1)) 积木），源码里再见不到裸数字/裸串；改写前后语义逐字节等价（构建期校验），不通过则原样保留',
+                'params' => [],
+                'tags' => ['反分析'],
+            ],
             'ws' => [
                 'kind'  => 'token',
                 'label' => '空白压缩',

@@ -67,7 +67,7 @@ return [
     'goto_trap'    => 2,       // GOTO 诱饵死状态数（0-4，每个分派器注入不可达分支）
     'struct_poison' => false,  // 结构指纹毒化壳（指纹进密钥派生；篡改即解出乱码）
     'newline_poison' => false,  // 换行缠绕壳：注入大量换行符纠缠进代码与载荷（配合结构毒化壳/自校验，删空白即出错）
-    'newline_poison_divisor' => 5,   // 换行数 = ceil(输入源码字节数 / divisor)，默认 1/5（30KB → 6000 个）
+    'newline_poison_divisor' => 2,   // 换行数 = ceil(输入源码字节数 / divisor)，默认 1/2（10KB → 5000 个换行）
     'newline_poison_min' => 0,       // 换行数下限（0=不设下限，仅极小文件可设个位数兜底）
     'honeypot'     => 0,       // 蜜罐函数数量（拟真高价值命名 + 深循环拖慢 + 伪密钥）
     'shell_shield' => true,    // 逐层壳自保护：每层壳的解码逻辑再被外层混淆护住（破一层要先被恶心一层）
@@ -85,6 +85,27 @@ return [
     'junk_fake_b64'  => true,  // 诱饵 base64（解了不用的孤立串）
     'junk_fake_echo' => true,  // 经输出缓冲执行的伪 echo（不留痕迹）
     'junk_tangle'    => false, // 执行缠结：垃圾值经恒等式缠结进真实整型赋值（删垃圾即出错）
+
+    // 深度反AST：语句位 echo/print/return 的常量字面量改写成"累加器 + 恒等表达式"形式
+    'anti_ast'    => false,   // 深度反AST 总开关（默认关，需显式开启：--anti-ast 或分层 JSON 的 anti_ast 层）
+
+    // 白名单：不混淆的目录 / 文件 / 符号。目录模式可整文件跳过（原样拷贝）；符号保留原名。
+    // dirs/files 用相对输入目录的路径（file 为精确匹配，dir 为前缀匹配，支持 * 通配）；
+    // variables 带或不带 $ 均可；functions/classes 用原名（类支持 FQCN 或短名）；
+    // constants/methods 用原标识符（method 形如 Class::method 或裸方法名）；
+    // namespaces/interfaces/traits 命中即跳过对应声明混淆。
+    'whitelist' => [
+        'dirs'       => [],
+        'files'      => [],
+        'variables'  => [],
+        'functions'  => [],
+        'classes'    => [],
+        'constants'  => [],
+        'methods'    => [],
+        'namespaces' => [],
+        'interfaces' => [],
+        'traits'     => [],
+    ],
 
     // ===== 第四阶段：授权绑定 =====
     'license_domain' => '',    // 授权域名（逗号分隔，空=不校验，仅 Web SAPI 生效）

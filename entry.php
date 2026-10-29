@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.0.9');
+define('OBFUSCATOR_VERSION', '1.1.0-dev');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -23,6 +23,7 @@ foreach ([
     'src/Support/NameStyle.php',
     'src/Support/TokenScan.php',
     'src/Support/DeclareHoist.php',
+    'src/Support/HashBuiltin.php',
     'src/Support/ConstExprScan.php',
     'src/Confrontation/ConfrontRng.php',
     'src/Support/DynamicSymbols.php',
@@ -71,6 +72,8 @@ foreach ([
     'src/ControlFlow/AntiTamper.php',
     'src/ControlFlow/JunkFunctions.php',
     'src/AntiDetect/StringRuntimeAssembler.php',
+    'src/AntiAst/IdentityExpr.php',
+    'src/AntiAst/AntiAst.php',
     'src/Project/SymbolTable.php',
     'src/Project/ProjectBuilder.php',
 ] as $f) {
@@ -138,6 +141,38 @@ function obf_parse_args(array $argv): array
         } elseif (str_starts_with($a, '-') && isset($map[$a])) {
             $out[$map[$a]] = $argv[++$i] ?? true;
         }
+    }
+    // 白名单标量旗标（--whitelist-dirs=a,b）归并进 whitelist 数组的对应子键
+    $wlMap = [
+        'whitelist_dirs'   => 'dirs',
+        'whitelist_files'  => 'files',
+        'whitelist_vars'   => 'variables',
+        'whitelist_funcs'  => 'functions',
+        'whitelist_classes'=> 'classes',
+        'whitelist_consts' => 'constants',
+        'whitelist_methods'=> 'methods',
+    ];
+    $wl = [];
+    foreach ($wlMap as $cliKey => $sub) {
+        if (isset($out[$cliKey])) {
+            $val = $out[$cliKey];
+            $items = is_array($val) ? $val : explode(',', (string) $val);
+            foreach ($items as $it) {
+                $it = trim((string) $it);
+                if ($it !== '') {
+                    $wl[$sub][] = $it;
+                }
+            }
+            unset($out[$cliKey]);
+        }
+    }
+    if ($wl !== []) {
+        // 与 JSON 配置里的 whitelist（如有）合并
+        $base = is_array($out['whitelist'] ?? null) ? $out['whitelist'] : [];
+        foreach ($wl as $sub => $items) {
+            $base[$sub] = array_values(array_unique(array_merge($base[$sub] ?? [], $items)));
+        }
+        $out['whitelist'] = $base;
     }
     return $out;
 }
@@ -247,7 +282,7 @@ function obf_help(): string
                        **全部插进代码内部**并按"每一层壳"平均分摊，未落地余量兜底到文件头部
                        （头部最容易被美化/清空行整段删掉）。与 --struct-poison / --anti-tamper
                        配合 —— 逆向者"删空行/去空白/美化"即改动密文与指纹 → 解密错位。
-                       可用 --newline-poison-divisor=N 改字节除数（默认 5）、
+                       可用 --newline-poison-divisor=N 改字节除数（默认 2，即换行数=源字节/2）、
                        --newline-poison-min=N 设下限；--no-newline-poison 关闭
       --mutual-comments  互斥注释（默认开）：成对投放"互相打脸"的注释
                        （死代码 vs 唯一活路径、归属/版本/修复状态/覆盖率/密钥位置…），
@@ -255,6 +290,20 @@ function obf_help(): string
                        落在每层壳的密文载荷内部——解开才读到，读到的还是矛盾信息。
                        --mutual-intensity=N（1~3，默认 2，每层壳 1/2/4 对）；
                        --no-mutual-comments 关闭
+
+白名单 / 反AST
+      --anti-ast       深度反AST：把语句位的 echo/print/return 常量字面量改写成
+                       "累加器 + 恒等表达式"（如 $x=strlen(sha1(1));… 拼出目标值再 echo），
+                       源码里再见不到裸数字/裸串，改写前后语义逐字节等价。默认关。
+      --whitelist-dirs=      不混淆的目录（逗号分隔，相对输入目录；支持 * 通配），整目录原样拷贝
+      --whitelist-files=     不混淆的文件（逗号分隔，精确相对路径，如 config/app.php）
+      --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 \$db,\$cfg）
+      --whitelist-funcs=     不重命名的函数名（逗号分隔，如 helper,format_money）
+      --whitelist-classes=   不重命名的类名（逗号分隔，FQCN 或短名，如 App\\Service\\Order）
+      --whitelist-consts=    不重命名的常量名（逗号分隔）
+      --whitelist-methods=   不重命名的方法名（逗号分隔，形如 Class::method 或裸方法名）
+      （也可在 JSON 配置里用 "whitelist": {"dirs":[...],"files":[...],"variables":[...],...} 表达；
+       目录模式整文件跳过，符号则保留原名——框架按名访问/反射/DIP 绑定不再脱节）
 
 授权绑定（第四阶段）
       --license-domain= 授权域名，逗号分隔（如 a.com,b.com）；仅 Web SAPI 下校验

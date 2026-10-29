@@ -532,9 +532,10 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 
 ### 11.14 v1.0.9：ThinkPHP8 级工程兼容 + 生成器/闭包真编译 + EVAL_STMT 兜底加固
 
-- **FQCN 感知类改名（工程级，与 VM 类表协同）**：
+- **FQCN 感知类改名（单文件模式 / 与 VM 类表协同）**：
   - 类改名按「命名空间全限定名」粒度进行，`namespace` 声明保持原样；声明点 `class_alias(新名, 原名)` 把原名回挂——`class_exists` / 反射 / 字符串类名实例化照常命中。
-  - 目录级构建自动生成 **classmap 自动加载器 `awaphp_autoload.php`**（新名/原名双向映射到原 rel 路径），各产物头部自动 `require_once`；**文件名 / 目录结构保持**，PSR-4 与框架路径加载不受影响。
+  - **目录级构建（整套系统模式）不再生成 classmap 自动加载器 `awaphp_autoload.php`**：类名改名会与 PSR-4「命名空间 + 文件名」约定冲突（改名后框架按原名找不到类），故工程模式强制保留类名原名、靠框架自动加载工作。需要排除个别符号时改用白名单（见 11.15）。
+  - 单文件模式仍支持类名混淆（`--class-obf`，FQCN 感知 + `class_alias` 回挂）。
   - 同 salt 下各文件独立混淆、映射确定性一致（`Salt::derive` 派生），增量重建安全。
   - VM 运行期 `$___RCLS___`：FQN 查 class_exists / VM 类表命中则原样返回，失败降级短名再试（「命名空间内找不到就去全局找」语义）。
   - `parent::` **非虚派发**：`parent::m()` 沿声明类的父链解析（非 called class），与 PHP 语义一致；SCALL 抛错措辞与原生逐字对齐（`Class "X" not found`）。
@@ -554,3 +555,27 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **回归**：新增 `hardening_v109` 59 项（五等级特性保真含生成器方法/by-ref 写回/heredoc/`f()()`、生成器语义探针、帧栈纪律、壳层头部约束（anti_debug/anti_hook/anti_tamper 产物 declare/namespace 恒在最前）、换行缠绕配额、互斥注释内层性、字符串偏移/静态局部 isset/大值栈保真边界）全绿；`vm_eval_stmt` 新增解构表达式键与 EVAL_STMT 类引用 FQCN 化用例（13 例全绿）；`run_tests` 32、`hardening_v108` 37、`vm_gen_probe` 290、`vm_trycatch_probe` 64、`vm_p8` 77、`vm_junk` 120、`vm_comprehensive` 全绿、`vm_module_link` / `vm_builtin_modules` 205 全绿、`syntax_compat` 7 全绿；TP8 示例项目基线 26/26 逐字节一致。
 
 
+
+### 11.15 v1.1.0-dev：白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 内置哈希
+
+> 本版本**仅本地提交，不发布**（不打 tag / 不建 GitHub Release / 不推镜像）。
+
+- **白名单模式（替代 classmap 自动加载器）**：
+  - 废弃 `awaphp_autoload.php` 自动加载方案。**目录级构建（整套系统模式）强制保留类名原名**——类名混淆与 PSR-4「命名空间 + 文件名」约定根本冲突（改名后框架按原名找不到类），去掉自动加载器后改为工程模式不重命名类，框架自动加载照常工作。
+  - 白名单是一个配置项（`whitelist`），支持排除：
+    - **目录 / 文件**：整目录（`--whitelist-dirs=app/Admin/*`）或整文件（`--whitelist-files=config/app.php`）**原样拷贝**，不参与混淆；
+    - **符号**：变量（`--whitelist-vars=\$db`）、函数（`--whitelist-funcs=helper`）、类 / 接口 / 特质 / 命名空间（`--whitelist-classes=App\Service\Order`）、常量、方法——跨文件保持原名。
+  - 单文件模式仍可用 `--class-obf` 做类名混淆（FQCN 感知 + `class_alias` 回挂）。
+
+- **深度反AST（anti_ast，新增 token 层）**：
+  - 把语句位的 `echo` / `print` / `return` **常量字面量**改写成「累加器 + 恒等表达式」，源码里再见不到裸数字 / 裸串。积木来自恒等不变量：`strlen(md5(1))===32`、`strlen(sha1(1))===40`、`ord('A')===65`、定长串长度、`base64_decode(base64_encode(x))===x`；整数由积木加减组合，同一作用域内复用同一累加变量制造「变量被反复改写」的假象。
+  - 示例：`echo 1; echo 123;` → `$_z=strlen('x'); echo $_z; $_z=$_z+(strlen(sha1(1))*3+strlen('xx')); echo $_z;`（1 与 1+120+2=123）。
+  - 改写前后语义**逐字节等价**：每条生成式构建期经 `eval` 校验，不通过则整条原样保留（绝不引入错误）。默认关，需 `--anti-ast` 或分层 JSON 的 `anti_ast` 层显式开启。
+
+- **换行缠绕量改为源代码字节的 1/2**：`--newline-poison-divisor` 默认由 5 改为 **2**，即源 10KB → 注入约 5000 个换行（原为 1/5）。换行均匀撒入 token 边界 + 部分嵌入 base64 载荷 + 头部兜底，配合结构毒化壳 / 自校验，逆向者「删空白 / 美化」即改动密文与指纹 → 解密错位。
+
+- **内置哈希原语（HashBuiltin）**：md5 / sha1 / crc32 的**纯 PHP 自包含实现**（不依赖扩展，32 位无符号运算 + 小端/大端输出），供深度反AST 恒等积木与工具自身使用；已用多组输入（含 5KB 串）与 PHP 内置 `md5/sha1/crc32` 逐字节比对一致。
+
+- **PHP 8.5 支持**：运行环境升级到 PHP 8.5（ppa:ondrej/php），混淆器在 8.5 运行时下对现代语法（enum、readonly 类、构造器属性提升、接口 / trait、`match`、一等调用 `strlen(...)`、属性钩子等）的 token 流健壮处理、混淆产物可运行。
+
+- **调试钩子集中到 `docs/DEBUG.md`**：`OBF_VM_SRC` / `OBF_CPV_OUT` / `OBF_VM_NEST` / `OBF_SHELL_DUMP` / `OBF_LINT_DUMP` / `OBF_VM_DEBUG` 六个环境变量的位置、内容、典型排查流程统一归档，便于 CI / 本地定位「某层为何没生效 / 为何回退 / 为何非法」。

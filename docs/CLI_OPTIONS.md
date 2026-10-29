@@ -34,7 +34,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--func-length=` | 函数名混淆后长度 |
 | `--func-call` | 函数调用混淆（间接调用） |
 | `--func-call-enc` | 函数调用编码（包装名字） |
-| `--class-obf` | 启用类名混淆（FQCN 感知：namespace 不变、短名改写、声明点 `class_alias` 回挂原名；目录级构建自动生成 classmap 自动加载器 `awaphp_autoload.php`，文件名保持——详见 `docs/THINKPHP8_GUIDE.md`） |
+| `--class-obf` | 单文件模式启用类名混淆（FQCN 感知：namespace 不变、短名改写、声明点 `class_alias` 回挂原名）。**目录级构建（整套系统模式）默认不重命名类名**——改名会与 PSR-4「命名空间 + 文件名」约定冲突，故工程模式强制保留类名原名、靠框架自动加载工作；个别需要排除的类/函数可用 `--whitelist-classes` / `--whitelist-funcs` 保留（详见 `docs/THINKPHP8_GUIDE.md`） |
 
 ## 编码与优化
 
@@ -58,6 +58,22 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--copyright=` | 版权注释注入文本 |
 | `--no-banner` | 关闭文件头「混淆引擎名 + 版本号」注入 |
 
+## 白名单（不混淆指定目录 / 文件 / 符号）
+
+白名单是一个配置项，用于把**绝不能改名的目录、文件或符号**排除出混淆，避免框架按名加载 / 反射 / DIP 绑定 / 动态调用断链。可在 JSON 配置里用 `"whitelist": {...}` 表达，也可用下列 CLI 旗标（逗号分隔，支持 `*` 通配）。
+
+| 选项 | 说明 |
+|------|------|
+| `--whitelist-dirs=` | 不混淆的目录（相对输入目录；`app/Admin` 或 `app/Admin/*` 通配），整目录**原样拷贝** |
+| `--whitelist-files=` | 不混淆的文件（精确相对路径，如 `config/app.php`），整文件**原样拷贝** |
+| `--whitelist-vars=` | 不重命名的变量名（带不带 `$` 均可，如 `\$db,\$cfg`） |
+| `--whitelist-funcs=` | 不重命名的函数名（如 `helper,format_money`）——目录模式跨文件一致保留 |
+| `--whitelist-classes=` | 不重命名的类名（FQCN 或短名，如 `App\Service\Order`）；另含 `--whitelist-namespaces` / `--whitelist-interfaces` / `--whitelist-traits` 等价归入 |
+| `--whitelist-consts=` | 不重命名的常量名 |
+| `--whitelist-methods=` | 不重命名的方法名（形如 `Class::method` 或裸方法名） |
+
+> 目录 / 文件跳过的语义是「原样拷贝、不参与混淆」——其内声明的符号保持原名，跨文件引用自然不断链；符号保留的语义是「跨文件保持原名」。两者都可用，按排除粒度选择。
+
 ## 控制流与虚拟机保护
 
 | 选项 | 说明 |
@@ -78,7 +94,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--no-vm-cpool` | 关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立常量池（指令改索引引用），池以独立密钥加密，静态分析看不到明文常量 |
 | `--vm-combo[=N]` | VM opcode 组合执行（抗反编译）：把单条 opcode 拆成等价多指令序列（`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP,ADD`、`BOOL_NOT→PUSH_C 0,EQ` 等），打破 1:1 opcode 映射。N=1~3 为强度（默认 2）；`--no-vm-combo` 关闭 |
 | `--confrontation-llm` | Confrontation-LLM 反 LLM 分析：注入误导性注释（假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG 暗示「已被移除」实际仍在执行）并向壳内层散布生僻 CJK 注释，误导 LLM 优先级判断；配合 `--confrontation-intensity=N`（1~3，默认 2）调节密度；`--no-confrontation-llm` 关闭 |
-| `--newline-poison` | 换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符（数量 = `max(原始行数 × 1/10, 2000)`），一部分作语句间空行、一部分嵌进最长 base64 载荷串，纠缠进代码而非堆尾部；`mid`/`high`/独立模式下换行在产物中可见，`max`/`ultra`（含结构毒化壳）下换行随内层一同加密进密文；`--newline-poison-min=N` 改下限（默认 2000）、`--newline-poison-ratio=F` 改比例（默认 0.1）；`--no-newline-poison` 关闭 |
+| `--newline-poison` | 换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符（数量 = `ceil(源字节数 / divisor)`，divisor 默认 2，即源 10KB → 5000 换行），一部分作语句间空行、一部分嵌进最长 base64 载荷串，纠缠进代码而非堆尾部；`mid`/`high`/独立模式下换行在产物中可见，`max`/`ultra`（含结构毒化壳）下换行随内层一同加密进密文；`--newline-poison-divisor=N` 改字节除数（默认 2）、`--newline-poison-min=N` 改下限（默认 0）、`--newline-poison-ratio=F` 改串内比例（默认 0.1）；`--no-newline-poison` 关闭 |
 | `--eval` | EVAL 多层加壳 |
 | `--eval-layers=` | EVAL 加壳层数（默认 3） |
 | `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等） |

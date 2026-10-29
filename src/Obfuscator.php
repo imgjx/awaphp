@@ -782,6 +782,9 @@ final class Obfuscator
             case 'token':
                 $tokens = (new TokenObfuscator($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
+            case 'anti_ast':
+                $tokens = (new AntiAst($this->salt, $this->logger))->process($tokens, $cfg);
+                break;
         }
     }
 
@@ -801,7 +804,14 @@ final class Obfuscator
                 $map['func_call_enc'] = (bool) ($params['enc'] ?? false);
                 break;
             case 'class':
-                $map['class_obf'] = (bool) ($params['on'] ?? false);
+                // 类名混淆的【唯一总开关】是全局 class_obf：
+                //  - 工程模式（ProjectBuilder）强制 class_obf=false → 即便预设含 class 层
+                //    on:true 也不改名（改名会破坏 PSR-4「命名空间+文件名」约定，框架按原名
+                //    找不到类）；
+                //  - 单文件模式：--class-obf 显式开启，或预设含 class 层 on:true 时由
+                //    Config::fromPreset / fromLayeredJson 提升为全局 true（见对应注释）。
+                // 两者以全局 class_obf 为准，避免"预设层 on 覆盖工程模式强制关闭"的回归。
+                $map['class_obf'] = (bool) ($params['on'] ?? false) && (bool) $this->config->get('class_obf');
                 break;
             case 'controlflow':
                 $map['cfg'] = $params['cfg'] ?? 'medium';
@@ -847,6 +857,9 @@ final class Obfuscator
                 $map['token_quote']   = (bool) ($params['quote'] ?? true);
                 $map['token_heredoc'] = (bool) ($params['heredoc'] ?? false);
                 $map['token_decoy']   = (int) ($params['decoy'] ?? 3);
+                break;
+            case 'anti_ast':
+                $map['anti_ast'] = true;
                 break;
         }
         return new Config(array_merge($this->config->all(), $map));
@@ -1276,6 +1289,13 @@ final class Obfuscator
             $tokens = $funcCall->process($tokens, $this->config, $ctx);
         }
         $tokens = $cls->process($tokens, $this->config, $ctx);
+
+        // 深度反AST：语句位 echo/print/return 的常量字面量改写为"累加器 + 恒等表达式"。
+        // 须置于数字/字符串编码之前，才能命中原始裸常量（编码后字面量形态已变，无法识别）。
+        if ($this->config->get('anti_ast')) {
+            $antiAst = new AntiAst($this->salt, $this->logger);
+            $tokens = $antiAst->process($tokens, $this->config);
+        }
 
         // 第三阶段（token 级）：控制流 / GOTO 仅在最后一次重复执行
         if ($isLast) {

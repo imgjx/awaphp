@@ -73,17 +73,14 @@ final class ProjectBuilder
         $collectorF = new FunctionObfuscator($this->salt, $this->logger, $table);
         $collectorC = new ClassObfuscator($this->salt, $this->logger, $table);
         $dynamic = [];
-        $declByFile = []; // rel => list<FQCN>（供 PSR-4 文件重命名）
         foreach ($files as $rel => $abs) {
             $tokens = Parser::tokenize((string) file_get_contents($abs));
             foreach (array_keys($collectorF->collectDeclared($tokens)) as $n) {
                 $table->addFunction($n);
             }
-            $declC = array_keys($collectorC->collectDeclared($tokens));
-            foreach ($declC as $n) {
+            foreach (array_keys($collectorC->collectDeclared($tokens)) as $n) {
                 $table->addClass($n);
             }
-            $declByFile[$rel] = $declC;
             foreach (array_keys(DynamicSymbols::fromTokens($tokens)) as $lit) {
                 $dynamic[$lit] = true;
             }
@@ -93,43 +90,45 @@ final class ProjectBuilder
         $this->logger->info('全局符号表：函数 ' . count($table->funcMap()) . ' 个，类/接口 ' . count($table->classMap()) . ' 个（动态引用排除 ' . count($dynamic) . ' 个候选）');
 
         // ---- Pass 2：统一映射混淆（文件路径保持原样，不改名）----
-        $obf = new Obfuscator($this->config, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
+        // 工程模式不再生成类映射自动加载器（awaphp_autoload.php）：
+        // 类名混淆会与 PSR-4「命名空间 + 文件名」约定冲突（改名后框架按原名找不到类），
+        // 而自动加载器方案已废弃。改为【工程模式强制保留类名原名】，框架（ThinkPHP8 等）
+        // 按命名空间/文件名自动加载照常工作；需要排除个别符号时用白名单（见下）。
+        $obfConfig = new Config(array_merge($this->config->all(), ['class_obf' => false]));
+        $obf = new Obfuscator($obfConfig, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
         $ok = 0;
         $fail = 0;
-        $classMap = $table->classMap();
-        $autoloadName = 'awaphp_autoload.php';
-        // 类映射自动加载器：类改名后 PSR-4 按「命名空间 + 新短名」找不到原文件，
-        // 同时外部动态类名（路由字符串 / 容器绑定）仍按原名查找 —— 两个名字都映射到原文件，
-        // 文件内 class_alias 回挂把原名接到新类上。仅工程模式生成（跨文件改名才需要）。
-        $fileMap = [];   // FQCN（新名与原名）=> rel 路径
-        foreach ($declByFile as $rel => $fqcns) {
-            foreach ($fqcns as $fqcn) {
-                $fqcn = (string) $fqcn;
-                $newShort = $classMap[$fqcn] ?? null;
-                if ($newShort === null || $newShort === ClassObfuscator::shortOf($fqcn)) {
-                    continue; // 未改名：PSR-4 原样命中，无需映射
-                }
-                $ns = str_contains($fqcn, '\\') ? substr($fqcn, 0, (int) strrpos($fqcn, '\\')) : '';
-                $newFqcn = $ns !== '' ? $ns . '\\' . $newShort : $newShort;
-                $fileMap[$newFqcn] = $rel;
-                $fileMap[$fqcn] = $rel;
-            }
+
+        // 白名单：整目录 / 整文件跳过（原样拷贝，不参与混淆）
+        $wl = $this->config->get('whitelist');
+        $wlDirs = $wl['dirs'] ?? [];
+        $wlFiles = $wl['files'] ?? [];
+        $skip = $this->whitelistSkipSet($files, $wlDirs, $wlFiles);
+
+        // 白名单：保留指定函数 / 类名（跨文件保持原名）
+        $wlFuncs = $wl['functions'] ?? [];
+        $wlClasses = array_merge($wl['classes'] ?? [], $wl['namespaces'] ?? [], $wl['interfaces'] ?? [], $wl['traits'] ?? []);
+        if ($wlFuncs !== [] || $wlClasses !== []) {
+            $table->preserve($wlFuncs, $wlClasses);
+            $this->logger->info('白名单已保留 ' . count($wlFuncs) . ' 个函数、' . count($wlClasses) . ' 个类/接口/特质原名');
         }
-        if ($fileMap !== []) {
-            $this->writeAutoloadMap($outDir . '/' . $autoloadName, $fileMap);
-        }
+
         foreach ($files as $rel => $abs) {
             $dest = $outDir . '/' . $rel;
             if (!is_dir(dirname($dest))) {
                 mkdir(dirname($dest), 0755, true);
             }
             try {
+                if (isset($skip[$rel])) {
+                    // 白名单跳过：原样拷贝（含其声明的符号保持原名，跨文件引用不断链）
+                    copy($abs, $dest);
+                    $ok++;
+                    $this->logger->info("白名单跳过（原样拷贝）: {$rel}");
+                    continue;
+                }
                 // 登记主文件路径：供 VM include 解析（baseDir）与 __DIR__/__FILE__ 折值
                 $obf->setSourceFile($abs);
                 $res = $obf->run((string) file_get_contents($abs));
-                if ($fileMap !== []) {
-                    $res = $this->injectAutoloadRequire($res, $rel, $autoloadName);
-                }
                 file_put_contents($dest, $res);
                 $ok++;
                 $this->logger->info("已混淆: {$rel}");
@@ -157,53 +156,49 @@ final class ProjectBuilder
     }
 
     /**
-     * 落盘类映射自动加载器：新名与原名都映射到原文件路径（文件不改名），
-     * require 之后由文件内 class_alias 把原名接到新类上。
+     * 计算白名单需要整文件跳过的 rel 集合（原样拷贝、不参与混淆）。
+     * dirs：精确前缀或以 / 结尾的前缀匹配（支持 * 通配，如 app/Admin/*）；
+     * files：与 rel 精确相等匹配。返回 rel => true 的快速查表。
      *
-     * @param array<string,string> $fileMap FQCN（新名 + 原名）=> rel 路径
+     * @param array<string,string> $files rel => abs
+     * @param array<string> $dirs
+     * @param array<string> $filesWl
+     * @return array<string,true>
      */
-    private function writeAutoloadMap(string $path, array $fileMap): void
+    private function whitelistSkipSet(array $files, array $dirs, array $filesWl): array
     {
-        ksort($fileMap, SORT_STRING);
-        $rows = [];
-        foreach ($fileMap as $fqcn => $rel) {
-            $rows[] = '        ' . var_export((string) $fqcn, true) . ' => ' . var_export(str_replace('\\', '/', (string) $rel), true) . ',';
+        $skip = [];
+        if ($dirs === [] && $filesWl === []) {
+            return $skip;
         }
-        $code = "<?php\n"
-            . "// 嗷呜awaのphp混淆 · 类映射自动加载器（构建自动生成，请勿手改）\n"
-            . "// 类名混淆后 PSR-4 按「命名空间 + 新短名」找不到原文件（文件名保持原样），\n"
-            . "// 这里把新名/原名都映射到原文件；文件内 class_alias 负责原名到新类的衔接。\n"
-            . "spl_autoload_register(function (\$__c) {\n"
-            . "    static \$__m = [\n"
-            . implode("\n", $rows) . "\n"
-            . "    ];\n"
-            . "    if (isset(\$__m[\$__c])) {\n"
-            . "        require_once __DIR__ . '/' . \$__m[\$__c];\n"
-            . "    }\n"
-            . "});\n";
-        file_put_contents($path, $code);
-        $this->logger->info('类映射自动加载器已写入: ' . $path . '（' . count($fileMap) . ' 条映射）');
-    }
-
-    /**
-     * 在产物头部注入 `require_once` 类映射自动加载器。
-     * 注入点由 DeclareHoist::headInsertIndex 给出：declare/namespace 之后、
-     * 括号式 namespace 时落在块内第一条语句位——不会把 declare/namespace 挤成非首语句，
-     * 也早于文件内任何类声明的链接（extends/接口的跨文件自动加载需要先注册）。
-     */
-    private function injectAutoloadRequire(string $res, string $rel, string $autoloadName): string
-    {
-        $tokens = token_get_all($res);
-        $idx = DeclareHoist::headInsertIndex($tokens);
-        if ($idx < 0) {
-            return $res; // 无开标签的片段流：不注入
+        $dirPat = [];
+        foreach ($dirs as $d) {
+            $d = (string) $d;
+            if ($d === '') {
+                continue;
+            }
+            $d = ltrim($d, '/\\');
+            $pat = '#^' . strtr(preg_quote($d, '#'), ['\*' => '[^/\\\\]*']) . '#';
+            if (str_ends_with($d, '/') || str_ends_with($d, '\\')) {
+                $pat = '#^' . strtr(preg_quote(rtrim($d, '/\\'), '#'), ['\*' => '[^/\\\\]*']) . '(/|\\\\)#';
+            }
+            $dirPat[] = $pat;
         }
-        $dir = str_replace('\\', '/', dirname($rel));
-        $depth = ($dir === '.' || $dir === '') ? 0 : substr_count($dir, '/') + 1;
-        $prefix = str_repeat('../', $depth);
-        $line = "require_once __DIR__ . '/{$prefix}{$autoloadName}';";
-        array_splice($tokens, $idx, 0, [$line]);
-        return implode('', array_map(static fn($t): string => is_array($t) ? (string) $t[1] : (string) $t, $tokens));
+        $fileExact = array_flip(array_map(static fn($f) => ltrim((string) $f, '/\\'), $filesWl));
+        foreach (array_keys($files) as $rel) {
+            $r = ltrim($rel, '/\\');
+            if (isset($fileExact[$r])) {
+                $skip[$rel] = true;
+                continue;
+            }
+            foreach ($dirPat as $pat) {
+                if (preg_match($pat, $r) === 1) {
+                    $skip[$rel] = true;
+                    break;
+                }
+            }
+        }
+        return $skip;
     }
 
     /** @return array<string,string> rel => abs（按相对路径排序，保证可复现） */

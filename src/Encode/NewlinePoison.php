@@ -4,8 +4,8 @@
  *
  * 在最终源码中注入大量换行符（\n）。配额规则（1.0.9 起）：
  *
- *     换行总数 = ceil(输入源码字节数 ÷ divisor)，divisor 默认 5（即 1/5），
- *     并受 min 下限保护（默认 0，仅用于极小文件兜底）。
+ *     换行总数 = ceil(输入源码字节数 ÷ divisor)，divisor 默认 2（即 1/2），
+ *     并受 min 下限保护（默认 0，仅用于极小文件兜底）。例如 10KB 源码注入约 5000 个换行。
  *
  * 这些换行**全部插入代码内部**（token 与 token 之间的安全边界），不留"尾部死区"：
  *   - 主体：均匀散布在整份源码的每个 token 边界上（语句间、表达式内、括号里），
@@ -55,7 +55,7 @@ final class NewlinePoison
     public static function targetFor(int $bytes, array $opts = []): int
     {
         $min = max(0, (int) ($opts['min'] ?? 0));
-        $divisor = (int) ($opts['divisor'] ?? 5);
+        $divisor = (int) ($opts['divisor'] ?? 2);
         if ($bytes > 0 && $divisor >= 1) {
             return max((int) ceil($bytes / $divisor), $min);
         }

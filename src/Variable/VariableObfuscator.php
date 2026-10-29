@@ -83,6 +83,17 @@ final class VariableObfuscator
             }
         }
 
+        // 白名单变量：显式保留指定变量名（带不带 $ 均可），不重命名。
+        // 目录模式跨文件一致（符号按名保留），单文件模式同样生效。
+        $wlVars = (array) ($config->get('whitelist')['variables'] ?? []);
+        foreach ($wlVars as $v) {
+            $v = (string) $v;
+            $v = $v !== '' ? '$' . ltrim($v, '$') : '';
+            if ($v !== '') {
+                $this->excluded[$v] = true;
+            }
+        }
+
         // 收集待混淆变量名（按首次出现顺序）
         $names = [];
         foreach ($tokens as $i => $tok) {

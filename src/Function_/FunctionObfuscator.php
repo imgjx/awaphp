@@ -64,6 +64,15 @@ final class FunctionObfuscator
             }
         }
 
+        // 白名单函数：保留指定函数名（跨文件模式由 SymbolTable::preserve 处理，
+        // 单文件模式在此剔除本地映射，声明点与调用点都保持原名）。
+        $wlFuncs = (array) ($config->get('whitelist')['functions'] ?? []);
+        if ($wlFuncs !== []) {
+            foreach ($wlFuncs as $fn) {
+                unset($map[(string) $fn]);
+            }
+        }
+
         // 3) 重命名声明点 + 调用点 + 裸常量引用（B6）
         $ranges = $this->classRanges($tokens);
         $definedConsts = $this->definedConstants($tokens);

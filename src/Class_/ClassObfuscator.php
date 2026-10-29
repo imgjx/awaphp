@@ -80,6 +80,29 @@ final class ClassObfuscator
             }
         }
 
+        // 白名单类：保留指定类名（FQCN 或短名均可）。跨文件模式由 SymbolTable::preserve
+        // 处理；单文件模式在此剔除本地映射，声明点与引用都保持原名。
+        // namespaces/interfaces/traits 在白名单里归入 classes 一并保留。
+        $wlClasses = array_merge(
+            (array) ($config->get('whitelist')['classes'] ?? []),
+            (array) ($config->get('whitelist')['namespaces'] ?? []),
+            (array) ($config->get('whitelist')['interfaces'] ?? []),
+            (array) ($config->get('whitelist')['traits'] ?? [])
+        );
+        if ($wlClasses !== []) {
+            foreach ($wlClasses as $cn) {
+                $cn = (string) $cn;
+                unset($map[$cn]);
+                // 白名单给短名时，按短名兜底剔除所有匹配 FQCN
+                foreach (array_keys($map) as $fqcn) {
+                    $short = str_contains($fqcn, '\\') ? substr($fqcn, (int) strrpos($fqcn, '\\') + 1) : $fqcn;
+                    if ($short === $cn) {
+                        unset($map[$fqcn]);
+                    }
+                }
+            }
+        }
+
         // B3a/B3b：预标记参数列表区间（T_FUNCTION/T_FN 后的首个括号）与 catch 子句区间。
         // 通用 prev/next 规则覆盖不到两类位置：
         //  - 联合/交叉类型的首段：function f(A|B $x) 的 A，prev 是 '('；
