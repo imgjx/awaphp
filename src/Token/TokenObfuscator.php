@@ -150,6 +150,20 @@ final class TokenObfuscator
             if (in_array($type, self::CASE_SKIP, true)) {
                 continue;
             }
+            // `::class` 伪常量中的 class 必须保持小写：大小写化会变成 Foo::CLASS，
+            // 在常量表达式上下文（属性默认值 / const / 参数默认值）触发
+            // "Constant expression contains invalid operations"。类声明处的 class 关键字本就
+            // 大小写不敏感，此处针对 `T_DOUBLE_COLON` 之后的 T_CLASS 跳过即可，其它位置照常随机化。
+            if ($type === T_CLASS) {
+                $p = $i - 1;
+                while ($p >= 0 && is_array($tokens[$p])
+                    && in_array($tokens[$p][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    $p--;
+                }
+                if ($p >= 0 && is_array($tokens[$p]) && $tokens[$p][0] === T_DOUBLE_COLON) {
+                    continue;
+                }
+            }
             // 整串必须是关键字本身（注释/字符串内容天然不匹配）
             $low = strtolower($text);
             if (!isset(self::KEYWORDS[$low])) {

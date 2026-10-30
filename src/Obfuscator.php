@@ -711,6 +711,10 @@ final class Obfuscator
                 } else {
                     $code = $this->applyShellLayer($name, $params, $code);
                 }
+                // 序言归一：前序壳层若把 declare(strict_types=1)/namespace 推离首位（守卫代码
+                // 插到声明之前），在此把序言语句提到 <?php 之后最前，避免
+                // "strict_types declaration must be the very first statement"。
+                $code = DeclareHoist::reconcile($code);
                 // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住（破解需先破外层混淆）
                 $code = $this->shieldIfNeeded($code, $name);
             }
@@ -1201,6 +1205,8 @@ final class Obfuscator
             $this->logger->warn("{$label}应用失败，回滚：" . $e->getMessage());
             return $code;
         }
+        // 序言归一：壳层 wrap 可能把 declare/namespace 推离首位，先修复再校验（完整保留壳，不回退）
+        $next = DeclareHoist::reconcile($next);
         $check = (new Validator($this->logger))->checkSyntaxString($next);
         if (!$check['ok']) {
             $this->logger->warn("{$label}产物未通过 php -l，回滚");

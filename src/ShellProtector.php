@@ -83,6 +83,15 @@ final class ShellProtector
         }
         $check = (new Validator($logger))->checkSyntaxString($out);
         if (!$check['ok']) {
+            // 先尝试序言归一修复（把被推后的 declare/namespace 提到最前），修复成功则复用，
+            // 避免自保护整体回退（壳仍在，但自保护强度丢失）。
+            $fixed = DeclareHoist::reconcile($out);
+            if ($fixed !== $out) {
+                $c2 = (new Validator($logger))->checkSyntaxString($fixed);
+                if (!empty($c2['ok'])) {
+                    return $fixed;
+                }
+            }
             // 调试钩子：OBF_SHELL_DUMP=<目录> 时把非法产物与原始输入落盘，便于定位
             $dumpDir = getenv('OBF_SHELL_DUMP');
             if (is_string($dumpDir) && $dumpDir !== '') {

@@ -42,7 +42,8 @@ final class DeclareHoist
         // declare(...) ; —— 值必须是字面量，故用 [^;{}]* 限制在同一条语句内
         $declare = 'declare\s*\([^;{}]*\)\s*;';
         // namespace X; / namespace X {（`namespace\foo()` 运算符形式没有空白，不会误配）
-        $ns = 'namespace\s+[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*\s*[;{]';
+        // 允许 namespace 与名字之间有注释（混淆后常注入 /* ... */ 注释）：`namespace /* x */ app;`
+        $ns = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*\s*[;{]';
 
         while (true) {
             if (!preg_match('/\A(' . $ws . ')(' . $declare . '|' . $ns . ')/is', $body, $mm)) {
@@ -53,6 +54,61 @@ final class DeclareHoist
         }
 
         return ['prefix' => $prefix, 'body' => $body];
+    }
+
+    /**
+     * 序言归一（字符串版，用于壳层包裹之后）：把被壳层推离首位的
+     * `declare(strict_types=1)` / `namespace X;` / `namespace X {` 语句重新提到
+     * `<?php` 之后最前，避免产物 "strict_types declaration must be the very first statement"
+     * 或 "Namespace declaration statement has to be the very first statement"。
+     *
+     * 与 split() 的区别：split() 只能提取"开标签之后连续的前缀"；本方法扫描整段代码，
+     * 把散落在正文中间的序言语句也搬回最前——壳层注入的守卫代码把 declare 挤到中部时，
+     * split() 无能为力，必须靠本方法兜底。
+     *
+     * 幂等：declare/namespace 本就在最前的文件原样返回。无开标签的片段流原样返回。
+     *
+     * @return string
+     */
+    public static function reconcile(string $code): string
+    {
+        if (!preg_match('/<\?(php)?/i', $code, $m, PREG_OFFSET_CAPTURE)) {
+            return $code;
+        }
+        $openEnd = (int) $m[0][1] + strlen((string) $m[0][0]);
+        $prefix  = substr($code, 0, $openEnd);   // "<?php"（含可能的尾部空白待后处理）
+        $rest    = substr($code, $openEnd);
+
+        $ws       = '(?:[ \t\r\n]|\/\*.*?\*\/|\/\/[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z))*';
+        $declare  = 'declare\s*\([^;{}]*\)\s*;';
+        // 允许 namespace 与名字之间有注释（混淆后常注入 /* ... */ 注释）：`namespace /* x */ app;`
+        $ns       = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*\s*[;{]';
+
+        // 开头已有的序言（连续 declare/ns，可含空白/注释），保持不变。
+        // 注意用 (?:ws|declare|ns)* 而非 \A(ws)(...)*：壳层守卫可能插在 <?php 之后、
+        // 序言之前，此时开头不再是空白，旧写法会整体失配并原样返回（不修复）。
+        if (!preg_match('/\A((?:' . $ws . '|' . $declare . '|' . $ns . ')*)/is', $rest, $mm)) {
+            return $code;
+        }
+        $prologue = $mm[1];
+        $body     = substr($rest, strlen($prologue));
+
+        // 从正文里提取"被推后的" declare/ns 语句，移到 prologue 之后
+        $moved = '';
+        $body  = preg_replace_callback(
+            '/(?:' . $declare . '|' . $ns . ')/is',
+            static function (array $x) use (&$moved): string {
+                $moved .= "\n" . $x[0];
+                return '';
+            },
+            $body,
+            -1,
+            $count
+        );
+        if ($count === 0) {
+            return $code; // 无散落序言，原样返回（幂等）
+        }
+        return rtrim($prefix) . "\n" . ltrim($prologue) . $moved . $body;
     }
 
     /**
