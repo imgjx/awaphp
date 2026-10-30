@@ -2069,8 +2069,18 @@ trait VmExprTrait
                     }
                     // 已定义常量（如 PHP_VERSION / M_PI）：编译期求值
                     if (defined($t[1])) {
+                        $val = constant($t[1]);
+                        // 资源 / 对象常量不能进常量池：PUSH_C 的常量池是要被序列化并
+                        // 加密写进产物的，resource（STDERR / STDOUT / STDIN）与对象
+                        // 序列化后会被压成 int 0，运行期 `fwrite(STDERR, ...)` 直接
+                        // TypeError。这类常量改走运行期 constant() 求值。
+                        if (is_resource($val) || is_object($val)) {
+                            $c->next();
+                            $code[] = [VmOp::CONST_FETCH, $t[1]];
+                            return;
+                        }
                         $c->next();
-                        $code[] = [VmOp::PUSH_C, constant($t[1])];
+                        $code[] = [VmOp::PUSH_C, $val];
                         return;
                     }
                     // 本文件 const 语句声明的用户常量：运行期求值（PHP 常量本就是运行期实体）

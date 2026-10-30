@@ -1706,6 +1706,13 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
     $__mseg = is_array($__P['main']) && isset($__P['main']['jt']) ? ['jt'=>$__P['main']['jt'],'dt'=>isset($__P['main']['dt'])?$__P['main']['dt']:[]] : null;
     // 顶层帧：与产物生成路径一致（引用传帧变量表，PHP 8 禁数组字面量按引用传递，先赋临时变量）
     $__v = [];
+    // CLI 主脚本的 $argv / $argc 是**普通全局变量**（不是超全局），VM 在函数作用域内执行，
+    // 不播种就取不到——`$argv[1]` 恒为 null，命令行工具/定时任务直接跑错分支。
+    // 这里按 PHP 全局作用域语义从 $GLOBALS 复制进顶层帧。
+    if (array_key_exists('argv', $GLOBALS)) {
+        $__v['$argv'] = $GLOBALS['argv'];
+        $__v['$argc'] = array_key_exists('argc', $GLOBALS) ? $GLOBALS['argc'] : count((array) $GLOBALS['argv']);
+    }
     return $__exec($__main, $__v, null, [], $__mseg, true, $__P['mainET'] ?? null);
 }
 

@@ -22,7 +22,10 @@
  */
 
 return [
-    // ===================== low：轻量入门，但已含基础 VM 壳 + 轻度控制流 =====================
+    // ===================== low：轻量入门（性能优先，不含 VM），token 级 + GZ 壳 =====================
+    // 性能取向：VM 壳会把每条语句交给解释器逐条执行，是唯一「与业务代码量成正比」的
+    // 运行时开销。low 档定位为「几乎无感」的入门保护，因此只保留 token 级变换 +
+    // 一次性解压的 GZ 壳，冷启动后无额外逐语句成本。
     'low' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 8]],
@@ -32,14 +35,15 @@ return [
             ['name' => 'controlflow',  'params' => ['cfg' => 'low', 'goto' => 1, 'goto_cpx' => 4]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => false, 'chunks' => 3, 'morph' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 2]],
         ],
         'shell_shield' => true,
         'shell_shield_intensity' => 1,
     ],
 
-    // ===================== mid：VM 平坦化 + P8 架构方向（morph/keychain/builtinReplace/fakeFog/probe）+ 动态垃圾 =====================
+    // ===================== mid：token 级全开 + EVAL 多层壳 + 反调试（性能优先，不含 VM） =====================
+    // 相对 low 增加：类名/Token 形态/运行时垃圾/死代码/静态化，以及 EVAL 多层壳与反调试探针。
+    // 仍然不含 VM —— 运行时开销集中在「加载时一次解码」，不随业务语句数增长。
     'mid' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 12]],
@@ -54,8 +58,7 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 4]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['flatten' => true, 'chunks' => 5, 'morph' => true, 'fakeFog' => 20, 'probe' => 4, 'keychain' => true, 'builtinReplace' => true, 'junk' => 20]],
-            ['name' => 'shell:eval',   'params' => ['layers' => 4]],
+            ['name' => 'shell:eval',   'params' => ['layers' => 3]],
             ['name' => 'shell:anti_debug', 'params' => ['probes' => 'ext,func,ini', 'intensity' => 2]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 3]],
         ],

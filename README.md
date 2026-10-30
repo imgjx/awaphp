@@ -1,7 +1,7 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.0.9-blue)
-![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?logo=php&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 > 基于 PHP `tokenizer` 的源码混淆与运行时保护工具：把可读的 PHP 源码转换成**等价、可运行、但极难静态逆向**的形态。
@@ -16,10 +16,11 @@
 
 设计目标：
 
-- **正确性优先**：任何一层变换若导致 `php -l` 失败或运行结果变化，整层自动回滚到上一安全版本。
+- **正确性优先**：任何一层变换若导致 `php -l` 失败或运行结果变化，先**就地修复**（序言归一、常量形态纠正等）再校验；修复不成立才回退到上一安全版本——正常情况下**每一层壳都完整保留**，不会「破一层少一层」。
 - **token 级而非字符串级**：所有混淆作用于解析后的 token 流，避免脆弱的正则替换破坏代码。
 - **可复现**：给定相同的输入与 salt，产出的代码本体逐字节一致（仅文件头时间戳不同）。
 - **渐进式**：每一类保护都是独立开关，可按项目需要自由组合强度。
+- **性能可选**：`low` / `mid` 档不含 VM 解释器，运行时开销贴近原生；VM 只在 `high` 及以上启用（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
 
 ---
 
@@ -55,11 +56,17 @@
 - **德摩根律**：`!(A && B)` ⇄ `!A || !B`。
 - **三元逆置**：`C ? T : E` ⇄ `!C ? E : T`。
 - **for → while**：无 `continue` 的 `for` 改写为等价 `while`。
-- 刻意**排除** `a*2→a<<1`、`a+1→-~a` 等浮点 / 溢出不保真的「小聪明」改写；每轮结束 `php -l` 校验，失败自动回滚上一版本。
+- 刻意**排除** `a*2→a<<1`、`a+1→-~a` 等浮点 / 溢出不保真的「小聪明」改写；每轮结束 `php -l` 校验，失败回滚上一版本。
+
+### 深度反 AST（anti_ast）
+把语句位上的**常量字面量**从"一眼可读"改写成"要算一下才知道"（`--anti-ast` 或分层配置的 `anti_ast` 层）：
+- `echo 'ok';` → 累加器 + 恒等表达式（`strlen(md5(1))===32` / `ord('A')===65` / `base64_decode(base64_encode(x))` 等积木拼出的等价取值）。
+- 每条改写都在**构建期 `eval` 逐字节校验**（改写前 vs 改写后输出一致），不通过则该条原样保留，绝不带着风险出厂。
+- 直接破坏「搜字符串常量定位敏感逻辑」的静态套路。
 
 ### 虚拟机保护（VM）
 把整段程序编译为**自定义字节码**，由内置解释器逐条解密执行（`--vm`）：
-- **模块链接**（`--vm-linker`）：命中清单的函数调用内联进同一 Program，产物无 `include`、无模块路径、调用关系无法静态还原。默认启用**内置模块**（`--vm-link-modules`，默认开）：自动加载包内 `src/Module/builtin/`，将 `base64_encode` / `base64_decode` 等 **70 个**原生函数替换为内置自定义实现并内联进字节码，调用点不再暴露原生函数名。可通过 `--vm-linker=<dir>` 指定自定义模块目录覆盖。
+- **模块链接**（`--vm-linker`）：命中清单的函数调用内联进同一 Program，产物无 `include`、无模块路径、调用关系无法静态还原。默认启用**内置模块**（`--vm-link-modules`，默认开）：自动加载包内 `src/Module/builtin/`，将 `base64_encode` / `base64_decode` 等 **70+ 个**原生函数替换为内置自定义实现并内联进字节码，调用点不再暴露原生函数名（含 `md5` / `sha1` / `crc32` —— 纯 PHP 重写，与原生逐字节一致，纯属"把函数名从产物里抹掉"的那一类）。可通过 `--vm-linker=<dir>` 指定自定义模块目录覆盖。
 - **字节码垃圾指令**（`--vm-junk=N`）：注入「真实执行但栈平衡、无副作用」的废 opcode，淹没真实逻辑。
 - **诱饵函数 / fake-fog**（`--vm-fake-fog=N`）：永不调用的栈平衡假函数，膨胀函数表。
 - **分片密钥链**（`--vm-keychain`）：`kᵢ = sha256(kᵢ₋₁ ‖ i)`，单点密钥无法还原其它分片。
@@ -80,7 +87,32 @@
 > 全部注入**仅产生纯注释**，绝不切入字符串 / heredoc / 已有注释内部，不影响语法与运行；随机分布由 salt 确定性派生，相同盐可复现。注入点位于自校验 / 毒化壳之内，一并纳入防篡改指纹。
 
 ### 加壳
-- GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`，支持 `7.4 / 8.0 / 8.1 / 8.2 / 8.3`，默认 `8.1`）。
+- GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`，支持 `7.4 / 8.0 / 8.1 / 8.2 / 8.3 / 8.4 / 8.5`，默认 `8.1`）。
+- **换行缠绕量为源码字节的 1/2**（`--newline-poison-divisor=2`，源 10KB → 约 5000 换行）：均匀撒进 token 边界、部分嵌入最长 base64 载荷、头部兜底——「删空白 / 美化」即改动密文布局。
+
+### 工程模式与白名单（v1.1.0）
+- **目录级构建保留类名原名**：整套系统模式下类名不改名（PSR-4 按「命名空间 + 文件名」加载，改名即找不到类），并**废弃 `awaphp_autoload.php`** 这套 classmap 方案——不再需要任何自动加载补丁。
+- **白名单七维**：`dirs` / `files` / `variables` / `functions` / `classes` / `constants` / `methods`（CLI：`--whitelist-dirs` / `--whitelist-files` / `--whitelist-vars` / `--whitelist-funcs` / `--whitelist-classes` / `--whitelist-consts` / `--whitelist-methods`）。命中即整文件原样拷贝或保留符号原名。
+- **框架兼容开关**：`--var-keep-props`（保留实例属性名，ORM 字段映射 / 获取器 / `toArray()` 依赖）、`--var-keep-params`（保留参数名，路由注入 / DI / 验证器按名取参依赖）。
+- **ThinkPHP 8 开箱配置**：`other/thinkphp8.config.php`（等价 `high` 分层 + 关类名混淆 + 框架目录整跳过 + 内置白名单）。
+
+### 一键构建（ThinkPHP 8）
+`other/thinkphp8-build.php` 把「扫描项目 → 自动生成白名单 → 调混淆器」合成一条命令：
+
+```bash
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+```
+
+它用 tokenizer 静态解析 `app/`（可加 `--scan=`），自动收集：
+
+| 收集项 | 为什么必须保留原名 |
+|---|---|
+| 全部类 / 接口 / trait / enum（FQCN） | PSR-4 自动加载、`class_exists`、容器绑定按名字查找 |
+| 全部全局函数 | 助手函数 / 全局函数按名调用 |
+| 顶层 `const` | 常量按名引用 |
+| 控制器 public 方法 + 魔术方法 | 路由按「控制器/方法」调度，改名即 404/500 |
+
+`--dry-run` 只扫描并打印白名单，`--app-only` 只混淆 `app/`（快速迭代），`--output` 指定输出目录（默认 `<项目>_obf`）。
 
 ### OPcache 辅助编译（Zend 字节码）
 混淆产物写出后，可「加一道工」将其编译为 **Zend 字节码**（`--opcache`）：
@@ -180,6 +212,12 @@ php entry.php --input=app.php --output=app_obf.php \
 # OPcache 辅助编译为 Zend 字节码（部分虚拟主机如 EP 默认启用 OPcache）
 php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-salt
 
+# ThinkPHP 8 一键构建（自动扫描项目生成白名单 → 混淆）
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+
+# 性能基准（生成 docs/PERFORMANCE.md 里那张表）
+php tests/perf_bench.php --runs=5 --levels=low,mid
+
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
 php tests/hardening_test.php    # 加固专项：32 项
@@ -195,9 +233,11 @@ php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多�
 
 ## 文档
 
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)：**性能损耗对比**——各档位运行时开销、开销归因（哪个开关在花钱）、ThinkPHP 8 真实页面延迟、选型建议。
 - [`docs/VM_FEATURES.md`](docs/VM_FEATURES.md)：虚拟机保护的设计细节、局限与已知修复记录（含 heredoc 支持、do-while 修复、指令集精简等）。
-- [`docs/THINKPHP8_GUIDE.md`](docs/THINKPHP8_GUIDE.md)：ThinkPHP8 项目混淆实战教程——配置推荐（`--var-keep-props` / `--var-keep-params`）、FQCN 类改名与 classmap 自动加载机制、基线验证方法与常见边界。
+- [`docs/THINKPHP8_GUIDE.md`](docs/THINKPHP8_GUIDE.md)：ThinkPHP8 项目混淆实战教程——白名单模式、一键构建脚本、`--var-keep-props` / `--var-keep-params`、基线验证方法与常见边界。
 - [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)：全部命令行开关清单。
+- [`docs/DEBUG.md`](docs/DEBUG.md)：`OBF_*` 调试钩子集中说明。
 
 ---
 

@@ -268,7 +268,7 @@ function obf_help(): string
       --shell-shield-intensity= 逐层壳自保护强度 1-3（默认随等级：low=1/mid,high=2/max,ultra=3；
                        仅控制语义变换激进度，变量重命名始终开启）
       --no-shell-shield  关闭逐层壳自保护（每层壳解码逻辑不再被外层混淆护住，破解更易）
-      --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3（默认 8.1）
+      --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3|8.4|8.5（默认 8.1）
       --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
                        EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）
       --junk-funcs=    诱饵函数数量（>0 生效，拟真命名，干扰逆向）

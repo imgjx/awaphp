@@ -618,8 +618,11 @@ final class VariableObfuscator
     {
         $super = [
             '$GLOBALS', '$_GET', '$_POST', '$_REQUEST', '$_SERVER', '$_SESSION',
-            '$COOKIE', '$_FILES', '$_ENV', '$http_response_header', '$php_errormsg',
+            '$_COOKIE', '$_FILES', '$_ENV', '$http_response_header', '$php_errormsg',
             '$this',
+            // CLI 主脚本的全局变量（不是超全局，由引擎在 global 作用域预置）：
+            // 改名后 VM / eval 上下文里就取不到，命令行工具与定时任务读不到参数。
+            '$argv', '$argc',
         ];
         foreach ($super as $s) {
             $this->excluded[$s] = true;

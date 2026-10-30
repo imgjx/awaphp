@@ -18,7 +18,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；`.php` 文件需 `return` 一个数组，可直接用 PHP 表达式与注释，便于维护） |
-| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案；v1.0.3 起各档启用 P8 架构方向、新增最高档 ultra=真·嵌套 VM） |
+| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案）。**v1.1.0 起 `low` / `mid` 不再包含 VM**（性能优先，运行时开销 ≈ 原生）；VM 自 `high` 起启用。各档开销对比见 `docs/PERFORMANCE.md` |
 | `-low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |

@@ -124,13 +124,14 @@ final class ClassPreservingVm
                 $padVar = $pm[1];
             }
             $php = preg_replace_callback(
-                '/\$__vmv=\[\];\$' . preg_quote($runVar, '/') . '\(\$' . preg_quote($pVar, '/') . "\['main'\]/",
+                '/\$__vmv=\[\];((?:if\(array_key_exists\(\'argv\',\$GLOBALS\)\)\{[^}]*\})?)\$'
+                    . preg_quote($runVar, '/') . '\(\$' . preg_quote($pVar, '/') . "\['main'\]/",
                 static function (array $mm) use ($runVar, $pVar, $uid, $padVar): string {
                     $padExp = $padVar !== '' ? "\$GLOBALS['__awa_pad_{$uid}']=\$" . $padVar . ';' : '';
                     return $padExp
                         . "\$GLOBALS['__awa_run_{$uid}']=\$" . $runVar
                         . ";\$GLOBALS['__awa_prog_{$uid}']=\$" . $pVar
-                        . ";\$__vmv=[];\$" . $runVar . "(\$" . $pVar . "['main']";
+                        . ";\$__vmv=[];" . $mm[1] . '$' . $runVar . '($' . $pVar . "['main']";
                 },
                 $php,
                 1

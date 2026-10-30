@@ -18,7 +18,7 @@ final class PhpVersion
     /** @var array<string,int> */
     private static array $map = [
         '7.4' => 70400, '8.0' => 80000, '8.1' => 80100,
-        '8.2' => 80200, '8.3' => 80300,
+        '8.2' => 80200, '8.3' => 80300, '8.4' => 80400, '8.5' => 80500,
     ];
 
     private string $target = '8.1';

@@ -47,13 +47,16 @@ php entry.php \
 
 ### 3.1 等级选择
 
-| 等级 | 适用 | 要点 |
-| --- | --- | --- |
-| `--level=mid` | 内部系统、低价值目标 | VM 平坦化 + 函数间接调用，构建快 |
-| `--level=high`（**推荐**） | 常规商业交付 | VM 状态机 + 全 P8 方向 + 反调试 / 防 hook / 防篡改，保护与体积平衡 |
-| `--level=max` / `--ultra` | 高价值单文件 / 对抗性场景 | 加结构指纹毒化壳（`struct-poison`）；注意壳层更厚，首次加载略慢 |
+> **重要**：`--level` 预设**不含框架白名单 / 参数保留项**。直接对 TP8 的 `app/` 用 `--level=xxx`，会出现「控制器不存在:xxx」这类运行期问题（类名/方法名或许保住了，但全局函数、常量、动态符号没有白名单兜底）。**框架项目请用 `other/thinkphp8.config.php` 或一键脚本**（见 §3.4），它们内置了白名单 + `var_keep_props` / `var_keep_params`。
 
-TP8 示例项目用 `--level=high` 验证通过全部 26 行基线。
+| 方案 | 适用 | 要点 |
+| --- | --- | --- |
+| `thinkphp8.config.php`（**推荐**） | 常规商业交付 | 等价 `high` 分层 + 白名单 + 框架兼容项；含 VM，单请求约 0.8~1.4 s（见 `docs/PERFORMANCE.md`） |
+| 一键脚本 `other/thinkphp8-build.php` | 想省掉手工白名单 | 自动扫描 `app/` 收集类 / 函数 / 常量 / 控制器方法 → 合并进配置 → 构建 |
+| `--level=mid`（需自备白名单） | 高频接口、在意响应时间 | 无 VM，运行时开销 ≈ 原生 1.5×；用 `--whitelist-*` 补齐框架符号 |
+| `--level=max` / `--ultra` | 高价值单文件 | 只压核心文件，别整站用（千倍级运行时开销） |
+
+TP8 示例项目用 `thinkphp8.config.php` 验证通过全部 26 行基线。
 
 ### 3.2 必开参数
 
@@ -72,6 +75,42 @@ TP8 示例项目用 `--level=high` 验证通过全部 26 行基线。
 ```
 
 **函数名混淆**（`func` 层）建议保持默认开启：TP8 里普通函数极少参与反射；但若项目里有 `call_user_func('函数名字符串')` 这类动态调用，动态符号保守排除会自动跳过该名字（§1）。
+
+---
+
+### 3.4 一键构建脚本（自动白名单）
+
+`other/thinkphp8-build.php` = 「扫描项目 → 生成白名单 → 调混淆器」三合一。
+
+```bash
+# 最简：在项目根目录执行，自动向上探测项目
+php /path/to/awaphp/other/thinkphp8-build.php
+
+# 常用：显式指定项目、输出目录与盐（同盐可复现）
+php other/thinkphp8-build.php \
+    --project=/var/www/shop \
+    --output=/var/www/shop_obf \
+    --salt=team-salt-2026
+
+# 先看它会收集什么（不构建）
+php other/thinkphp8-build.php --project=/var/www/shop --dry-run
+
+# 只混淆 app/（快速迭代；vendor/public 等自行保留）
+php other/thinkphp8-build.php --project=/var/www/shop --app-only
+```
+
+它扫描 `app/`（可用 `--scan=` 加目录），自动把下列符号写进白名单：
+
+| 收集项 | 正则来源 | 不保留会怎样 |
+|---|---|---|
+| 类 / 接口 / trait / enum（FQCN） | `class` / `interface` / `trait` / `enum` 声明 | PSR-4 找不到类、容器绑定失败 |
+| 全局函数 | 顶层 `function` 声明 | 助手函数按名调用失败 |
+| 顶层 `const` | `const X = …` | 常量引用变 `null` |
+| 控制器 public 方法 + `__` 魔术方法 | 控制器类内 `public function` | 路由 404、魔术方法失效 |
+
+其余参数（`--config` / `--php` / `--keep-config`）见脚本 `--help`。
+
+> 脚本只做**静态扫描**，不执行项目代码；扫描耗时约数毫秒（22 文件 1 ms）。构建耗时与产物体积见 `docs/PERFORMANCE.md`。
 
 ---
 

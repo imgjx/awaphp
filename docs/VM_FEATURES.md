@@ -558,7 +558,9 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 
 ### 11.15 v1.1.0：白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 哈希内置模块
 
-> 本版本**仅本地提交，不发布**（不打 tag / 不建 GitHub Release / 不推镜像）。
+> 已发布为正式版：tag `1.1.0` + GitHub Release + `origin` 推送。
+
+- **`low` / `mid` 预设不再包含 VM**：VM 把每条语句交给解释器执行，是唯一「与执行语句数成正比」的运行时开销。低中档定位为性能优先，现只保留 token 级变换 + 一次性解码的编码壳（`low` = token 级 + GZ 壳；`mid` = token 级全开 + EVAL 3 层 + 反调试 + GZ 壳）。VM 自 `high` 起启用。各档实测开销见 `docs/PERFORMANCE.md`（`low` ≈1.17×、`mid` ≈1.49×、`high`/`max` 千倍级）。
 
 - **白名单模式（替代 classmap 自动加载器）**：
   - 废弃 `awaphp_autoload.php` 自动加载方案。**目录级构建（整套系统模式）强制保留类名原名**——类名混淆与 PSR-4「命名空间 + 文件名」约定根本冲突（改名后框架按原名找不到类），去掉自动加载器后改为工程模式不重命名类，框架自动加载照常工作。

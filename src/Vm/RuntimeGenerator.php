@@ -395,12 +395,20 @@ final class VmRuntimeGenerator
         }
         $nativePre = $inlineNative !== [] ? implode("\n", $inlineNative) . "\n" : '';
 
+        // CLI 主脚本的 $argv / $argc 是普通全局变量（非超全局），VM 在函数作用域内执行，
+        // 不播种就取不到——命令行工具/定时任务里 `$argv[1]` 恒为 null，会跑错分支。
+        $argvSeed = '$__vmv=[];'
+            . 'if(array_key_exists(\'argv\',$GLOBALS)){'
+            . '$__vmv[\'$argv\']=$GLOBALS[\'argv\'];'
+            . '$__vmv[\'$argc\']=array_key_exists(\'argc\',$GLOBALS)?$GLOBALS[\'argc\']:count((array)$GLOBALS[\'argv\']);'
+            . '}';
+
         $php = "<?php\n" . $nativePre . "(function(){\n"
             . $decodeHelpers . "\n"
             . $decodePrologue . "\n"
             . $probePrelude . "\n"
             . $body['php'] . "\n"
-            . '$__vmv=[];$' . $runVar . '($' . $pVar . "['main'],\$__vmv,null,[],true,\$".$pVar."['mainET']??null);\n"
+            . $argvSeed . '$' . $runVar . '($' . $pVar . "['main'],\$__vmv,null,[],true,\$".$pVar."['mainET']??null);\n"
             . "})();\n";
 
         return [
