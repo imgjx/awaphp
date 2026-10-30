@@ -556,7 +556,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 
 
 
-### 11.15 v1.1.0-dev：白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 内置哈希
+### 11.15 v1.1.0：白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 哈希内置模块
 
 > 本版本**仅本地提交，不发布**（不打 tag / 不建 GitHub Release / 不推镜像）。
 

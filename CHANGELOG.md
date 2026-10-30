@@ -1,8 +1,8 @@
 # 更新日志（CHANGELOG）
 
-## v1.1.0-dev — 白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 内置哈希
+## v1.1.0 — 白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 哈希内置模块
 
-> 本版本已发布为**预发布版（prerelease）**：tag `1.1.0-dev`、GitHub Release 与 `origin` 推送均已就绪；属开发预览线，不进稳定版本序列。
+> 正式版。tag `1.1.0` 与 GitHub Release 已发布，`origin` 已推送。此前的 `1.1.0-dev` 预发布线由本版本取代（预发布 tag 保留作为历史快照）。
 
 ### 新增
 - **白名单模式（替代 classmap 自动加载器）**：废弃 `awaphp_autoload.php` 自动加载方案；目录级构建（整套系统模式）强制保留类名原名（类名混淆与 PSR-4「命名空间 + 文件名」约定冲突）。白名单是配置项 `whitelist`，支持排除目录 / 文件（整文件原样拷贝）与变量 / 函数 / 类（含接口 / 特质 / 命名空间）/ 常量 / 方法（跨文件保持原名）；CLI：`--whitelist-dirs` / `--whitelist-files` / `--whitelist-vars` / `--whitelist-funcs` / `--whitelist-classes` / `--whitelist-consts` / `--whitelist-methods`。
