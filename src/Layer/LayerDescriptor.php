@@ -119,7 +119,7 @@ final class LayerDescriptor
                 'desc'  => '关键字大小写随机化 / 字面量等价形态 / 引号翻转 / heredoc 化，杀死 grep 特征',
                 'params' => [
                     'case'    => ['label' => '关键字大小写', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'ecHo/WhIlE/fUnCtIoN，反关键字 grep'],
-                    'literal' => ['label' => '字面量形态', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'true→!0、(int)↔(integer)、array()→[]'],
+                    'literal' => ['label' => '字面量形态', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'true→!0、false→!1、array()→[]'],
                     'quote'   => ['label' => '引号翻转', 'type' => self::T_BOOL, 'default' => true, 'hint' => "'abc'↔\"abc\"（安全时）"],
                     'heredoc' => ['label' => 'heredoc 化', 'type' => self::T_BOOL, 'default' => false, 'hint' => '纯字面量串改写为 nowdoc 形态'],
                     'decoy'   => ['label' => '诱饵注释数', 'type' => self::T_INT, 'default' => 3, 'min' => 0, 'max' => 50, 'hint' => '顶层误导性注释（0=关闭）'],

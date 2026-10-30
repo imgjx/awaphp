@@ -6,9 +6,11 @@
  *  1. 关键字大小写随机化：PHP 关键字大小写不敏感，ecHo / WhIlE / fUnCtIoN / (InTeGeR)
  *     均合法。直接杀死针对关键字的 grep / 正则特征匹配（现有 AST 级工具反而会把
  *     大小写规范化回去，暴露关键词）。
- *  2. 字面量等价形态：true→!0、false→!1；类型转换别名互换 (int)↔(integer)、
- *     (bool)↔(boolean)、(float)↔(double)（PHP 8 已移除 (real)/(unset)，不用）；
- *     array(...)→[...]（只走安全方向：array() 解构在 PHP 里非法，反向是语义雷区）。
+ *  2. 字面量等价形态：true→!0、false→!1；array(...)→[...]（只走安全方向：array() 解构在
+ *     PHP 里非法，反向是语义雷区）。**不做** (int)↔(integer) / (bool)↔(boolean) /
+ *     (float)↔(double) 这类转换别名互换——PHP 8.5 起非规范 cast 被标记 deprecated，
+ *     框架常用 set_error_handler 把它升级成异常（产物直接 500），而同义词对反编译毫无
+ *     阻力（分析工具都会归一化），收益为零、风险真实。详见 CAST_ALIAS 处说明。
  *  3. 引号形态安全翻转：'abc'↔"abc"，仅在没有转义/插值/冲突引号时翻转，
  *     否则原样保留（保守优先）。
  *  4. heredoc/nowdoc 变换（--token-heredoc，默认关）：纯字面量串改写为
@@ -236,7 +238,10 @@ final class TokenObfuscator
                 }
             }
 
-            // 类型转换别名互换（(unset) 在 PHP 8 已移除，T_UNSET_CAST 不碰）
+            // 类型转换别名互换。(unset) 在 PHP 8 已移除，T_UNSET_CAST 不碰。
+            // 注意：CAST_ALIAS 自 v1.1.1 起为空表（PHP 8.5 把 (integer)/(boolean)/(double)
+            // 判为 Non-canonical cast 并弃用，框架会把它升级成异常），故本分支当前恒不命中。
+            // 保留结构以便将来按目标 PHP 版本重新填表启用。
             if ($type === T_INT_CAST || $type === T_BOOL_CAST || $type === T_DOUBLE_CAST) {
                 $low = strtolower($tok[1]);
                 if (isset(self::CAST_ALIAS[$low])) {
