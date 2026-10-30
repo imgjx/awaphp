@@ -13,8 +13,11 @@
 - **调试钩子集中到 `docs/DEBUG.md`**：`OBF_VM_SRC` / `OBF_CPV_OUT` / `OBF_VM_NEST` / `OBF_SHELL_DUMP` / `OBF_LINT_DUMP` / `OBF_VM_DEBUG` 六个环境变量的位置、内容、典型排查流程统一归档。
 - **`--config` 支持 PHP 数组配置文件**：`.php` 配置文件需 `return` 一个数组（可直接用 PHP 表达式与注释，维护更友好），语义与 JSON 配置完全一致（含顶层 `layers` 即走分层分支）。`Config::fromPhpFile` / `fromLayeredArray` 新增。
 - **ThinkPHP 8 白名单配置范例 `other/thinkphp8.config.php`**：基于 `high` 分层、显式关闭类名混淆（兼容 PSR-4）、开启 `var_keep_props` / `var_keep_params`，并内置整目录跳过（vendor/config/route/runtime/public…）与变量 / 函数 / 类 / 方法白名单，开箱即用。
+- **ThinkPHP 8 一键构建脚本 `other/thinkphp8-build.php`**：自动定位项目根（含 `app/` 且含 `think` / `composer.json` / `vendor/topthink`）、递归遍历 PHP 文件、用 `token_get_all` 单遍扫描自动生成白名单（命名空间 / 类 / 接口 / trait / enum / 全局函数 / 常量 / 控制器 public 方法），合并进基础配置后直接调用 `entry.php` 构建。参数：`--project` / `--output` / `--salt` / `--config` / `--scan` / `--app-only` / `--dry-run` / `--keep-config` / `--php`。实测整站 523 文件 8.9 s / 4.34 MB，端点全 200；`--app-only` 22 文件 9.4 s。
+- **性能损耗对比文档 `docs/PERFORMANCE.md`**：结论表、可复现测量方法、混合负载与 VM 轻负载数据、ThinkPHP 8 真实页面延迟、逐开关开销归因、构建耗时与产物体积、选型建议。配套基准脚本 `tests/perf_workload.php`（token 级档）、`tests/perf_workload_vm.php`（VM 档轻负载）、`tests/perf_bench.php`（构建 + 多次采样取中位数 + 语义一致性校验）。
 
 ### 变更
+- **`low` / `mid` 预设不再使用 VM 解释器（性能优先）**。VM 壳把每条语句交给 PHP 写的解释器逐条执行，是唯一「运行时开销与业务代码量成正比」的开关，也是 token 级档与 VM 档之间的量级断崖（实测混合负载 `low` 1.17× / `mid` 1.49×，`high` 超出 180 s 上限）。现 `low` = token 级 + `shell:gz`，`mid` = token 级全开 + `shell:eval(3)` + `shell:anti_debug` + `shell:gz`，两者运行时开销贴近原生；VM 自 `high` 起启用。需要 VM 级保护请用 `--level=high` 及以上。
 - 工程模式类名不再混淆（PSR-4 友好）；单文件模式仍可用 `--class-obf` 做 FQCN 类名混淆。
 
 ### 修复（逐层壳「部分回退」根治）
