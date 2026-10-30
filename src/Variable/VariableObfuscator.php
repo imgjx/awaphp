@@ -141,11 +141,24 @@ final class VariableObfuscator
                 continue;
             }
             if (is_array($tok) && $tok[0] === T_STRING) {
-                // 仅处理 `->prop` / `?->prop` 形态：前一个有效 token 必须是对象运算符，
-                // 再往前一个必须是对象表达式（$var / ) / ] / $this 等），避免误伤
-                // 同名常量（TITLE）或函数名（title()）。
+                // 仅处理 `$var->prop` / `$var?->prop` 形态：前一个有效 token 必须是对象
+                // 运算符，且运算符左侧必须是**裸变量**（`$this` 或普通变量 `$x`）。
+                //
+                // 边界为什么是"裸变量"而不是"任意对象表达式"：
+                //   `declaredProps` 只记录【本文件】类体顶层声明的属性，改名也只对本文件
+                //   声明的类成立。裸变量形态（`$this->v`、`$cp->v`、`$row->v`）在封闭工程里
+                //   几乎总是本文件声明的那个类，改名与声明同源、必须同步；而链式形态
+                //   （`$this->app->request`、`$c->inner->v`、`f()->prop`、`$a[0]->prop`）的
+                //   目标对象由**另一层**决定（往往是框架/vendor 类型），它的属性名与本地
+                //   改名表无关。早期实现只看 `->` 就改写末段，把 `$this->app->request` 变成
+                //   `$this->app->_gfc92adb3`；think\App 没有该属性 → 落到 Container::__get()
+                //   → 容器按标识符解析类名失败 → "controller not exists"、整站 500。
+                //   这是 ThinkPHP8 站点混淆后正文为空的根因之一。
                 $prev = Parser::prevSignificant($tokens, $i);
                 if ($prev < 0 || !is_array($tokens[$prev]) || !in_array($tokens[$prev][0], $objOps, true)) {
+                    continue;
+                }
+                if (!$this->isPlainVarPropertyTarget($tokens, $prev)) {
                     continue;
                 }
                 $mapped = $this->propRenameFor($tok[1], $map);
@@ -612,6 +625,26 @@ final class VariableObfuscator
     {
         $next = Parser::nextSignificant($tokens, $i);
         return $next >= 0 && is_string($tokens[$next]) && $tokens[$next] === '(';
+    }
+
+    /**
+     * 判断 `$i` 处的对象运算符（`->` / `?->`）左侧是否是一个**裸变量**。
+     *
+     * 用于把属性改名限制在 `$this->prop` / `$var->prop` 上——只有这两类形态能保证
+     * "改的确实是本文件所声明类的属性"。以下形态一律不改（对象类型在单文件分析里
+     * 无从确定，改了就是拿别人的属性名开刀）：
+     *   - `$this->app->request`（左侧是 T_STRING `app`）
+     *   - `$c->inner->v`、`f()->prop`（左侧是 `)`）、`$a[0]->prop`（左侧是 `]`）
+     *
+     * @param array<int,mixed> $tokens
+     * @param int              $i 对象运算符所在下标
+     */
+    private function isPlainVarPropertyTarget(array $tokens, int $i): bool
+    {
+        $left = Parser::prevSignificant($tokens, $i);
+        return $left >= 0
+            && is_array($tokens[$left])
+            && $tokens[$left][0] === T_VARIABLE;
     }
 
     private function collectExclusions(array $tokens): void

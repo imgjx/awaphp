@@ -187,9 +187,11 @@ foreach ([
     ok($got === $hdrNative, "{$tag} 运行输出一致", 'got=' . substr($got, 0, 60));
 }
 
-echo "===== [4] 换行缠绕配额（1/5 字节）=====\n";
+echo "===== [4] 换行缠绕配额（ceil(bytes/divisor)，divisor 默认 2）=====\n";
 // [4.1] 单元级：配额公式与"实际落地数"必须精确相等
-ok(NewlinePoison::targetFor(2394) === 479, '配额公式 ceil(bytes/5)', 'got=' . NewlinePoison::targetFor(2394));
+// 规格见 src/Encode/NewlinePoison.php 顶部注释：自 v1.0.9 起 divisor 默认 2（1/2 字节），
+// min 仅作极小文件下限。旧断言沿用 1/5 公式，与实现文档不符，v1.1.1 对齐。
+ok(NewlinePoison::targetFor(2394) === 1197, '配额公式 ceil(bytes/2)', 'got=' . NewlinePoison::targetFor(2394));
 ok(NewlinePoison::targetFor(1000, ['divisor' => 10]) === 100, '配额公式可用 divisor 覆盖');
 $np = new NewlinePoison(new Logger(Logger::LEVEL_ERROR), new Salt('v109nl'));
 $plainSrc = "<?php\n" . str_repeat("\$x = 1;\n", 40);
@@ -207,9 +209,9 @@ ok($okN, '构建换行缠绕产物');
 if ($okN) {
     ok(lintOk($nlOut), '换行缠绕产物 php -l 通过');
     $bytes = (int) filesize($fixture);
-    $want = (int) ceil($bytes / 5);
+    $want = NewlinePoison::targetFor($bytes);
     $got = substr_count((string) file_get_contents($nlOut), "\n");
-    ok($got >= $want, '换行数不少于配额（1/5 字节）', "bytes={$bytes} want={$want} got={$got}");
+    ok($got >= $want, '换行数不少于配额', "bytes={$bytes} want={$want} got={$got}");
     ok($got <= (int) ($want * 1.6), '换行数未异常膨胀', "want={$want} got={$got}");
     ok(trim((string) run($nlOut)) === $native, '换行缠绕后运行输出一致');
 }

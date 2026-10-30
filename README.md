@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.1.1-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -20,7 +20,7 @@
 - **token 级而非字符串级**：所有混淆作用于解析后的 token 流，避免脆弱的正则替换破坏代码。
 - **可复现**：给定相同的输入与 salt，产出的代码本体逐字节一致（仅文件头时间戳不同）。
 - **渐进式**：每一类保护都是独立开关，可按项目需要自由组合强度。
-- **性能可选**：`low` / `mid` 档不含 VM 解释器，运行时开销贴近原生；VM 只在 `high` 及以上启用（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
+- **性能可选**：`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——ThinkPHP8 实测 `low` 6.0 ms / `mid` 12.2 ms（原生 1.76 ms）。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
 
 ---
 

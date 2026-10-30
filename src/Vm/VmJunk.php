@@ -275,7 +275,7 @@ final class VmJunk
                 continue;
             }
             $op = $ins[0];
-            if ($op !== VmOp::JMP && $op !== VmOp::JZ && $op !== VmOp::JNZ) {
+            if ($op !== VmOp::JMP && $op !== VmOp::JZ && $op !== VmOp::JNZ && $op !== VmOp::DISPATCH) {
                 continue;
             }
             $d = (int) ($ins[1] ?? 0);
@@ -285,7 +285,7 @@ final class VmJunk
         array_splice($seg, $at, 0, $snippet);
         // 3) 依"旧源/旧目标各自是否越过插入点"重算每处偏移并回写。
         //    jNew 即 splice 后该跳转指令的新下标，必定仍是一条跳转指令。
-        $jumpOps = [VmOp::JMP, VmOp::JZ, VmOp::JNZ];
+        $jumpOps = [VmOp::JMP, VmOp::JZ, VmOp::JNZ, VmOp::DISPATCH];
         foreach ($jumps as $jOld => $tgtOld) {
             $jNew = $jOld + ($jOld >= $at ? $len : 0);
             $tgtNew = $tgtOld + ($tgtOld >= $at ? $len : 0);

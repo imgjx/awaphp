@@ -69,12 +69,18 @@ final class TokenObfuscator
         T_FUNC_C, T_NS_C, T_ATTRIBUTE,
     ];
 
-    /** 转换别名表：PHP 8 仍合法的 cast 同义词（(real)/(unset)/(binary) 已移除，不收） */
-    private const CAST_ALIAS = [
-        '(int)'   => ['(int)', '(integer)'],
-        '(bool)'  => ['(bool)', '(boolean)'],
-        '(float)' => ['(float)', '(double)'],
-    ];
+    /**
+     * 转换别名表：仅收录在**全部受支持 PHP 版本**上都合法且非弃用的写法。
+     *
+     * PHP 8.0 移除 `(real)` / `(unset)` / `(binary)`；PHP 8.5 起又把非规范写法
+     * `(integer)` / `(boolean)` / `(double)` 标记为 deprecated（"Non-canonical cast"）。
+     * 后者虽仍能解析，但框架普遍用 set_error_handler 把 deprecation 升级成异常
+     * （ThinkPHP 的 Error 初始化器即如此），产物在 8.5 上会直接 500：
+     *   `Non-canonical cast (integer) is deprecated, use the (int) cast instead`
+     * 这类同义词对反编译毫无阻力（任何工具都会归一化），却换来真实的兼容性风险，
+     * 故整表留空 —— 保留常量定义以便将来按目标版本重新启用。
+     */
+    private const CAST_ALIAS = [];
 
     public function __construct(
         private Salt $salt,

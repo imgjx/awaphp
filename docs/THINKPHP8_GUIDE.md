@@ -47,14 +47,21 @@ php entry.php \
 
 ### 3.1 等级选择
 
-> **重要**：`--level` 预设**不含框架白名单 / 参数保留项**。直接对 TP8 的 `app/` 用 `--level=xxx`，会出现「控制器不存在:xxx」这类运行期问题（类名/方法名或许保住了，但全局函数、常量、动态符号没有白名单兜底）。**框架项目请用 `other/thinkphp8.config.php` 或一键脚本**（见 §3.4），它们内置了白名单 + `var_keep_props` / `var_keep_params`。
+> **v1.1.1 起，五档预设可直接用于 TP8**：预设默认开启 `var_keep_props` / `var_keep_params`
+> （框架按名读写的属性——`Model::$name` 决定表名——与路由参数据此保全），并且修掉了三处会
+> 让整站「空正文 / 控制器不存在 / 每请求 exit」的缺陷。实测 `low` / `mid` / `high` / `max` / `ultra`
+> 五档 × 11 端点（含 POST、缓存、聚合、签名中间件 401 分支）**逐字节等价**。
+>
+> 仍建议框架项目叠加白名单（见 §3.4）：白名单解决的是**跨文件动态符号**（`call_user_func('helper')`、
+> 常量名、方法名字符串），预设解决的是**属性名与参数名**，两者互补。
 
 | 方案 | 适用 | 要点 |
 | --- | --- | --- |
-| `thinkphp8.config.php`（**推荐**） | 常规商业交付 | 等价 `high` 分层 + 白名单 + 框架兼容项；含 VM，单请求约 0.8~1.4 s（见 `docs/PERFORMANCE.md`） |
+| `--level=low` / `mid`（**推荐起点**） | 常规交付、高频接口 | 无 VM；TP8 `GET /shop/products` 实测 6.0 ms / 12.2 ms（原生 1.76 ms） |
+| `--level=high` | 核心业务、可接受数十毫秒 | 含 VM；同端点 57.9 ms（见 `docs/PERFORMANCE.md`） |
+| `thinkphp8.config.php` | 需要白名单兜底的大型项目 | 等价 `high` 分层 + 白名单 + 框架兼容项 |
 | 一键脚本 `other/thinkphp8-build.php` | 想省掉手工白名单 | 自动扫描 `app/` 收集类 / 函数 / 常量 / 控制器方法 → 合并进配置 → 构建 |
-| `--level=mid`（需自备白名单） | 高频接口、在意响应时间 | 无 VM，运行时开销 ≈ 原生 1.5×；用 `--whitelist-*` 补齐框架符号 |
-| `--level=max` / `--ultra` | 高价值单文件 | 只压核心文件，别整站用（千倍级运行时开销） |
+| `--level=max` / `--ultra` | 高价值单文件 | 只压核心文件，别整站用（`high` 的 1.4~1.8 倍） |
 
 TP8 示例项目用 `thinkphp8.config.php` 验证通过全部 26 行基线。
 

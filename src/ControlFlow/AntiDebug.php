@@ -146,10 +146,21 @@ final class AntiDebug
             // --- phpdbg SAPI ---
             'sapi' => "if(defined('PHP_SAPI')&&PHP_SAPI==='phpdbg')\$r=true;",
             // --- 调用栈调试痕迹 ---
+            // 只认真正的调试/剖析器符号（xdebug_* / phpdbg_* / Xdebug\* / Blackfire\* …），
+            // **绝不用裸 'debug' 子串**：ThinkPHP 自带 think\debug\*、think\trace\TraceDebug、
+            // Laravel 的 Illuminate\Support\Debug 等，业务框架里叫 debug 的命名空间遍地都是，
+            // 用子串判定等于"正常应用必被判定为调试环境"，整站直接 exit(1)。
+            // （v1.1.1 修正：曾导致 max/ultra 档在 ThinkPHP8 上每个请求都被守卫终止。）
             'trace' => "\$bt=@debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);"
                 . "foreach(\$bt as \$f){"
                 . "foreach(array('class','function') as \$k){"
-                . "if(isset(\$f[\$k])&&(stripos(\$f[\$k],'debug')!==false||stripos(\$f[\$k],'xdebug')!==false||stripos(\$f[\$k],'phpdbg')!==false))\$r=true;"
+                . "if(!isset(\$f[\$k])||\$f[\$k]==='')continue;"
+                . "\$sy=(string)\$f[\$k];"
+                . "if(preg_match('/^(xdebug|phpdbg)_/i',\$sy))\$r=true;"
+                . "if(stripos(\$sy,'xdebug')!==false||stripos(\$sy,'phpdbg')!==false"
+                . "||stripos(\$sy,'blackfire')!==false||stripos(\$sy,'tideways')!==false"
+                . "||stripos(\$sy,'xhprof')!==false||stripos(\$sy,'uopz')!==false"
+                . "||stripos(\$sy,'runkit')!==false)\$r=true;"
                 . "}}",
         ];
         $out = '';

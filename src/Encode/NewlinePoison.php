@@ -329,10 +329,33 @@ final class NewlinePoison
         return function () use (&$seed): float {
             $seed = ($seed + 0x6D2B79F5) & 0xffffffff;
             $t = $seed;
-            $t = (($t ^ ($t >> 15)) * (1 | $t)) & 0xffffffff;
-            $t = (($t ^ ($t >> 7)) * (61 | $t)) & 0xffffffff;
+            // mulberry32 的两次乘法是 32 位无符号乘：直接写 `$x * $y & 0xffffffff` 时
+            // 积可达 (2^32-1)^2 ≈ 1.8e19，超出 PHP_INT_MAX(9.2e18) → 提升为 float，
+            // 掩码运算触发 "not representable as an int, cast occurred" 告警且精度丢失。
+            // 故拆成高低 16 位分块相乘，全程留在 int 内（见 mul32()）。
+            $t = self::mul32($t ^ ($t >> 15), 1 | $t);
+            $t = self::mul32($t ^ ($t >> 7), 61 | $t);
             $t = ($t ^ ($t >> 14)) & 0xffffffff;
             return ($t >> 0) / 4294967296;
         };
+    }
+
+    /**
+     * 32 位无符号乘法（结果 mod 2^32），全程使用 int 运算避免 float 精度丢失与告警。
+     *
+     * 把两个操作数各拆成低/高 16 位：a*b = aLo*bLo + (aLo*bHi + aHi*bLo)*2^16 + aHi*bHi*2^32，
+     * 末项在 mod 2^32 下为 0，直接丢弃；中间项只需保留系数的低 16 位再左移。
+     */
+    private static function mul32(int $a, int $b): int
+    {
+        $a &= 0xffffffff;
+        $b &= 0xffffffff;
+        $aLo = $a & 0xffff;
+        $aHi = ($a >> 16) & 0xffff;
+        $bLo = $b & 0xffff;
+        $bHi = ($b >> 16) & 0xffff;
+        $lo  = $aLo * $bLo;
+        $mid = ($aLo * $bHi + $aHi * $bLo) & 0xffff;
+        return ($lo + ($mid << 16)) & 0xffffffff;
     }
 }

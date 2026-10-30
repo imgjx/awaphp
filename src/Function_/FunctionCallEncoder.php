@@ -40,6 +40,16 @@ final class FunctionCallEncoder
         $enc = (bool) $config->get('func_call_enc');
         // B5a：本文件中声明了引用参数的函数，其调用点不编码
         $byRefFuncs = $this->byRefFunctions($tokens);
+        // 被调函数的**声明命名空间**（混淆名 => 命名空间，全局为 ''）。
+        //
+        // 为什么必须有：`call_user_func('name', …)` 里的字符串是**绝对**函数名，PHP 不会
+        // 按当前命名空间回退解析。而 `name(…)` 这种直接调用会。于是命名空间文件里
+        //   namespace app\demo; function make_gen(){…}  …  make_gen(2)
+        // 被改成 `call_user_func('_o36…', 2)` 后，会在全局找 `_o36…` 而失败：
+        //   TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback,
+        //              function "_o36…" not found
+        // 字符串必须写成 `app\demo\_o36…`（或全局函数的前缀 `\`）。
+        $declNs = $this->declFuncNamespaces($tokens);
 
         $n = count($tokens);
         $i = 0;
@@ -62,9 +72,10 @@ final class FunctionCallEncoder
                                 $i++;
                                 continue;
                             }
+                            $fqn = $this->qualifiedFuncName($tok[1], $declNs);
                             $nameExpr = $enc
-                                ? "base64_decode('" . base64_encode($tok[1]) . "')"
-                                : "'" . $tok[1] . "'";
+                                ? "base64_decode('" . base64_encode($fqn) . "')"
+                                : "'" . $fqn . "'";
                             $inner = $this->emitRange($tokens, $next + 1, $close - 1);
                             $call = $inner === ''
                                 ? "call_user_func({$nameExpr})"
@@ -82,6 +93,77 @@ final class FunctionCallEncoder
 
         $this->logger->debug('函数调用混淆：调用点已改写为间接调用');
         return $out;
+    }
+
+    /**
+     * 收集「命名空间级函数声明」所在的命名空间：函数名 => 命名空间（全局命名空间为 ''）。
+     *
+     * 判定要点：
+     *  - 进入 T_NAMESPACE 后记录当前命名空间（支持 `namespace A\B;` 与 `namespace A\B { }`）；
+     *  - 只有花括号深度 <=1 的 T_FUNCTION 才算命名空间级函数：分号式 namespace 的顶层
+     *    深度为 0，花括号式 namespace 的顶层为 1，类方法的深度必然 >=2，借此天然排除方法。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<string,string>
+     */
+    private function declFuncNamespaces(array $tokens): array
+    {
+        $map = [];
+        $ns = '';
+        $depth = 0;
+        $n = count($tokens);
+        $nameToks = [T_STRING];
+        if (defined('T_NAME_QUALIFIED')) {
+            $nameToks[] = T_NAME_QUALIFIED;
+        }
+        if (defined('T_NAME_FULLY_QUALIFIED')) {
+            $nameToks[] = T_NAME_FULLY_QUALIFIED;
+        }
+        for ($i = 0; $i < $n; $i++) {
+            $tok = $tokens[$i];
+            if (is_string($tok)) {
+                if ($tok === '{') {
+                    $depth++;
+                } elseif ($tok === '}') {
+                    $depth--;
+                }
+                continue;
+            }
+            if (!is_array($tok)) {
+                continue;
+            }
+            if ($tok[0] === T_NAMESPACE) {
+                $name = '';
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $t = $tokens[$j];
+                    if (is_string($t) && ($t === ';' || $t === '{')) {
+                        break;
+                    }
+                    if (is_array($t) && (in_array($t[0], $nameToks, true) || $t[0] === T_NS_SEPARATOR)) {
+                        $name .= $t[1];
+                    }
+                }
+                $ns = trim($name, '\\');
+                continue;
+            }
+            if ($tok[0] === T_FUNCTION && $depth <= 1) {
+                $next = Parser::nextSignificant($tokens, $i);
+                if ($next >= 0 && is_array($tokens[$next]) && $tokens[$next][0] === T_STRING) {
+                    $map[$tokens[$next][1]] = $ns;
+                }
+            }
+        }
+        return $map;
+    }
+
+    /**
+     * 把函数短名补成「可直接当字符串回调」的绝对名：`name` → `A\B\name`。
+     * @param array<string,string> $declNs
+     */
+    private function qualifiedFuncName(string $name, array $declNs): string
+    {
+        $ns = $declNs[$name] ?? '';
+        return $ns === '' ? $name : $ns . '\\' . $name;
     }
 
     /**

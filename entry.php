@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.0');
+define('OBFUSCATOR_VERSION', '1.1.1');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -124,6 +124,17 @@ function obf_parse_args(array $argv): array
             $out['mutual_comments'] = false;
             continue;
         }
+        // 预设默认开启的"可运行性"基线（见 src/config.presets.php 的 $FRAMEWORK_SAFE）。
+        // 目标代码确为封闭世界（纯库 / 单文件脚本 / 不继承框架基类）时可关掉，
+        // 让属性名与参数名也参与重命名，换取更高强度。
+        if ($a === '--no-var-keep-props') {
+            $out['var_keep_props'] = false;
+            continue;
+        }
+        if ($a === '--no-var-keep-params') {
+            $out['var_keep_params'] = false;
+            continue;
+        }
         if (str_starts_with($a, '--')) {
             $body = substr($a, 2);
             if (str_contains($body, '=')) {
@@ -197,8 +208,10 @@ function obf_help(): string
 变量 / 函数 / 类
       --var-length=    变量名混淆后长度
       --var-split=     变量值拆分段数（>1 生效）
-      --var-keep-props   保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开）
-      --var-keep-params  保留方法参数名不改（ThinkPHP 等按参数名绑定/命名实参时必须开）
+      --var-keep-props   保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开；预设默认已开）
+      --var-keep-params  保留方法参数名不改（ThinkPHP 等按参数名绑定/命名实参时必须开；预设默认已开）
+      --no-var-keep-props    【仅封闭代码】允许重命名属性名（默认保留）
+      --no-var-keep-params   【仅封闭代码】允许重命名参数名（默认保留）
       --func-length=   函数名混淆后长度
       --func-call      函数调用混淆（间接调用）
       --func-call-enc  函数调用编码（包装名字）

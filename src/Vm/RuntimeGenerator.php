@@ -1016,7 +1016,7 @@ $___CALLMETHOD___=function($obj,$m,$args,&$cv=null)use(&$___RUN___,$___P___,$___
 $___TOSTR___=function($v)use(&$___TOSTR___,$___P___,$___META___,&$___CALLMETHOD___){if(is_object($v)){if(isset($v->$___META___)&&is_string($v->$___META___)&&isset($___P___['classes'][$v->$___META___]['methods']['__toString'])){$r=$___CALLMETHOD___($v,'__toString',[]);if(!is_string($r)){throw new \TypeError('__toString() must return a string value');}return $r;}}if(is_array($v)){return 'Array';}return (string)$v;};
 $___INSTOF___=function($v,$cls)use($___P___,$___META___){if(is_object($v)){if(isset($v->$___META___)&&is_string($v->$___META___)){$c=$v->$___META___;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64){if($c===$cls){return true;}if(isset($___P___['classImpl'][$c][$cls])){return true;}$c=$___P___['classParents'][$c]??null;}return false;}}return $v instanceof $cls;};
 $___CCO___=function($cls,$name)use($___P___){$c=$cls;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64&&isset($___P___['classes'][$c])){if(array_key_exists($name,$___P___['classes'][$c]['consts']??[])){return $c;}foreach(array_keys($___P___['classImpl'][$c]??[]) as $if){if(isset($___P___['classes'][$if])&&array_key_exists($name,$___P___['classes'][$if]['consts']??[])){return $if;}}$c=$___P___['classParents'][$c]??null;}return null;};
-$___VMCB___=function($cb)use(&$___RUN___,$___P___,$___META___,&$___CALLMETHOD___,&$___PAD___,&$___CALLEDCLS___){if(is_string($cb)&&isset($___P___['funcs'][$cb])){$s=$___P___['funcs'][$cb];$sp=$___P___['funcParams'][$cb]??[];$fet=$___P___['funcET'][$cb]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$fet){$___EMPTYV___=[];return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$fet);};}if(is_array($cb)&&count($cb)===2){$o=$cb[0];$m=$cb[1];if(is_object($o)&&isset($o->$___META___)&&isset($___P___['classes'][$o->$___META___]['methods'][$m])){return function(...$a)use(&$___CALLMETHOD___,$o,$m){return $___CALLMETHOD___($o,$m,$a);};}if(is_string($o)&&isset($___P___['classes'][$o]['methods'][$m])){$s=$___P___['classes'][$o]['methods'][$m];$sp=$___P___['classParams'][$o][$m]??[];$cet=$___P___['classET'][$o][$m]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$o,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$o;try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}if(is_string($cb)&&strpos($cb,'::')!==false){$p=explode('::',$cb,2);if(isset($___P___['classes'][$p[0]]['methods'][$p[1]])){$s=$___P___['classes'][$p[0]]['methods'][$p[1]];$sp=$___P___['classParams'][$p[0]][$p[1]]??[];$cet=$___P___['classET'][$p[0]][$p[1]]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$p,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$p[0];try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}return $cb;};
+$___VMCB___=function($cb)use(&$___RUN___,$___P___,$___META___,&$___CALLMETHOD___,&$___PAD___,&$___CALLEDCLS___){if(is_string($cb)&&!isset($___P___['funcs'][$cb])){$___NSCB___=ltrim($cb,'\\');$___NSSP___=strrpos($___NSCB___,'\\');if($___NSSP___!==false){$___NSSH___=substr($___NSCB___,$___NSSP___+1);if(isset($___P___['funcs'][$___NSSH___])){$cb=$___NSSH___;}}}if(is_string($cb)&&isset($___P___['funcs'][$cb])){$s=$___P___['funcs'][$cb];$sp=$___P___['funcParams'][$cb]??[];$fet=$___P___['funcET'][$cb]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$fet){$___EMPTYV___=[];return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$fet);};}if(is_array($cb)&&count($cb)===2){$o=$cb[0];$m=$cb[1];if(is_object($o)&&isset($o->$___META___)&&isset($___P___['classes'][$o->$___META___]['methods'][$m])){return function(...$a)use(&$___CALLMETHOD___,$o,$m){return $___CALLMETHOD___($o,$m,$a);};}if(is_string($o)&&isset($___P___['classes'][$o]['methods'][$m])){$s=$___P___['classes'][$o]['methods'][$m];$sp=$___P___['classParams'][$o][$m]??[];$cet=$___P___['classET'][$o][$m]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$o,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$o;try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}if(is_string($cb)&&strpos($cb,'::')!==false){$p=explode('::',$cb,2);if(isset($___P___['classes'][$p[0]]['methods'][$p[1]])){$s=$___P___['classes'][$p[0]]['methods'][$p[1]];$sp=$___P___['classParams'][$p[0]][$p[1]]??[];$cet=$___P___['classET'][$p[0]][$p[1]]??null;return function(...$a)use(&$___RUN___,&$___PAD___,$s,$sp,$cet,$p,&$___CALLEDCLS___){$___EMPTYV___=[];$___CALLEDCLS___[]=$p[0];try{return $___RUN___($s,$___EMPTYV___,null,$___PAD___($sp,$a),false,$cet);}finally{array_pop($___CALLEDCLS___);}};}}return $cb;};
 $___NEWOBJ___=function($cls,$args)use(&$___RUN___,$___P___,$___META___,$___MO___,$___RCLS___,$___FIXREF___,&$___CALLMETHOD___,$___BINDARGS___,&$___CALLEDCLS___){if(is_string($cls)&&strncmp($cls,"\x00lsb:",5)===0){$cls=($___CALLEDCLS___!==[])?$___CALLEDCLS___[count($___CALLEDCLS___)-1]:substr($cls,5);}if(isset($___P___['classes'][$cls])){$o=new \stdClass();$o->$___META___=$cls;$___PDEFS___=[];$___CC___=$cls;$___G___=0;while(is_string($___CC___)&&$___CC___!==''&&isset($___P___['classes'][$___CC___])&&$___G___++<64){foreach(($___P___['classes'][$___CC___]['props']??[]) as $pn=>$def){if(!array_key_exists($pn,$___PDEFS___)){$___PDEFS___[$pn]=$def;}}$___CC___=$___P___['classParents'][$___CC___]??null;}foreach($___PDEFS___ as $pn=>$def){$___EMPTYV___=[];$o->$pn=($def===null)?null:$___RUN___($def,$___EMPTYV___,null,[]);}if($___MO___($cls,'__construct')!==null){$___CALLMETHOD___($o,'__construct',$args);}return $o;}$___NOCV___=null;[$args,]=$___BINDARGS___($args,null,$___NOCV___);$cls=$___RCLS___($cls);$rc=new \ReflectionClass($cls);return $rc->newInstanceArgs($args);};
 // FCC：一等可调用创建（PHP 8.1+ $o->m(...) / C::m(...) 等）——与 runtime.php
 // 参考运行期 $__fcc 逐语义同步：创建期校验（方法不存在/非静态类名 FCC/null
@@ -1044,14 +1044,26 @@ $___RUN___=function($___CODE___,&$___VARS___,$___THIS___,$___INIT___,$___ISG___=
 if(!$___NW___&&isset($___CODE___[0][0])&&$___CODE___[0][0]===___GENHEADOP___){
 return (function($___GR___,$___GC___,&$___GV___,$___GT___,$___GI___,$___GS___,$___GE___){$___FB___=new \Fiber(function()use($___GR___,$___GC___,&$___GV___,$___GT___,$___GI___,$___GS___,$___GE___){return $___GR___($___GC___,$___GV___,$___GT___,$___GI___,$___GS___,$___GE___,true);});$___CV___=$___FB___->start();while(!$___FB___->isTerminated()){$___SV___=yield $___CV___[0]=>$___CV___[1];$___CV___=$___FB___->resume($___SV___);}return $___FB___->getReturn();})($___RUN___,$___CODE___,$___VARS___,$___THIS___,$___INIT___,$___ISG___,$___EXTAB___);}
 $___MCPLAIN___=[];$___MCFLAGS___=[];
-$___MCKEY___=substr(hash('sha256',(string)microtime(true).(string)memory_get_usage(),true),0,16);
-$___MCENC___=function($v)use(&$___MCKEY___,&$___MCPLAIN___){if(is_object($v)||is_resource($v)||$v===null){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}if(is_string($v)&&strlen($v)>4096){return ['#',$v];}if(is_array($v)&&count($v)>128){return ['#',$v];}try{$___MCS___=serialize($v);}catch(\Throwable $___E___){$___MCPLAIN___[]=$v;return count($___MCPLAIN___)-1;}$___MCN___=strlen($___MCS___);if($___MCN___===0){return '';}return $___MCS___^substr(str_repeat($___MCKEY___,(int)(($___MCN___+15)/16)),0,$___MCN___);};
-$___MCDEC___=function($v)use(&$___MCKEY___){if(is_object($v)||is_resource($v)||$v===null){return $v;}$___MCN___=strlen($v);if($___MCN___===0){return false;}return unserialize($v^substr(str_repeat($___MCKEY___,(int)(($___MCN___+15)/16)),0,$___MCN___));};
+// —— 操作数栈编码（性能关键路径）——
+// 旧实现把**每个**压栈值 serialize() 后用 str_repeat+substr 现算 XOR 掩码，出栈再
+// unserialize()：一次 serialize/unserialize 对（含 str_repeat 分配）约 0.3μs，而字节码
+// 解释器每执行一条指令至少要 1 压 1 弹 —— 实测该编码占 VM 总耗时的 75%（1160ms 中 881ms），
+// 解释执行本身的调度只占零头。现改为**按类型分流**：整型走单次 int XOR、字符串走单次
+// 串 XOR（掩码从预生成的 8KB 长掩码 substr，不再每次 str_repeat）、浮点/布尔/null 直存
+// （无法 XOR 且本就不泄露结构）、数组仍 serialize+XOR（保留最强保护）、大值与对象走原路径。
+// 保护强度不降：栈内仍无明文整型/字符串，只是把「每次重新造掩码 + 序列化」换成一次运算。
+$___MCKEY___=substr(hash('sha256',(string)microtime(true).(string)memory_get_usage(),true),0,32);
+$___MCPAD___=str_repeat($___MCKEY___,256);
+$___MCKI___=unpack('q',substr($___MCKEY___,0,8))[1];
+$___MCFLAG___=0;
+$___MCENC___=function($v)use(&$___MCPLAIN___,&$___MCFLAG___,$___MCPAD___,$___MCKI___){if(is_int($v)){$___MCFLAG___=3;return $v^$___MCKI___;}if(is_string($v)){$___MCL___=strlen($v);if($___MCL___===0){$___MCFLAG___=4;return '';}if($___MCL___>8192){$___MCFLAG___=2;return ['#',$v];}$___MCFLAG___=4;return $v^substr($___MCPAD___,0,$___MCL___);}if(is_float($v)||is_bool($v)||$v===null){$___MCFLAG___=5;return $v;}if(is_array($v)){try{$___MCS___=serialize($v);}catch(\Throwable $___MCE___){$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;}$___MCL___=strlen($___MCS___);if($___MCL___>8192){$___MCFLAG___=2;return ['#',$v];}$___MCFLAG___=0;return $___MCS___^substr($___MCPAD___,0,$___MCL___);}$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;};
 $___STACK___=[];$___MCFLAGS___=[];
-foreach($___INIT___ as $___IV___){$___E___=$___MCENC___($___IV___);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:(is_array($___E___)?2:0);}
-$___MCPUSH___=function($v)use(&$___STACK___,&$___MCFLAGS___,&$___MCENC___){$___E___=$___MCENC___($v);$___STACK___[]=$___E___;$___MCFLAGS___[]=is_int($___E___)?1:(is_array($___E___)?2:0);};
-$___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___F___=array_pop($___MCFLAGS___);$___S___=array_pop($___STACK___);return $___F___===1?$___MCPLAIN___[$___S___]:($___F___===2?$___S___[1]:$___MCDEC___($___S___));};
-$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCDEC___,&$___MCPLAIN___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___S___=$___STACK___[$___C___-1];return $___F___===1?$___MCPLAIN___[$___S___]:($___F___===2?$___S___[1]:$___MCDEC___($___S___));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
+foreach($___INIT___ as $___IV___){$___STACK___[]=$___MCENC___($___IV___);$___MCFLAGS___[]=$___MCFLAG___;}
+$___MCPUSH___=function($v)use(&$___STACK___,&$___MCFLAGS___,&$___MCENC___,&$___MCFLAG___){$___STACK___[]=$___MCENC___($v);$___MCFLAGS___[]=$___MCFLAG___;};
+// 出栈解码内联在闭包里（不再二次调用 $MCDEC）：每多一层闭包调用 ≈ 26ns，而每条字节码
+// 指令都要弹栈，解释 260 万条指令时这一层就是上百毫秒级开销。
+$___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___F___=array_pop($___MCFLAGS___);$___V___=array_pop($___STACK___);if($___F___===null)return null;if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};
+$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
 // —— 异常处理（try/catch/finally 真编译）——
 // 外层 try 包装内层取指循环：运行期 opcode 抛出的异常（除法错 / 调用用户码 / THROW）在此
 // 捕获，按异常表（exTab，绝对 pc 区间 + 处理器 pc）路由到 catch 或 finally；无处理器则重抛。
@@ -1137,6 +1149,16 @@ TPL;
             case VmOp::GEN_HEAD: return '';
             case VmOp::BOOL_NOT: return '$___MCPUSH___(!$___MCPOP___());';
             case VmOp::JMP:      return '$___PC___+=$___INS___[1];';
+            // —— 状态机专用指令（控制流平坦化的派发快路径）——
+            // 历史实现把派发写成「PUSH_V st; PUSH_C s; EQ; JZ 1; JMP」五条指令：每次状态转移
+            // 都要走 5 条指令、含 2 次压栈 1 次弹栈（各带一次栈编解码），而分支密集的代码
+            // 每轮循环有 2~3 次转移。实测这条链路把 high 档跑成 4546ms（关掉状态机仅 475ms），
+            // 近 10 倍开销全在派发上。现用两条专用指令压掉：
+            //   SET_ST   var, state        —— 一条指令写状态（省掉 PUSH_C+POP_V 的压/弹）
+            //   DISPATCH rel, var, state   —— 一条指令「比对+跳转」（省掉 PUSH_V/PUSH_C/EQ/JZ）
+            // 偏移沿用 [1] 位（与 JMP/JZ 一致），使既有的相对跳转重定位逻辑无需改动。
+            case VmOp::SET_ST:   return '$___VARS___[$___INS___[1]]=$___INS___[2];';
+            case VmOp::DISPATCH: return 'if(($___VARS___[$___INS___[2]]??null)===$___INS___[3]){$___PC___+=$___INS___[1];}';
             case VmOp::JZ:       return '$___TV___=$___MCPOP___();if(!$___TV___){$___PC___+=$___INS___[1];}';
             case VmOp::JNZ:      return '$___TV___=$___MCPOP___();if($___TV___){$___PC___+=$___INS___[1];}';
             case VmOp::CALL:     return '$___TARGC___=$___INS___[2];$___TARGS___=[];for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TARGS___[]=$___MCPOP___();}$___TARGS___=array_reverse($___TARGS___);if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___VARS___)){$___GFRAME___[$___TK___]=$___VARS___[$___TK___];}}}$___MCPUSH___($___CALLFUNC___($___INS___[1],$___TARGS___,$___VARS___));if($___ISG___&&!empty($___P___[\'globals\'])){foreach($___P___[\'globals\'] as $___TG___){$___TK___=\'$\'.$___TG___;if(array_key_exists($___TK___,$___GFRAME___)){$___VARS___[$___TK___]=$___GFRAME___[$___TK___];}}}';
@@ -1467,7 +1489,7 @@ TPL;
         if ($n === 0) {
             return $code;
         }
-        $isBranch = static fn ($op): bool => $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ;
+        $isBranch = static fn ($op): bool => $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ || $op === VmOp::DISPATCH;
         $isTerm = static fn ($op): bool => $op === VmOp::RET || $op === VmOp::RET_VOID
             || $op === VmOp::HALT || $op === VmOp::EXIT_ || $op === VmOp::EXIT_VOID;
 
@@ -1652,7 +1674,7 @@ TPL;
         if ($n === 0) {
             return $code;
         }
-        $isBranch = static fn ($op): bool => $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ;
+        $isBranch = static fn ($op): bool => $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ || $op === VmOp::DISPATCH;
         $isTerm = static fn ($op): bool => $op === VmOp::RET || $op === VmOp::RET_VOID
             || $op === VmOp::HALT || $op === VmOp::EXIT_ || $op === VmOp::EXIT_VOID;
 
@@ -1725,20 +1747,15 @@ TPL;
         // 4) 生成新指令流
         $new = [];
         $dispatchJmps = [];
-        // 派发序章：真实块 + 诱饵块，各 5 条（PUSH_V st / PUSH_C state / EQ / JZ 1 / JMP）
+        // 派发序章：每个状态一条 DISPATCH（比对 + 相对跳转），不匹配则顺延到下一条。
+        // 旧版每条 5 指令（PUSH_V / PUSH_C / EQ / JZ / JMP），而每次状态转移都要把这整条
+        // 链从头跑一遍——一个 4 块的循环每轮就有 2 次转移 × 20 条指令，全靠压栈弹栈做比较。
+        // 现每条 1 指令，链长降到 1/5，且不再碰操作数栈。
         for ($b = 0; $b < $numBlocks; $b++) {
-            $new[] = [VmOp::PUSH_V, self::ST_KEY];
-            $new[] = [VmOp::PUSH_C, $blockState[$b]];
-            $new[] = [VmOp::EQ];
-            $new[] = [VmOp::JZ, 1];
-            $new[] = [VmOp::JMP, 0];   // 回填 -> newBlockStart[b]
+            $new[] = [VmOp::DISPATCH, 0, self::ST_KEY, $blockState[$b]];   // 回填 -> newBlockStart[b]
         }
         foreach ($decoys as $dy) {
-            $new[] = [VmOp::PUSH_V, self::ST_KEY];
-            $new[] = [VmOp::PUSH_C, $dy];
-            $new[] = [VmOp::EQ];
-            $new[] = [VmOp::JZ, 1];
-            $new[] = [VmOp::JMP, 0];   // 回填 -> decoyStart[d]
+            $new[] = [VmOp::DISPATCH, 0, self::ST_KEY, $dy];               // 回填 -> decoyStart[d]
         }
 
         $newBlockStart = [];
@@ -1751,8 +1768,7 @@ TPL;
                 $op = $ins[0];
                 if ($op === VmOp::JMP) {
                     $tb = $blockOf[$i + 1 + ($ins[1] ?? 0)] ?? 0;
-                    $new[] = [VmOp::PUSH_C, $blockState[$tb]];
-                    $new[] = [VmOp::POP_V, self::ST_KEY];
+                    $new[] = [VmOp::SET_ST, self::ST_KEY, $blockState[$tb]];
                     $new[] = [VmOp::JMP, 0];
                     $dispatchJmps[] = count($new) - 1;
                 } elseif ($op === VmOp::JZ) {
@@ -1760,14 +1776,12 @@ TPL;
                     $fb = $blockOf[$i + 1] ?? 0;                     // 顺序落入（条件为真）
                     $new[] = [VmOp::JZ, 0];
                     $jzIdx = count($new) - 1;
-                    $new[] = [VmOp::PUSH_C, $blockState[$fb]];
-                    $new[] = [VmOp::POP_V, self::ST_KEY];
+                    $new[] = [VmOp::SET_ST, self::ST_KEY, $blockState[$fb]];
                     $new[] = [VmOp::JMP, 0];
                     $dispatchJmps[] = count($new) - 1;
                     $tbLabel = count($new);
                     $new[$jzIdx][1] = $tbLabel - ($jzIdx + 1);
-                    $new[] = [VmOp::PUSH_C, $blockState[$tb]];
-                    $new[] = [VmOp::POP_V, self::ST_KEY];
+                    $new[] = [VmOp::SET_ST, self::ST_KEY, $blockState[$tb]];
                     $new[] = [VmOp::JMP, 0];
                     $dispatchJmps[] = count($new) - 1;
                 } elseif ($op === VmOp::JNZ) {
@@ -1775,14 +1789,12 @@ TPL;
                     $fb = $blockOf[$i + 1] ?? 0;
                     $new[] = [VmOp::JNZ, 0];
                     $jnzIdx = count($new) - 1;
-                    $new[] = [VmOp::PUSH_C, $blockState[$fb]];
-                    $new[] = [VmOp::POP_V, self::ST_KEY];
+                    $new[] = [VmOp::SET_ST, self::ST_KEY, $blockState[$fb]];
                     $new[] = [VmOp::JMP, 0];
                     $dispatchJmps[] = count($new) - 1;
                     $trueLabel = count($new);
                     $new[$jnzIdx][1] = $trueLabel - ($jnzIdx + 1);
-                    $new[] = [VmOp::PUSH_C, $blockState[$tb]];
-                    $new[] = [VmOp::POP_V, self::ST_KEY];
+                    $new[] = [VmOp::SET_ST, self::ST_KEY, $blockState[$tb]];
                     $new[] = [VmOp::JMP, 0];
                     $dispatchJmps[] = count($new) - 1;
                 } else {
@@ -1799,13 +1811,13 @@ TPL;
             $dispatchJmps[] = count($new) - 1;
         }
 
-        // 5) 回填偏移
+        // 5) 回填偏移（DISPATCH 一条占一个下标，故块 b 的派发项就是 $b 本身）
         for ($b = 0; $b < $numBlocks; $b++) {
-            $jmpIdx = $b * 5 + 4;
+            $jmpIdx = $b;
             $new[$jmpIdx][1] = $newBlockStart[$b] - ($jmpIdx + 1);
         }
         foreach ($decoys as $d => $dy) {
-            $jmpIdx = ($numBlocks + $d) * 5 + 4;
+            $jmpIdx = $numBlocks + $d;
             $new[$jmpIdx][1] = $decoyStart[$d] - ($jmpIdx + 1);
         }
         foreach ($dispatchJmps as $jmpIdx) {

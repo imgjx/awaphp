@@ -112,9 +112,17 @@ final class ClassPreservingVm
         //    名），故不能写死字面量；改为从主调用行正则提取实际变量名后注入。
         //    - $___RUN___（运行时解释器闭包）→ $GLOBALS['__awa_run_<uid>']
         //    - $___P___（完整 program）→ $GLOBALS['__awa_prog_<uid>']（委托函数需同时取 classes/classET）
-        if (preg_match('/\$__vmv=\[\];\$([^\s(\[;]+)\(\$([^\s(\[;]+)\[\'main\'\]/', $php, $m)) {
-            $runVar = $m[1];
-            $pVar   = $m[2];
+        //    提取用的正则必须与下面 preg_replace_callback 的匹配式同构：运行时的主调用行
+        //    有两种形态 —— 裸调用 `$__vmv=[];$RUN($P['main'],…)`，或先注入 CLI 超全局
+        //    `$__vmv=[];if(array_key_exists('argv',$GLOBALS)){…}$RUN($P['main'],…)`。
+        //    早期这里只匹配裸形态，凡是带 argv 注入块（CLI/目录模式常见）的产物一律提取失败，
+        //    整段注入被静默跳过 → 委托函数里 `$GLOBALS['__awa_run_<uid>']` 恒为 null →
+        //    **类里每个方法都直接 `return null`**：控制器返回空串、接口回空对象，框架侧
+        //    表现为"页面只剩调试 trace"而毫无报错。v1.1.1 修正为可选 argv 块。
+        $mainCallRe = '/\$__vmv=\[\];((?:if\(array_key_exists\(\'argv\',\$GLOBALS\)\)\{[^}]*\})?)\$([^\s(\[;]+)\(\$([^\s(\[;]+)\[\'main\'\]/';
+        if (preg_match($mainCallRe, $php, $m)) {
+            $runVar = $m[2];
+            $pVar   = $m[3];
             // $___PAD___（参数规格补默认值闭包）同样被重命名。委托函数必须能拿到它：
             // 原生调用方（框架 / 反射 / call_user_func）只传"实际实参"，缺省的尾部参数
             // 由 VM 帧入口的 POP_V 逐个弹出——不补齐就会整体错位（$next 拿到 $request），

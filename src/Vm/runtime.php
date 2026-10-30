@@ -402,6 +402,18 @@ function __VMRUN__($__P)
     // 方法回调执行期间压 called class（static:: 延迟解析依据；对象回调压对象
     // 实际类，类名/字符串回调压该类）。
     $__vmcb = function($cb) use (&$__exec,$__P,&$__code,&$__callMethod,$__META,&$__pad,&$__calledCls){
+        // 命名空间兼容：VM 产物整体跑在全局命名空间里（`namespace { … }`），funcs 表按
+        // **短名**索引；而原生侧 `call_user_func('App\\Util\\foo')` 这类绝对名写法很常见
+        // （混淆器的调用编码也会为命名空间文件补全 FQN）。故按"绝对名未命中 → 退到短名"
+        // 兜底，使同一份字符串在 VM 内与原生下都能解析到目标函数。
+        if (is_string($cb) && !isset($__P['funcs'][$cb])) {
+            $__sn = ltrim($cb,'\\');
+            $__sp2 = strrpos($__sn,'\\');
+            if ($__sp2 !== false) {
+                $__short = substr($__sn,$__sp2+1);
+                if (isset($__P['funcs'][$__short])) { $cb = $__short; }
+            }
+        }
         if (is_string($cb) && isset($__P['funcs'][$cb])) {
             $seg = $__P['funcs'][$cb];
             $sp = $__P['funcParams'][$cb] ?? [];

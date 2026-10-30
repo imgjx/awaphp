@@ -1,5 +1,95 @@
 # 更新日志（CHANGELOG）
 
+## v1.1.1 — 五档全部跑得起来的框架 + VM 解释器提速 13× + low/mid 大幅加强
+
+> 主题：**"能跑"与"能挡"同时成立**。这一版把 ThinkPHP8 真实站点在 `low`/`mid`/`high`/`max`/`ultra`
+> **五档下全部跑通 11 个端点的逐字节等价**（此前 high 及以上会整站空正文），同时把 VM 解释器
+> 的运行时开销砍掉一个量级，并把 `low` / `mid` 从"轻量防护"提到"真能挡人"。
+
+### 新增
+- **`SET_ST` / `DISPATCH` 两条 VM 专用指令**：控制流平坦化的状态机派发由 5 条指令
+  （`PUSH_V st; PUSH_C s; EQ; JZ 1; JMP`）压成 1 条，状态写入由 2 条压成 1 条。这两个操作码
+  自 v1.0.x 就已在 `VmOp` 中定义却从未落地，本版首次实现并在 `VmJunk`（垃圾指令插入后的
+  相对跳转重定位）、`VmCombo::isRelJump`、`RuntimeGenerator::isBranch` 三处同步登记。
+- **CLI：`--no-var-keep-props` / `--no-var-keep-params`**：显式关掉属性名 / 参数名保留
+  （仅适用于"封闭代码"——纯库、单文件脚本、不继承框架基类）。默认保留，见下方「变更」。
+
+### 变更
+- **`low` 提升为"大部分混淆"**：`var(10) → func(12,call,enc) → class → number → string(xor,8,split2)
+  → controlflow(high,goto2) → semantic(1) → junk_runtime(2) → dead(2) → comment → stat
+  → token(case,literal,quote,decoy4) → ws → shell:eval(2) → shell:anti_debug(ext,func) → shell:gz(2)`。
+  相比 1.1.0 的"token 级 + gz 壳"，补齐了函数/类名混淆、数字与字符串编码、控制流与 GOTO、
+  语义恒等改写、运行时垃圾、诱饵注释、token 形态与 EVAL 双层壳。仍然**不用 VM**——VM 是唯一
+  「运行时开销与业务语句数成正比」的开关，`low` 的开销压在"加载时一次解码"上。
+- **`mid` 提升为"几乎所有混淆"**：在 `low` 基础上加 `anti_ast`、`semantic(2)`、`junk_runtime(8含tangle)`、
+  `token(decoy8)`、`shell:eval(5)`、`shell:anti_debug(ext,func,ini,env,sapi,int3)`、
+  `shell:anti_hook(strict)`、`shell:honeypot(2)`、`shell:newline_poison(divisor8)`、
+  `shell:structpoison(2)`、`shell:anti_tamper(4,shutdown)`。**唯一缺的只有 VM**。
+- **五档预设统一开启「可运行性基线」`var_keep_props` / `var_keep_params`**。属性重命名只在
+  "单文件封闭世界"里成立；真实应用里框架基类按属性名读写子类属性（ThinkPHP `Model::$name`
+  决定表名、`$table`/`$pk`/`$json`/`$hidden` 全是 vendor 代码在用 `$this->name` 读），
+  属性一改名表名就退化成类名派生的 `product`，直接 `no such table`。参数名同理（路由按参数名
+  注入、命名实参按名匹配）。放弃这两类标识符不影响任何强度维度：局部变量、函数、类、方法名
+  照旧全改，各档差异（VM / 壳层 / 控制流）完全不受影响。确知目标是封闭代码可用上面两个
+  `--no-*` 开关关掉。
+- **VM 操作数栈编码类型化**：旧实现把**每个**压栈值 `serialize()` 后用 `str_repeat` + `substr`
+  现算 XOR 掩码，出栈再 `unserialize()`；一次进出约 0.3 μs，而解释器每执行一条指令至少
+  一压一弹——实测该编码占 VM 运行时总耗时的 **75%**。现按类型分流：int 走单次整型 XOR、
+  string 走单次串 XOR（掩码从 8 KB 预算 pad 取 `substr`）、float/bool/null 直存、
+  array 仍 serialize+XOR、不可序列化值（含 Closure 的数组、resource）落明文槽。
+  出栈解码**内联**进 `MCPOP` / `MCPEEK`（省一次闭包调用 ≈ 26 ns/指令）。
+- **VM 状态机派发压缩**：见「新增」的两条指令；`high` 档同一负载从 **11 029 ms 降到 833 ms（13.2×）**。
+- `docs/PERFORMANCE.md` 全量换成本版实测数据；`docs/CLI_OPTIONS.md` / `docs/VM_FEATURES.md`
+  同步档位描述与性能数字。
+
+### 修复
+- **【严重】`ClassPreservingVm` 注入失效 → 类里每个方法都 `return null`（整站空正文、无报错）**。
+  该类要在生成的运行期里定位解释器变量名，用正则从主调用行提取；正则只认
+  `$__vmv=[];$RUN($P['main'],…)` 这一种形态，不认带 CLI 超全局播种块的
+  `$__vmv=[];if(array_key_exists('argv',$GLOBALS)){…}$RUN(…)`。凡命中后者（目录模式/CLI 常见），
+  整段 `$GLOBALS['__awa_run_<uid>']=…` 注入被**静默跳过**，顶层桩的委托函数一进函数就
+  `if($run===null||$prog===null) return null` —— 控制器返回空串、接口回空对象，框架侧表现为
+  "响应里只剩调试 trace 的 CSS、正文空白"且全程无异常。现正则与替换式同构，argv 块可选。
+  这是 1.1.0 及更早版本在 ThinkPHP8 上 `high`/`max`/`ultra` 全站空白的根因。
+- **【严重】`var` 层把链式访问的末段当成"本类属性"改名**。`$this->app->request` 里的 `request`
+  属于 `think\App`（容器绑定名），与本文件声明的同名属性无关；旧实现只看前一个 token 是 `->`
+  就改写，产物里变成 `$this->app->_gfc92adb3`，`think\App` 无此属性 → 落到
+  `Container::__get()` → 容器拿这个随机串当类名去解析 → `ClassNotFoundException` →
+  `controller not exists`、整站 500。现仅当对象表达式是**裸变量**（`$this->prop` / `$var->prop`）
+  才改名，`$a->b->prop`、`f()->prop`、`$a[0]->prop` 一律不动。
+- **`FunctionCallEncoder` 在命名空间文件里生成错误回调**。`call_user_func('name')` 的字符串是
+  **绝对**函数名，PHP 不会按当前命名空间回退；而 `name(…)` 会。命名空间文件里
+  `make_gen(2)` 被改写成 `call_user_func('_o36…', 2)` 后必报
+  `function "_o36…" not found or invalid function name`。现按声明处所在命名空间补成
+  `app\demo\_o36…`，并在 VM 运行期 `$__vmcb` 增加"绝对名未命中 → 退到短名"兜底
+  （VM 产物整体跑在全局命名空间、`funcs` 表按短名索引）。
+- **`anti_debug` 的 `trace` 探针把任何名字含 `debug` 的类判为调试器**。ThinkPHP 自带
+  `think\debug\*`、`think\trace\TraceDebug`，业务框架里叫 debug 的命名空间遍地都是——
+  `max`/`ultra` 档因此在 ThinkPHP8 上**每个请求都被守卫 `exit(1)`**。现只认真正的调试/剖析器
+  符号（`xdebug_*` / `phpdbg_*` / `Xdebug\*` / `Blackfire\*` / `Tideways` / `xhprof` / `uopz` / `runkit`），
+  不再用裸 `debug` 子串。
+- **`token` 层的类型转换别名触发 PHP 8.5 弃用告警**：`(int)↔(integer)`、`(bool)↔(boolean)`、
+  `(float)↔(double)` 的等价互换在 8.5 上是 `Non-canonical cast … is deprecated`，而框架普遍用
+  `set_error_handler` 把 deprecation 升级为异常（ThinkPHP 的 `Error` 初始化器即如此），
+  产物直接 500。这类同义词对反编译毫无阻力（工具都会归一化），故整表清空。
+- **`NewlinePoison` 的 mulberry32 乘法溢出**：`$t * (1|$t) & 0xffffffff` 的积可达 1.8e19，超出
+  `PHP_INT_MAX` → 提升为 float，掩码时触发 `not representable as an int, cast occurred` 告警
+  且精度丢失（`mid` 档构建时刷屏数百条）。现改用高低 16 位分块的 `mul32()`，全程 int 运算；
+  与高精度参考实现 3000 组随机比对全部一致。
+- **测试断言与实现规格对齐**：`hardening_test` 的"防 hook 守卫含 eval 探针"改用大小写不敏感
+  匹配（关键字大小写随机化是既定特性，产物里可能是 `@EVAL(`）；`hardening_v108/v109` 的换行
+  配额断言从 v1.0.8 的 `bytes/5` 改为实现自 v1.0.9 起文档化的 `bytes/divisor`（divisor 默认 2）。
+
+### 验证
+- **ThinkPHP8 示例工程（含 ORM / 事务 / 缓存 / 中间件 / 验证器 / 事件）五档全绿**：
+  `low` 228 KB、`mid` 412 KB、`high` 2.1 MB、`max` 3.3 MB、`ultra` 6.9 MB，
+  11 个端点（含 POST、缓存、聚合查询、签名中间件 401 分支）**状态码 + 响应体逐字节等价，11/11**。
+- **测试套件**：`run_tests` 32/32、`hardening_test` 32/32、`hardening_v105` 14/14、
+  `v106` 29/29、`v107` 23/23、`v108` 37/37、`v109` 59/59、`syntax_compat` 7/7、`token_obf` 32/32，
+  `vm_*` 系列全通过。
+
+---
+
 ## v1.1.0 — 白名单模式 + 深度反AST + 换行量 1/2 + PHP 8.5 + 哈希内置模块
 
 > 正式版。tag `1.1.0` 与 GitHub Release 已发布，`origin` 已推送。此前的 `1.1.0-dev` 预发布线由本版本取代（预发布 tag 保留作为历史快照）。

@@ -223,7 +223,7 @@ preg_match("/gzinflate\(base64_decode\('([A-Za-z0-9+\/=]+)'\)\)\)/", $hookRaw, $
 $guardSrc = isset($mm[1]) ? @gzinflate(base64_decode($mm[1])) : '';
 rec(is_string($guardSrc) && (str_contains($guardSrc, 'uopz') || str_contains($guardSrc, 'runkit') || str_contains($guardSrc, 'phpdbg')),
     '防 hook 守卫含可劫持 eval 的扩展检测（编码壳内 gzdeflate 解出）', '');
-rec(preg_match('/@?eval\s*\(/', $hookRaw) === 1, '防 hook 守卫含 eval 完整性探针', '');
+rec(preg_match('/@?eval\s*\(/i', $hookRaw) === 1, '防 hook 守卫含 eval 完整性探针（关键字大小写随机化后仍可识别）', '');
 rec($clean['exit'] === 0, '防 hook 守卫在干净环境不误伤（exit=0）', "exit={$clean['exit']}");
 
 echo "\n-- 6) 随机化多样性（不同 salt 形态必须不同） --\n";

@@ -19,8 +19,13 @@ return [
     'var_length'   => 8,      // 变量名混淆后长度
     'var_enc_length' => 0,    // 变量名编码长度别名（>0 时覆盖 var_length）
     'var_split'    => 1,      // 变量值拆分段数（>1 生效）
-    'var_keep_props' => false, // 保留类实例属性名（框架应用建议开：属性跨文件/框架按原文访问）
-    'var_keep_params' => false, // 保留函数/方法参数名（框架应用建议开：路由/DI/命名参数按名匹配）
+    // 保留类实例属性名 / 参数名。裸开关模式默认 false（闭世界假设），
+    // 而 low/mid/high/max/ultra **五档预设默认 true**（见 src/config.presets.php 的
+    // $FRAMEWORK_SAFE）：属性名被框架按原文读取（Model::$name 决定表名）、
+    // 参数名被路由/DI/命名实参按名匹配，改名会静默错位。--no-var-keep-props /
+    // --no-var-keep-params 可对预设显式关掉（仅限封闭代码）。
+    'var_keep_props' => false, // 保留类实例属性名（框架应用必须开；预设已默认开）
+    'var_keep_params' => false, // 保留函数/方法参数名（框架应用必须开；预设已默认开）
 
     // 函数
     'func_length'  => 10,     // 函数名混淆后长度

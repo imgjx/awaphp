@@ -255,7 +255,7 @@ final class VmCombo
     private function isRelJump(array $ins): bool
     {
         $op = $ins[0] ?? null;
-        return $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ;
+        return $op === VmOp::JMP || $op === VmOp::JZ || $op === VmOp::JNZ || $op === VmOp::DISPATCH;
     }
 
     private function isOp($ins, int $op): bool

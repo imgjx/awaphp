@@ -18,7 +18,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；`.php` 文件需 `return` 一个数组，可直接用 PHP 表达式与注释，便于维护） |
-| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案）。**v1.1.0 起 `low` / `mid` 不再包含 VM**（性能优先，运行时开销 ≈ 原生）；VM 自 `high` 起启用。各档开销对比见 `docs/PERFORMANCE.md` |
+| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案）。**`low` = 大部分混淆、`mid` = 几乎所有混淆，两档都不含 VM**（VM 是唯一「开销与语句数成正比」的开关）；VM 自 `high` 起启用。五档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
 | `-low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |
@@ -29,8 +29,10 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 |------|------|
 | `--var-length=` | 变量名混淆后长度 |
 | `--var-split=` | 变量值拆分段数（>1 生效） |
-| `--var-keep-props` | 保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开，ThinkPHP8 必开） |
-| `--var-keep-params` | 保留方法参数名不改（按参数名绑定/命名实参的框架必须开，ThinkPHP8 必开） |
+| `--var-keep-props` | 保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开，ThinkPHP8 必开）。**v1.1.1 起五档预设默认开启** |
+| `--var-keep-params` | 保留方法参数名不改（按参数名绑定/命名实参的框架必须开，ThinkPHP8 必开）。**v1.1.1 起五档预设默认开启** |
+| `--no-var-keep-props` | 关闭上面的保留，把属性名也纳入重命名。**仅适用于封闭代码**（纯库 / 单文件脚本 / 不继承框架基类）：框架按原文读写的属性名被改会后**静默错位**（ThinkPHP `Model::$name` 决定表名，改名后直接 `no such table`） |
+| `--no-var-keep-params` | 同上，参数名纳入重命名。路由按参数名注入、命名实参调用都会失效 |
 | `--func-length=` | 函数名混淆后长度 |
 | `--func-call` | 函数调用混淆（间接调用） |
 | `--func-call-enc` | 函数调用编码（包装名字） |

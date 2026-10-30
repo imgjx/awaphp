@@ -93,7 +93,7 @@ if ($okU) {
 echo "===== [4] 换行缠绕壳（--newline-poison，配合结构毒化壳）=====\n";
 $npSrc = (string) file_get_contents($fixture);
 // v1.0.9 起：换行总数 = ceil(输入源码字节数 / divisor)，默认 divisor=5（即 1/5）
-$npNeed = (int) ceil(strlen($npSrc) / 5);
+$npNeed = (int) ceil(strlen($npSrc) / 2); // 规格：ceil(bytes/divisor)，divisor 默认 2（见 src/Encode/NewlinePoison.php 顶部注释）
 
 /** 从 --verbose 日志里累加"本层实际注入"的换行数（分层分摊后总和须等于配额）。 */
 function np_injected(string $entry, string $in, string $out, string $args): array
@@ -122,7 +122,7 @@ if ($okN) {
     $lint = (string) shell_exec('php -l ' . escapeshellarg($o4) . ' 2>&1');
     ok(str_contains($lint, 'No syntax errors'), "newline php -l 通过");
     ok(trim(run($o4)) === $native, "newline 运行输出一致", 'got=' . substr(trim(run($o4)), 0, 60));
-    ok(abs($inj4 - $npNeed) <= 1, "换行配额 = 字节数/5（注入 {$inj4} ≈ {$npNeed}）");
+    ok(abs($inj4 - $npNeed) <= 1, "换行配额 = ceil(bytes/divisor)（注入 {$inj4} ≈ {$npNeed}）");
     $nl = substr_count((string) file_get_contents($o4), "\n");
     ok($nl >= $npNeed, "newline 可见数量达标（{$nl} >= {$npNeed}）");
 }

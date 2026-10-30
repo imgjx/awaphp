@@ -90,6 +90,14 @@
 
 > VM 模式的定位是**强混淆 / 抗静态分析**，不是性能优化。它适合对安全性敏感、对运行速度不敏感的分发包。若某段代码性能关键且 VM 不支持，编译器会自动回退普通加壳。
 
+> **v1.1.1 起解释器热路径重写**，同样的代码比 1.1.0 快 **2.5~2.6×**（状态机/派发密集负载）到
+> **1.8×**（混合负载）。两处改动：
+> ① **操作数栈编码类型化**——旧版每压一个值就 `serialize()` + `str_repeat` 现算 XOR、出栈再
+> `unserialize()`，占 VM 总耗时约 75%；新版按类型分流（int 单次整型 XOR / string 单次串 XOR /
+> float·bool·null 直存 / array 才 serialize / 不可序列化值落明文槽），解码内联进 `MCPOP`/`MCPEEK`。
+> ② **状态机派发压缩**——新增 `DISPATCH` / `SET_ST` 两条专用指令，把派发序章 5 条指令压成 1 条、
+> 状态写入 2 条压成 1 条。完整对比见 `docs/PERFORMANCE.md` 第 4 节。
+
 ---
 
 ## 5. 使用与集成
@@ -581,3 +589,42 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **PHP 8.5 支持**：运行环境升级到 PHP 8.5（ppa:ondrej/php），混淆器在 8.5 运行时下对现代语法（enum、readonly 类、构造器属性提升、接口 / trait、`match`、一等调用 `strlen(...)`、属性钩子等）的 token 流健壮处理、混淆产物可运行。
 
 - **调试钩子集中到 `docs/DEBUG.md`**：`OBF_VM_SRC` / `OBF_CPV_OUT` / `OBF_VM_NEST` / `OBF_SHELL_DUMP` / `OBF_LINT_DUMP` / `OBF_VM_DEBUG` 六个环境变量的位置、内容、典型排查流程统一归档，便于 CI / 本地定位「某层为何没生效 / 为何回退 / 为何非法」。
+
+### 11.16 v1.1.1：类保留 VM 注入修复（整站空正文）+ 解释器提速 2.5× + 两条专用指令
+
+> 这一版把「ThinkPHP8 五档全部跑得起来」和「VM 快一截」同时做到。
+
+- **【严重修复】`ClassPreservingVm` 的注入正则漏了 argv 播种块 → 类里每个方法都 `return null`**。
+  该类需要在生成的运行期里定位解释器变量名（`$___RUN___` / `$___P___` / `$___PAD___` 都会被
+  重命名成生僻 CJK 名），做法是用正则从主调用行提取。正则只认
+  `$__vmv=[];$RUN($P['main'],…)`；而运行期在 CLI / 目录模式下会在中间插入
+  `if(array_key_exists('argv',$GLOBALS)){…}` 播种超全局。命中后者时提取失败，整段
+  `$GLOBALS['__awa_run_<uid>']=…;$GLOBALS['__awa_prog_<uid>']=…` **被静默跳过**，顶层桩的委托
+  函数一进函数体就 `if($run===null||$prog===null) return null` —— 控制器返回空串、接口回空对象。
+  框架侧表现为「响应里只剩调试 trace 的 CSS、正文空白」，**全程无异常、无警告**，极难定位。
+  现提取式与替换式同构，argv 块作为可选组。
+- **【严重修复】`var` 层把链式访问末段当成本类属性改名**。`$this->app->request` 的 `request`
+  属于 `think\App`（容器绑定名）；旧实现只看前一个 token 是 `->` 就改写，产物变成
+  `$this->app->_gfc92adb3` → `Container::__get()` → 容器拿随机串当类名解析 →
+  `ClassNotFoundException` → `controller not exists`。现仅当对象表达式是**裸变量**才改名。
+- **【严重修复】`anti_debug` 的 `trace` 探针用裸 `debug` 子串判定**，ThinkPHP 的
+  `think\debug\*`、`think\trace\TraceDebug` 全部命中，`max`/`ultra` 档在 TP8 上每请求 `exit(1)`。
+  现只认 `xdebug_*` / `phpdbg_*` / `Xdebug\*` / `Blackfire\*` / `Tideways` / `xhprof` / `uopz` / `runkit`。
+- **操作数栈编码类型化**（性能）：旧实现每压栈必 `serialize()` + `str_repeat` 现算 XOR、出栈
+  `unserialize()`，占 VM 总耗时约 **75%**。现按类型分流（int 单次整型 XOR / string 单次串 XOR /
+  float·bool·null 直存 / array 才 serialize / 含闭包等不可序列化值落明文槽），解码内联进
+  `MCPOP`/`MCPEEK`（省一次闭包调用 ≈26 ns/指令）。保留旧的「栈下溢返回 null」宽容语义
+  （`if($F===null) return null;`），否则下溢时对 null 做 `^` 会 TypeError。
+- **两条早已定义却从未落地的操作码终于实现**：
+  - `DISPATCH rel,var,state`：状态机派发序章 `PUSH_V st; PUSH_C s; EQ; JZ 1; JMP`（5 条）→ 1 条；
+  - `SET_ST var,state`：状态写入 `PUSH_C + POP_V`（2 条）→ 1 条。
+  相对跳转登记同步补进 `VmJunk`（垃圾指令插入后的位置映射 / 回写）、`VmCombo::isRelJump`、
+  `RuntimeGenerator::isBranch`（两处）。
+- **`$__vmcb` 命名空间兜底**：VM 产物整体跑在全局命名空间、`funcs` 表按**短名**索引；而
+  `call_user_func('App\Util\foo')` 这类绝对名写法很常见（调用编码器也会为命名空间文件补全 FQN）。
+  现按「绝对名未命中 → 退到短名」兜底，同一份字符串在 VM 内与原生下都能解析。
+- **实测**：同一份轻负载 `high` 10,244 → 5,676 ms、`max` 14,476 → 8,120 ms；20 万次 while
+  循环 `high` 5,655 → 2,198 ms（**2.6×**）、`max` 6,769 → 2,678 ms（**2.5×**）。
+- **回归**：TP8 示例五档 × 11 端点全部逐字节等价（`low` 228 KB / `mid` 412 KB / `high` 2.1 MB /
+  `max` 3.3 MB / `ultra` 6.9 MB）；`run_tests` 32、`hardening_test` 32、`v105` 14、`v106` 29、
+  `v107` 23、`v108` 37、`v109` 59、`syntax_compat` 7、`token_obf` 32 全绿。
