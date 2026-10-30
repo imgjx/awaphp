@@ -57,11 +57,11 @@ php entry.php \
 
 | 方案 | 适用 | 要点 |
 | --- | --- | --- |
-| `--level=low` / `mid`（**推荐起点**） | 常规交付、高频接口 | 无 VM；TP8 `GET /shop/products` 实测 6.0 ms / 12.2 ms（原生 1.76 ms） |
-| `--level=high` | 核心业务、可接受数十毫秒 | 含 VM；同端点 57.9 ms（见 `docs/PERFORMANCE.md`） |
+| `--level=low` / `mid`（**推荐起点**） | 常规交付、高频接口 | 无 VM；TP8 `GET /shop/products` 实测 6.3 ms / 11.1 ms（原生 1.7 ms） |
+| `--level=high` | 核心业务、可接受数十毫秒 | 含 VM；同端点 45 ms（见 `docs/PERFORMANCE.md`） |
 | `thinkphp8.config.php` | 需要白名单兜底的大型项目 | 等价 `high` 分层 + 白名单 + 框架兼容项 |
 | 一键脚本 `other/thinkphp8-build.php` | 想省掉手工白名单 | 自动扫描 `app/` 收集类 / 函数 / 常量 / 控制器方法 → 合并进配置 → 构建 |
-| `--level=max` / `--ultra` | 高价值单文件 | 只压核心文件，别整站用（`high` 的 1.4~1.8 倍） |
+| `--level=max` / `--ultra` | 高价值单文件 | 只压核心文件，别整站用：TP8 实测 400 / 475 ms，是 `high`（45 ms）的 **9~10 倍**——多层壳的每请求固定开销 |
 
 TP8 示例项目用 `thinkphp8.config.php` 验证通过全部 26 行基线。
 
