@@ -20,7 +20,7 @@ return [
     'var_enc_length' => 0,    // 变量名编码长度别名（>0 时覆盖 var_length）
     'var_split'    => 1,      // 变量值拆分段数（>1 生效）
     // 保留类实例属性名 / 参数名。裸开关模式默认 false（闭世界假设），
-    // 而 low/mid/high/max/ultra **五档预设默认 true**（见 src/config.presets.php 的
+    // 而 min/low/mid/high/max/ultra **六档预设默认 true**（见 src/config.presets.php 的
     // $FRAMEWORK_SAFE）：属性名被框架按原文读取（Model::$name 决定表名）、
     // 参数名被路由/DI/命名实参按名匹配，改名会静默错位。--no-var-keep-props /
     // --no-var-keep-params 可对预设显式关掉（仅限封闭代码）。

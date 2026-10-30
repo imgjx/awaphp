@@ -18,8 +18,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；`.php` 文件需 `return` 一个数组，可直接用 PHP 表达式与注释，便于维护） |
-| `--level=` | 等级预设：`low\|mid\|high\|max\|ultra`（一键切换完整方案）。**`low` = 大部分混淆、`mid` = 几乎所有混淆，两档都不含 VM**（VM 是唯一「开销与语句数成正比」的开关）；VM 自 `high` 起启用。五档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
-| `-low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
+| `--level=` | 等级预设：`min\|low\|mid\|high\|max\|ultra`（一键切换完整方案）。强度递进：**`min` = 低混淆（只做词法级替换，无任何壳，运行时零开销）→ `low` = 大部分混淆 → `mid` = 几乎所有混淆**（这三档都不含 VM），`high` / `max` / `ultra` 自 `high` 起启用 VM。六档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
+| `-min -low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |
 
@@ -29,8 +29,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 |------|------|
 | `--var-length=` | 变量名混淆后长度 |
 | `--var-split=` | 变量值拆分段数（>1 生效） |
-| `--var-keep-props` | 保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开，ThinkPHP8 必开）。**v1.1.1 起五档预设默认开启** |
-| `--var-keep-params` | 保留方法参数名不改（按参数名绑定/命名实参的框架必须开，ThinkPHP8 必开）。**v1.1.1 起五档预设默认开启** |
+| `--var-keep-props` | 保留属性名不改（框架/DI/反射/ORM 按属性名读写时必须开，ThinkPHP8 必开）。**v1.1.2 起六档预设默认开启** |
+| `--var-keep-params` | 保留方法参数名不改（按参数名绑定/命名实参的框架必须开，ThinkPHP8 必开）。**v1.1.2 起六档预设默认开启** |
 | `--no-var-keep-props` | 关闭上面的保留，把属性名也纳入重命名。**仅适用于封闭代码**（纯库 / 单文件脚本 / 不继承框架基类）：框架按原文读写的属性名被改会后**静默错位**（ThinkPHP `Model::$name` 决定表名，改名后直接 `no such table`） |
 | `--no-var-keep-params` | 同上，参数名纳入重命名。路由按参数名注入、命名实参调用都会失效 |
 
@@ -110,7 +110,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等） |
 | `--anti-hook` | 防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测） |
 | `--anti-tamper` | 自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验） |
-| `--shell-shield-intensity=` | 逐层壳自保护强度 `1-3`（默认随等级：low=1 / mid,high=2 / max,ultra=3）；仅控制语义变换激进度，变量重命名始终开启 |
+| `--shell-shield-intensity=` | 逐层壳自保护强度 `1-3`（默认随等级：min,low=1 / mid,high=2 / max,ultra=3；`min` 的 `shell_shield` 本身为关，此项对其无效）；仅控制语义变换激进度，变量重命名始终开启 |
 | `--no-shell-shield` | 关闭逐层壳自保护（每层壳解码逻辑不再被外层混淆护住，破解更易） |
 | `--php-version=` | 目标 PHP 版本（通用）：`7.4\|8.0\|8.1\|8.2\|8.3`（默认 `8.1`） |
 | `--opcache` | OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如 EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过） |

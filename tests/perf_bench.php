@@ -5,7 +5,7 @@
  * 用法：
  *   php tests/perf_bench.php                 # 默认 5 次，输出 Markdown 表格
  *   php tests/perf_bench.php --runs=7        # 指定重复次数（取中位数）
- *   php tests/perf_bench.php --levels=low,mid,high
+ *   php tests/perf_bench.php --levels=min,low,mid,high
  *   php tests/perf_bench.php --opcache       # 开启 CLI OPcache 再测（默认关）
  *
  * 测量口径：
@@ -24,7 +24,7 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $opts = getopt('', ['runs::', 'levels::', 'opcache', 'salt::', 'workload::']);
 $runs = max(3, (int) ($opts['runs'] ?? 5));
-$levels = array_filter(array_map('trim', explode(',', (string) ($opts['levels'] ?? 'low,mid,high,max'))));
+$levels = array_filter(array_map('trim', explode(',', (string) ($opts['levels'] ?? 'min,low,mid,high,max'))));
 $useOpcache = isset($opts['opcache']);
 $salt = (string) ($opts['salt'] ?? 'perf-bench-v1');
 

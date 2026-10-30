@@ -109,7 +109,10 @@ final class StringEncoder
             $len = (int) ceil(strlen($work) / $segCount);
             $segs = $len > 0 ? str_split($work, max(1, $len)) : [$work];
         } elseif ($segLen > 0) {
-            $segs = str_split($work, $segLen);
+            // PHP 8.2 起 str_split('') 返回 []（旧版返回 ['']）。空字符串字面量 `''` 若落到
+            // 这里会得到空数组 → implode 得空串 → 产物里出现 `$x=;` 直接语法错误。
+            // 必须显式补回 [''], 让 encodeSegment 走它的空串分支输出 `''`。
+            $segs = $work === '' ? [''] : str_split($work, $segLen);
         } else {
             $segs = [$work];
         }

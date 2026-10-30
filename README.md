@@ -20,7 +20,7 @@
 - **token 级而非字符串级**：所有混淆作用于解析后的 token 流，避免脆弱的正则替换破坏代码。
 - **可复现**：给定相同的输入与 salt，产出的代码本体逐字节一致（仅文件头时间戳不同）。
 - **渐进式**：每一类保护都是独立开关，可按项目需要自由组合强度。
-- **性能可选**：`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——ThinkPHP8 实测 `low` 6.3 ms / `mid` 11.1 ms（原生 1.7 ms）。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
+- **性能可选**，六档从「几乎零成本」到「抗动态分析」：`min` 是唯一**不改变运行时特征**的档（只做变量名/数字/字符串/去注释/压空白，无任何壳）——ThinkPHP8 实测 **1.83 ms vs 原生 1.85 ms**，产物反而更小（去注释抵消了字符串解码）；`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——实测 `low` 6.3 ms / `mid` 11.1 ms。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
 
 ---
 
@@ -216,7 +216,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-sa
 php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
 
 # 性能基准（生成 docs/PERFORMANCE.md 里那张表）
-php tests/perf_bench.php --runs=5 --levels=low,mid
+php tests/perf_bench.php --runs=5 --levels=min,low,mid
 
 # 运行测试
 php tests/run_tests.php          # CLI 集成：32 项
