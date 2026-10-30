@@ -175,6 +175,12 @@ final class ShellProtector
             && in_array($prevTok[0], [T_LNUMBER, T_DNUMBER], true)) {
             return true;
         }
+        // 注释 token 前必须断开：压缩删光空白后，除号 `/` 与注释首字符会拼成 `//` / `/*`，
+        // 词法器按行注释处理并吞掉同物理行后续全部代码（含 heredoc 起始符）。
+        if (is_array($tok) && in_array($tok[0], [T_COMMENT, T_DOC_COMMENT], true)
+            && ($prevChar === '/' || $prevChar === '#')) {
+            return true;
+        }
         return false;
     }
 

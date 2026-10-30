@@ -1,0 +1,8 @@
+{
+  "name": "sha1",
+  "match": ["sha1"],
+  "entry": "sha1.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_sha1"
+}

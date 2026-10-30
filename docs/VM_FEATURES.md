@@ -574,7 +574,7 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 
 - **换行缠绕量改为源代码字节的 1/2**：`--newline-poison-divisor` 默认由 5 改为 **2**，即源 10KB → 注入约 5000 个换行（原为 1/5）。换行均匀撒入 token 边界 + 部分嵌入 base64 载荷 + 头部兜底，配合结构毒化壳 / 自校验，逆向者「删空白 / 美化」即改动密文与指纹 → 解密错位。
 
-- **内置哈希原语（HashBuiltin）**：md5 / sha1 / crc32 的**纯 PHP 自包含实现**（不依赖扩展，32 位无符号运算 + 小端/大端输出），供深度反AST 恒等积木与工具自身使用；已用多组输入（含 5KB 串）与 PHP 内置 `md5/sha1/crc32` 逐字节比对一致。
+- **哈希内置模块（VM `builtin` 层）**：`md5` / `sha1` / `crc32` 的**纯 PHP 自包含实现**作为标准 VM 模块（`src/Module/builtin/md5.{php,json}` 等）提供，开启 `builtinReplace` 时把混淆体内的原生哈希调用链到自制实现并内联；与原生逐字节一致（含 5KB 串验证）。此前独立的 `HashBuiltin` 类已删除——自制原语的正确形态是模块。
 
 - **PHP 8.5 支持**：运行环境升级到 PHP 8.5（ppa:ondrej/php），混淆器在 8.5 运行时下对现代语法（enum、readonly 类、构造器属性提升、接口 / trait、`match`、一等调用 `strlen(...)`、属性钩子等）的 token 流健壮处理、混淆产物可运行。
 

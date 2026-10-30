@@ -1,0 +1,8 @@
+{
+  "name": "md5",
+  "match": ["md5"],
+  "entry": "md5.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_md5"
+}

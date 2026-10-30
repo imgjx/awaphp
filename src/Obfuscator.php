@@ -1395,6 +1395,14 @@ final class Obfuscator
         if ($wordy($prevChar) && $text[0] === '\\' && self::isNameToken($tok)) {
             return true;
         }
+        // 注释 token 前必须断开：压缩会删光空白 token，若上一个字符是除号 `/`，
+        // 与注释首字符拼成 `//`（行注释）或 `/*`（块注释起始），词法器按行注释处理，
+        // 会把**同一物理行后面所有代码**吞进注释——连 heredoc 起始符 `<<<EOT` 一起吞掉，
+        // 于是 EOT 体变成游离语句（典型报错 "unexpected token --"）。
+        if (is_array($tok) && in_array($tok[0], [T_COMMENT, T_DOC_COMMENT], true)
+            && ($prevChar === '/' || $prevChar === '#')) {
+            return true;
+        }
         return false;
     }
 

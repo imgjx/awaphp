@@ -39,11 +39,15 @@ final class DeclareHoist
         $body    = substr($code, $openEnd);
 
         $ws = '(?:[ \t\r\n]|\/\*.*?\*\/|\/\/[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z))*';
-        // declare(...) ; —— 值必须是字面量，故用 [^;{}]* 限制在同一条语句内
-        $declare = 'declare\s*\([^;{}]*\)\s*;';
+        // declare(...) ; —— 值必须是字面量，故用 [^;{}]* 限制在同一条语句内；
+        // 中间与末尾都用 $ws（含注释）而非 \s*，兼容 `declare /* x */ (strict_types=1)` /
+        // `declare(...) /* x */ ;` 这两种被壳层插注释切开的形态。
+        $declare = 'declare' . $ws . '\([^;{}]*\)' . $ws . ';';
         // namespace X; / namespace X {（`namespace\foo()` 运算符形式没有空白，不会误配）
-        // 允许 namespace 与名字之间有注释（混淆后常注入 /* ... */ 注释）：`namespace /* x */ app;`
-        $ns = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*\s*[;{]';
+        // 允许 namespace 与名字之间、名字与终止符（;/{）之间夹注释：
+        //   `namespace /* x */ app;` / `namespace app /* x */ ;` / `namespace app /* x */ {`
+        $ns = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*' . $ws . '[;{]';
+        $ns = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*' . $ws . '[;{]';
 
         while (true) {
             if (!preg_match('/\A(' . $ws . ')(' . $declare . '|' . $ns . ')/is', $body, $mm)) {
@@ -80,9 +84,12 @@ final class DeclareHoist
         $rest    = substr($code, $openEnd);
 
         $ws       = '(?:[ \t\r\n]|\/\*.*?\*\/|\/\/[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z))*';
-        $declare  = 'declare\s*\([^;{}]*\)\s*;';
-        // 允许 namespace 与名字之间有注释（混淆后常注入 /* ... */ 注释）：`namespace /* x */ app;`
-        $ns       = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*\s*[;{]';
+        // declare(...) ; —— 值必须是字面量，故用 [^;{}]* 限制在同一条语句内；
+        // 末尾用 $ws（含注释）而非 \s*，兼容 `declare(...) /* x */ ;` 形态。
+        $declare  = 'declare' . $ws . '\([^;{}]*\)' . $ws . ';';
+        // 允许 namespace 与名字之间有注释：`namespace /* x */ app;`
+        // 名字与终止符（;/{）之间也允许注释：`namespace app /* x */ ;` / `namespace app /* x */ {`
+        $ns       = 'namespace' . $ws . '[A-Za-z_\x80-\xff\\\\][A-Za-z0-9_\x80-\xff\\\\]*' . $ws . '[;{]';
 
         // 开头已有的序言（连续 declare/ns，可含空白/注释），保持不变。
         // 注意用 (?:ws|declare|ns)* 而非 \A(ws)(...)*：壳层守卫可能插在 <?php 之后、

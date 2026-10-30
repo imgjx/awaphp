@@ -1,0 +1,8 @@
+{
+  "name": "crc32",
+  "match": ["crc32"],
+  "entry": "crc32.php",
+  "replace": true,
+  "priority": 10,
+  "target": "__mod_crc32"
+}

@@ -23,7 +23,6 @@ foreach ([
     'src/Support/NameStyle.php',
     'src/Support/TokenScan.php',
     'src/Support/DeclareHoist.php',
-    'src/Support/HashBuiltin.php',
     'src/Support/ConstExprScan.php',
     'src/Confrontation/ConfrontRng.php',
     'src/Support/DynamicSymbols.php',
