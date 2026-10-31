@@ -37,6 +37,7 @@ final class VmRuntimeGenerator
     // 池以独立密钥（计数器模式 SHA-256 流）加密后 base64 内嵌，运行期解码。
     // 关时（--no-vm-cpool）退化为字面量内联，产物与旧行为一致。
     private bool $cpool = true;
+    private bool $jit = true;               // VM JIT 友好模式：内联编码栈（默认开）
 
     public function __construct(?Salt $salt = null)
     {
@@ -77,6 +78,12 @@ final class VmRuntimeGenerator
         $this->morph          = $morph;
         // VM 常量池加密开关（默认开；--no-vm-cpool 关）
         $this->cpool          = (bool) ($opts['cpool'] ?? true);
+        // VM JIT 友好模式（默认开）：解释器以可被 OPcache 追踪 JIT 编译的【内联栈】形式发射——
+        // 编码逻辑直接内联进压栈闭包（去掉 MCENC 嵌套闭包调用，每次压栈省一层调用开销），
+        // 整段解释器是一个平坦大函数，OPcache tracing-JIT 能整体追踪编译。
+        // false 回退旧闭包栈（MCENC 闭包 + MCPUSH 调用它），最大兼容。
+        $jit = (bool) ($opts['jit'] ?? true);
+        $this->jit = $jit;
         // natTbl 名编码密钥：盐派生（空盐时仍为确定性值，仅用于"非常量明文"，非保密）
         $this->natKey         = $this->salt->derive('vm-natkey', 64);
         // include/require 解析：构建期静态求值可达的文件编入嵌入表；
@@ -274,16 +281,16 @@ final class VmRuntimeGenerator
             (new VmCombo($this->salt))->inject($program, $combo);
         }
 
-        // —— P7: VM 字节码级真实垃圾指令（VmJunk）——
+        // —— P7: VM 字节码级无用字节码覆盖（VmBytecodeJunk）——
         // 在合并完所有段之后、collectUsed/remap/控制流平坦化之前注入：这些 opcode 会被
         // 纳入"已用操作码集合"（分配随机编号 + 生成 handler），并被随后的 flatten/stateMachine
         // 进一步打散。junk=0（默认）时不注入。
         $junkCount = (int) ($opts['junk'] ?? 0);
         if ($junkCount > 0) {
-            if (!class_exists(VmJunk::class, false)) {
-                require_once __DIR__ . '/VmJunk.php';
+            if (!class_exists(VmBytecodeJunk::class, false)) {
+                require_once __DIR__ . '/VmBytecodeJunk.php';
             }
-            (new VmJunk($this->salt))->inject($program, $junkCount);
+            (new VmBytecodeJunk($this->salt))->inject($program, $junkCount);
         }
 
         // 控制流平坦化（flatten）与状态机混淆（stateMachine）互斥：状态机是更激进的独立层，
@@ -307,7 +314,7 @@ final class VmRuntimeGenerator
 
         // —— ISA 精简（见 src/Vm/VmIsa.php）：把族内旧 opcode 升级为参数化 opcode + sub-id。
         // 指令条数不变（[ADD] -> [BINOP, subId]），故放在 flatten + fakeFog 之后也绝不破坏
-        // 相对跳转偏移。真实码 + VmJunk + VmFakeFog 三类来源一并收口。
+        // 相对跳转偏移。真实码 + VmBytecodeJunk + VmFakeFog 三类来源一并收口。
         if (!class_exists(VmIsa::class, false)) {
             require_once __DIR__ . '/VmIsa.php';
         }
@@ -705,6 +712,10 @@ final class VmRuntimeGenerator
 
         $template = $this->runtimeTemplate();
         $runtime = str_replace('___SWITCH___', $switch, $template);
+        // 操作数栈引导块：按 JIT 模式注入「内联编码栈」或「旧闭包栈」（见 stackBootstrap）。
+        // 必须在 strtr 占位符替换之前注入——引导块内使用 ___STACK___ 等占位符，需与
+        // 整段模板一同被随机化，否则与后续 MCPOP/MCPEEK 闭包引用的栈变量名脱节。
+        $runtime = str_replace('/*___MCBOOT___*/', $this->stackBootstrap($this->jit), $runtime);
         $runtime = strtr($runtime, $this->placeholderMap($nm, $scramble, $jt));
         // GEN_HEAD 的【重映射后】操作码编号：RUN 入口靠它识别生成器段。
         // 必须在 remap 之后取 mapping 值——段内操作数已是随机编号，写死常量会永不命中。
@@ -1055,11 +1066,7 @@ $___MCPLAIN___=[];$___MCFLAGS___=[];
 $___MCKEY___=substr(hash('sha256',(string)microtime(true).(string)memory_get_usage(),true),0,32);
 $___MCPAD___=str_repeat($___MCKEY___,256);
 $___MCKI___=unpack('q',substr($___MCKEY___,0,8))[1];
-$___MCFLAG___=0;
-$___MCENC___=function($v)use(&$___MCPLAIN___,&$___MCFLAG___,$___MCPAD___,$___MCKI___){if(is_int($v)){$___MCFLAG___=3;return $v^$___MCKI___;}if(is_string($v)){$___MCL___=strlen($v);if($___MCL___===0){$___MCFLAG___=4;return '';}if($___MCL___>8192){$___MCFLAG___=2;return ['#',$v];}$___MCFLAG___=4;return $v^substr($___MCPAD___,0,$___MCL___);}if(is_float($v)||is_bool($v)||$v===null){$___MCFLAG___=5;return $v;}if(is_array($v)){try{$___MCS___=serialize($v);}catch(\Throwable $___MCE___){$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;}$___MCL___=strlen($___MCS___);if($___MCL___>8192){$___MCFLAG___=2;return ['#',$v];}$___MCFLAG___=0;return $___MCS___^substr($___MCPAD___,0,$___MCL___);}$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;};
-$___STACK___=[];$___MCFLAGS___=[];
-foreach($___INIT___ as $___IV___){$___STACK___[]=$___MCENC___($___IV___);$___MCFLAGS___[]=$___MCFLAG___;}
-$___MCPUSH___=function($v)use(&$___STACK___,&$___MCFLAGS___,&$___MCENC___,&$___MCFLAG___){$___STACK___[]=$___MCENC___($v);$___MCFLAGS___[]=$___MCFLAG___;};
+/*___MCBOOT___*/
 // 出栈解码内联在闭包里（不再二次调用 $MCDEC）：每多一层闭包调用 ≈ 26ns，而每条字节码
 // 指令都要弹栈，解释 260 万条指令时这一层就是上百毫秒级开销。
 $___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___F___=array_pop($___MCFLAGS___);$___V___=array_pop($___STACK___);if($___F___===null)return null;if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};
@@ -1085,6 +1092,85 @@ if($___XHANDLED___){continue;}throw $___XERR___;
 TPL;
     }
 
+    /**
+     * 操作数栈引导块：依据 JIT 模式生成「压栈/出栈/窥视」闭包与初始栈。
+     *
+     * @param bool $jit true=内联编码栈（MCENC 编码逻辑直接内联进 MCPUSH，去掉嵌套闭包调用，
+     *                  每次压栈省一层调用开销 ≈ 26ns；整段解释器保持平坦大函数，利于 OPcache JIT 追踪）；
+     *                 false=旧闭包栈（MCENC 闭包 + MCPUSH 调用它），最大兼容。
+     * 编码策略（与 1.1.2 一致，保护强度不降）：整型单次 int XOR、字符串单次串 XOR
+     * （掩码从预生成 8KB 长掩码 substr）、浮点/布尔/null 直存、数组 serialize+XOR、
+     * 大值/对象落明文槽 $___MCPLAIN___；栈内仍无明文整型/字符串。
+     */
+    private function stackBootstrap(bool $jit): string
+    {
+        $pop = '$___F___=array_pop($___MCFLAGS___);$___V___=array_pop($___STACK___);'
+            . 'if($___F___===null)return null;'
+            . 'if($___F___===3)return $___V___^$___MCKI___;'
+            . 'if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));'
+            . 'if($___F___===1)return $___MCPLAIN___[$___V___];'
+            . 'if($___F___===2)return $___V___[1];'
+            . 'if($___F___===5)return $___V___;'
+            . 'return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));';
+        $peek = '$___C___=count($___STACK___);if(!$___C___)return null;'
+            . '$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];'
+            . 'if($___F___===3)return $___V___^$___MCKI___;'
+            . 'if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));'
+            . 'if($___F___===1)return $___MCPLAIN___[$___V___];'
+            . 'if($___F___===2)return $___V___[1];'
+            . 'if($___F___===5)return $___V___;'
+            . 'return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));';
+
+        $head = "\$___MCPLAIN___=[];\$___MCFLAGS___=[];\n\$___MCFLAG___=0;\n";
+        $foot = "\$___MCPOP___=function()use(&\$___STACK___,&\$___MCFLAGS___,&\$___MCPLAIN___,\$___MCPAD___,\$___MCKI___){" . $pop . "};\n"
+            . "\$___MCPEEK___=function()use(&\$___STACK___,&\$___MCFLAGS___,&\$___MCPLAIN___,\$___MCPAD___,\$___MCKI___){" . $peek . "};\n";
+
+        if ($jit) {
+            // 内联编码栈：INIT 循环与 MCPUSH 直接内联编码，不调用 MCENC 闭包。
+            $init = "foreach(\$___INIT___ as \$___IV___){" . $this->inlineEncodeBlock('$___IV___') . "}\n";
+            $push = "\$___MCPUSH___=function(\$v)use(&\$___STACK___,&\$___MCFLAGS___,&\$___MCPLAIN___,\$___MCPAD___,\$___MCKI___,&\$___MCFLAG___){"
+                . $this->inlineEncodeBlock('$v') . "};\n";
+            return $head . $init . $push . $foot;
+        }
+        // 旧闭包栈：MCENC 闭包（设置 $___MCFLAG___）+ MCPUSH 调用它，最大兼容。
+        $mcenc = '$___MCENC___=function($v)use(&$___MCPLAIN___,&$___MCFLAG___,$___MCPAD___,$___MCKI___){'
+            . 'if(is_int($v)){$___MCFLAG___=3;return $v^$___MCKI___;}'
+            . 'if(is_string($v)){$___MCL___=strlen($v);if($___MCL___===0){$___MCFLAG___=4;return \'\';}if($___MCL___>8192){$___MCFLAG___=2;return [\'#\',$v];}$___MCFLAG___=4;return $v^substr($___MCPAD___,0,$___MCL___);}'
+            . 'if(is_float($v)||is_bool($v)||$v===null){$___MCFLAG___=5;return $v;}'
+            . 'if(is_array($v)){try{$___MCS___=serialize($v);}catch(\Throwable $___MCE___){$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;}$___MCL___=strlen($___MCS___);if($___MCL___>8192){$___MCFLAG___=2;return [\'#\',$v];}$___MCFLAG___=0;return $___MCS___^substr($___MCPAD___,0,$___MCL___);}'
+            . '$___MCPLAIN___[]=$v;$___MCFLAG___=1;return count($___MCPLAIN___)-1;};' . "\n";
+        $init = "foreach(\$___INIT___ as \$___IV___){\$___STACK___[]=\$___MCENC___(\$___IV___);\$___MCFLAGS___[]=\$___MCFLAG___;}\n";
+        $push = "\$___MCPUSH___=function(\$v)use(&\$___STACK___,&\$___MCFLAGS___,&\$___MCENC___,&\$___MCFLAG___){\$___STACK___[]=\$___MCENC___(\$v);\$___MCFLAGS___[]=\$___MCFLAG___;};\n";
+        return $head . $mcenc . $init . $push . $foot;
+    }
+
+    /**
+     * 内联编码块：把 $v（待编码表达式，如 '$v' / '$___IV___'）编码后压栈并设置 $___MCFLAG___。
+     * 全程无 continue/break，可同时用于 INIT 循环与 MCPUSH 闭包（闭包内 continue/break 非法）。
+     * 注意：本块使用 $___MCE_L___/$___MCE_S___/$___MCE_P___/$___MCE_E___ 作局部临时名，
+     * 与 handler 模板的 $___T*___ 不冲突。
+     */
+    private function inlineEncodeBlock(string $v): string
+    {
+        return
+            "if(is_int({$v})){\$___MCFLAG___=3;\$___STACK___[]={$v}^\$___MCKI___;}"
+            . "elseif(is_string({$v})){\$___MCE_L___=strlen({$v});"
+            .   "if(\$___MCE_L___===0){\$___MCFLAG___=4;\$___STACK___[]='';}"
+            .   "elseif(\$___MCE_L___>8192){\$___MCFLAG___=2;\$___STACK___[]=['#',{$v}];}"
+            .   "else{\$___MCFLAG___=4;\$___STACK___[]={$v}^substr(\$___MCPAD___,0,\$___MCE_L___);}"
+            . "}"
+            . "elseif(is_float({$v})||is_bool({$v})||{$v}===null){\$___MCFLAG___=5;\$___STACK___[]={$v};}"
+            . "elseif(is_array({$v})){\$___MCE_P___=false;try{\$___MCE_S___=serialize({$v});}catch(\\Throwable \$___MCE_E___){\$___MCE_P___=true;}"
+            .   "if(\$___MCE_P___){\$___MCPLAIN___[]={$v};\$___MCFLAG___=1;\$___STACK___[]=count(\$___MCPLAIN___)-1;}"
+            .   "else{\$___MCE_L___=strlen(\$___MCE_S___);"
+            .     "if(\$___MCE_L___>8192){\$___MCFLAG___=2;\$___STACK___[]=['#',{$v}];}"
+            .     "else{\$___MCFLAG___=0;\$___STACK___[]=\$___MCE_S___^substr(\$___MCPAD___,0,\$___MCE_L___);}"
+            .   "}"
+            . "}"
+            . "else{\$___MCPLAIN___[]={$v};\$___MCFLAG___=1;\$___STACK___[]=count(\$___MCPLAIN___)-1;}"
+            . "\$___MCFLAGS___[]=\$___MCFLAG___;";
+    }
+
     /** 各逻辑操作码对应的 case 体（占位符需带 $ 前缀，最终被替换为随机名） */
     private function caseBody(int $logical): string
     {
@@ -1106,7 +1192,7 @@ TPL;
             // DROP：丢弃栈顶。空栈时为空操作——`for` 的 init/step 段是"求值即丢弃"，
             // 但其中有的写法本就不留值（如 `$i = $i + 1` 走 POP_V），有的留值（`$i++`、
             // 函数调用）。编译器无法逐形态判定，统一补一条 DROP，由运行期按栈深度兜底。
-            case VmOp::DROP:     return 'if($___STACK___){$___MCPOP___();}';
+            case VmOp::DROP:     return 'if($___STACK___){array_pop($___STACK___);array_pop($___MCFLAGS___);}';
             case VmOp::LOAD_THIS:return '$___MCPUSH___($___THIS___);';
             case VmOp::PUSH_NULL:return '$___MCPUSH___(null);';
             case VmOp::NEG:      return '$___MCPUSH___(-$___MCPOP___());';

@@ -74,6 +74,9 @@ final class Config
 
         // 第三阶段开关
         $this->data['vm']            = $b($this->data['vm']) ?? false;
+        // VM JIT 友好模式（默认开）：解释器以内联栈形式发射，可被 OPcache 追踪 JIT 编译；
+        // 关时回退旧闭包栈（最大兼容，性能略低）。
+        $this->data['vm_jit']        = $b($this->data['vm_jit'] ?? true) ?? true;
         // VM 常量池加密（默认开）：PUSH_C 字面量抽入独立加密常量池；--no-vm-cpool 关
         $this->data['vm_cpool']      = $b($this->data['vm_cpool'] ?? true) ?? true;
         $this->data['eval']          = $b($this->data['eval']) ?? false;

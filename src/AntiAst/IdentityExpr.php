@@ -67,16 +67,47 @@ final class IdentityExpr
 
     /**
      * 生成等于 $str 的字符串表达式（结果恒等于 $str）。
-     * 用 base64 包裹隐藏明文，运行期 decode 还原；base64 字符在单引号串中均安全。
+     * 强化：拆成「两段」各自 base64 编码、运行期各自解码、再拼接到一起——
+     * 即"先解码一个内容、再拼接一个内容"，源码里看不到任何明文串；
+     * base64 字母表不含 ' 与 \，故可直接单引号包裹；切分点按字符串哈希散列
+     * 到 [1, len-2]，避免总在正中（降低可被模式匹配识别的概率）。
+     * 长度 < 2 时回退单段编码（避免空串拼接歧义）。
      */
     public function stringExpr(string $str): string
     {
         if ($str === '') {
             return "''";
         }
-        $enc = base64_encode($str);
-        // 防单引号逃逸：base64 字母表不含 ' 与 \，故可直接单引号包裹
-        return "base64_decode('" . $enc . "')";
+        $len = strlen($str);
+        if ($len < 2) {
+            $enc = base64_encode($str);
+            return "base64_decode('" . $enc . "')";
+        }
+        $off = 1 + (abs(crc32($str)) % max(1, $len - 2)); // 1 .. len-2，两段均非空（len=2 时退化为 1）
+        $p1 = base64_encode(substr($str, 0, $off));
+        $p2 = base64_encode(substr($str, $off));
+        return "base64_decode('" . $p1 . "') . base64_decode('" . $p2 . "')";
+    }
+
+    /**
+     * 字符串恒等"廉价运算"：在已定义变量 $var 上追加几行极廉价、不改变值的运算，
+     * 进一步打散 AST（先解码拼接、再经运算、再输出）。均为逐字节恒等：
+     *   - `$var = $var . ''` 拼接空串（字符串不变）
+     *   - `$var = (string)$var` 强制字符串态（字符串不变）
+     * 返回可直接拼进代码片段的 PHP 语句序列（末尾含换行）。
+     */
+    public function cheapStringOps(string $var): string
+    {
+        return "\${$var} = \${$var} . '';\n\${$var} = (string)\${$var};\n";
+    }
+
+    /**
+     * 整数恒等"廉价运算"：在已定义累加变量 $var 上追加一行极廉价、不改变值的运算
+     * （整数异或 0 恒等于自身），用于强化整数路径的反AST。末尾含换行。
+     */
+    public function cheapIntOps(string $var): string
+    {
+        return "\${$var} = \${$var} ^ 0;\n";
     }
 
     /**

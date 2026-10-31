@@ -161,6 +161,8 @@ final class Obfuscator
                 'layers'         => max(1, (int) $this->config->get('vm_layers')),
                 // VM opcode 组合执行（--vm-combo）：单 opcode 拆等价多指令序列，抗反编译。0=关。
                 'combo'          => (int) $this->config->get('vm_combo'),
+                // VM JIT 友好模式（--no-vm-jit 关）：内联编码栈，利于 OPcache JIT 追踪。
+                'jit'            => (bool) $this->config->get('vm_jit'),
             ];
             $current = $this->injectTicks($current, 'vm');
         $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
@@ -775,7 +777,7 @@ final class Obfuscator
                 $tokens = (new Whitespace($this->logger))->process($tokens, $cfg);
                 break;
             case 'junk_runtime':
-                $tokens = (new RuntimeJunk($this->salt, $this->logger))->process($tokens, $cfg);
+                $tokens = (new GeneralJunk($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
             case 'dead':
                 $tokens = (new DeadCodeInjector($this->salt, $this->logger))->process($tokens, $cfg);
@@ -1142,6 +1144,7 @@ final class Obfuscator
             'probe'          => (int) ($params['probe'] ?? 0),
             'cpool'          => (bool) ($params['cpool'] ?? true),
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
+            'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
         ];
     }
 
@@ -1328,7 +1331,7 @@ final class Obfuscator
         // 运行时垃圾指令（含执行缠结）：与 dead/stat 一致，由 junk_runtime flag 直接触发，
         // 旧管线（无 layers）走此分支；分层路径由 junk_runtime 层负责，两条路径互斥。
         if ($this->config->get('junk_runtime')) {
-            $junk = new RuntimeJunk($this->salt, $this->logger);
+            $junk = new GeneralJunk($this->salt, $this->logger);
             $tokens = $junk->process($tokens, $this->config);
         }
         // 语义等价变换层（结构化改写：算术/布尔恒等、控制流等价），置于 Token 形态混淆之前

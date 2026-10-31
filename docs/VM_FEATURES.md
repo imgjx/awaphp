@@ -98,6 +98,14 @@
 > ② **状态机派发压缩**——新增 `DISPATCH` / `SET_ST` 两条专用指令，把派发序章 5 条指令压成 1 条、
 > 状态写入 2 条压成 1 条。完整对比见 `docs/PERFORMANCE.md` 第 4 节。
 
+> **v1.1.3 起新增 JIT 友好模式（默认开，`vm_jit=true`）**：操作数栈编码逻辑**直接内联进 `MCPUSH` 闭包**，
+> 去掉旧实现 `MCPUSH → MCENC` 的嵌套闭包调用（每次压栈省一层调用 ≈26 ns，百万级压栈可省上百毫秒）；
+> 整段解释器保持**平坦大函数**，更易被 OPcache tracing-JIT 追踪编译。实测隔离栈编码路径（2M 次压栈密集循环，
+> CLI 关 OPcache JIT，5 次中位数）：jit 内联 **64.05 s** vs nojit 闭包 **66.82 s**——**约快 4%**，且两种
+> 模式语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢）。`--no-vm-jit` 回退到旧闭包栈，最大兼容。
+> 注：该 VM 是「每指令一次闭包调用」的 PHP 实现，OPcache tracing-JIT 对其整体提速有限（跨闭包难深度内联），
+> jit 模式的价值主要在「平坦函数更易被 JIT 接纳 + 省一层闭包调用」。`DROP` 指令同步优化为空栈直接空操作。
+
 ---
 
 ## 5. 使用与集成
@@ -214,9 +222,9 @@ GUI（LayerDescriptor 分层参数 `modules`）与 CLI 等价：分层配置传 
 
 ### 6.10 字节码级真实垃圾指令（`--vm-junk`，P7）
 
-在**编译期、字节码层面**向已编译的 VM `Program` 注入"真实执行"的垃圾指令序列（而非在原始 PHP 源码 token 层插入废代码，那是 `src/Optimize/RuntimeJunk.php` 的职责）。
+在**编译期、字节码层面**向已编译的 VM `Program` 注入"真实执行"的垃圾指令序列（由 `src/Vm/VmBytecodeJunk.php` 实现；而在原始 PHP 源码 token 层插入废代码是 `src/Junk/GeneralJunk.php` 的职责，两者已自 v1.1.3 起彻底分离为独立模块）。
 
-**与 RuntimeJunk 的本质区别**：垃圾指令是 VM **opcode 序列**，进入 gzip 二进制字节码容器、并随分片加密 + 操作码随机化一起被掩盖。静态分析者反编译出的只有一串被打乱编号的操作码，看不到任何 PHP 语句，抗分析更强。
+**与 GeneralJunk（token 层运行时垃圾）的本质区别**：垃圾指令是 VM **opcode 序列**，进入 gzip 二进制字节码容器、并随分片加密 + 操作码随机化一起被掩盖。静态分析者反编译出的只有一串被打乱编号的操作码，看不到任何 PHP 语句，抗分析更强。
 
 **注入时机**（`RuntimeGenerator::buildArtifact` 合并完所有段之后、`collectUsed` / `remap` / 控制流平坦化之前）：
 
@@ -628,3 +636,21 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
 - **回归**：TP8 示例五档 × 11 端点全部逐字节等价（`low` 228 KB / `mid` 412 KB / `high` 2.1 MB /
   `max` 3.3 MB / `ultra` 6.9 MB）；`run_tests` 32、`hardening_test` 32、`v105` 14、`v106` 29、
   `v107` 23、`v108` 37、`v109` 59、`syntax_compat` 7、`token_obf` 32 全绿。
+
+### 11.17 v1.1.3：档位功能补全 + 垃圾模块重构 + 深度反AST加固 + VM JIT 友好模式
+
+> 已发布为正式版：tag `1.1.3` + GitHub Release + `origin` 推送 + 镜像反代 Release。
+
+- **档位功能覆盖补齐（#157）**：
+  - `low` 预设新增 `anti_ast` 层（此前仅 mid 及以上有），`low`/`mid`/`high`/`max`/`ultra` 五档覆盖（`min` 仍零开销不含）；
+  - `high` 预设补 `shell:honeypot`（`count=2`）+ `shell:structpoison`（`rounds=2`），反分析能力梯度更连续（min 无壳 → low 控制流+anti_ast → mid VM+蜜罐/毒化 → high VM+蜜罐/毒化+状态机 → max/ultra 顶格）。
+- **垃圾模块重构（#158）**：删除 VM 专供 `src/Vm/VmJunk.php` 与通用 `src/Optimize/RuntimeJunk.php`，**重拆为两个独立、极廉价模块**：
+  - `src/Junk/GeneralJunk.php`（通用垃圾，token 层 `junk_runtime`）：注入极廉价计算废语句（恒等运算 / 无副作用赋值 / 死分支），绝不引入重计算；
+  - `src/Vm/VmBytecodeJunk.php`（无用字节码覆盖，VM `Program` 字节码层）：每条 `PUSH_C … DROP` 栈平衡、单指令级极廉价、不读写帧变量、不含跳转/终结/输出指令，随分片加密 + 操作码随机化一同被掩盖。
+- **深度反AST 强化（#159）**：语句位常量输出——字符串由单段 base64 升级为**两段 base64 解码拼接**（`base64_decode(p1).base64_decode(p2)`，切分点按 `crc32` 散列），并定义变量承载；加 `(string)` / `.''` / `^0` 等**极廉价恒等噪声**；整数累加器保留并加廉价噪声。每条生成式构建期 `eval` 校验，语义逐字节等价。
+- **VM 性能提升 + JIT 友好模式（#160，不改栈式架构）**：
+  - 操作数栈编码逻辑**内联进 `MCPUSH` 闭包**（去掉 `MCPUSH → MCENC` 嵌套闭包调用 ≈26 ns/压栈），整段解释器保持平坦大函数，利于 OPcache tracing-JIT 追踪编译；默认开（`vm_jit=true`），`--no-vm-jit` 回退旧闭包栈（语义逐字节等价）；
+  - `DROP` 优化为空栈直接空操作；
+  - 两种模式对象均走明文槽 `$___MCPLAIN___`（flag1，按引用返回），属性写回不丢（此前 jit 路径因缺 `is_array` 分支把对象误走 serialize 明文槽导致属性写回丢失，已修）；
+  - 实测 jit 内联比 nojit 闭包约快 **4%**（隔离栈编码路径，CLI 关 OPcache JIT，2M 次压栈）。
+- **回归**：`run_tests` 32、`hardening_test` 32、`syntax_compat` 7、`token_obf` 32 全绿；VM 专项 `vm_gen_probe` 290（FAIL=0）、`vm_comprehensive`、`vm_class_debug`、`vm_ref_e2e`（13/14，1 个为参考运行期 `runtime.php` 既存数组元素引用限制，发货产物 `RuntimeGenerator` 对 `ref_arr_of_ref` 输出 `1020` 与原生一致）、`vm_p8` 77、`vm_syntax_probe`（真编译 617 / 回退 7 / 失败 32，失败均为 VM 编译器已知语法覆盖缺口，与本次改动无关）、`antiast_check` 11 全绿。

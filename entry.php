@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.2');
+define('OBFUSCATOR_VERSION', '1.1.3');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -44,7 +44,7 @@ foreach ([
     'src/Optimize/DeadCodeInjector.php',
     'src/Optimize/Whitespace.php',
     'src/Optimize/StatHook.php',
-    'src/Optimize/RuntimeJunk.php',
+    'src/Junk/GeneralJunk.php',
     'src/Optimize/OpcacheCompiler.php',
     'src/Token/TokenObfuscator.php',
     'src/Layer/LayerRegistry.php',
@@ -61,7 +61,7 @@ foreach ([
     'src/Vm/RuntimeGenerator.php',
     'src/Vm/IncludeResolver.php',
     'src/Vm/ModuleLinker.php',
-    'src/Vm/VmJunk.php',
+    'src/Vm/VmBytecodeJunk.php',
     'src/Vm/VmFakeFog.php',
     'src/Vm/VmProbeMatrix.php',
     'src/ControlFlow/EvalShell.php',
@@ -110,6 +110,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-combo') {
             $out['vm_combo'] = 0;
+            continue;
+        }
+        if ($a === '--no-vm-jit') {
+            $out['vm_jit'] = false;
             continue;
         }
         if ($a === '--no-confrontation-llm') {

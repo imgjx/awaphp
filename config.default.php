@@ -58,6 +58,7 @@ return [
     'goto'         => 0,       // GOTO 混淆嵌套层数
     'goto_cpx'     => 0,       // GOTO 混淆每分发器最大语句数（>1 生效）
     'vm'           => false,   // VM 虚拟机壳
+    'vm_jit'       => true,    // VM JIT 友好模式：解释器以可被 OPcache 追踪 JIT 编译的内联栈形式发射（false=回退旧闭包栈，最大兼容）
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
     'eval'         => false,   // EVAL 多层加壳
@@ -84,7 +85,7 @@ return [
     'confrontation_llm'       => false, // 注入误导性注释（假 @deprecated/@see/@todo/@fixme + 伪造 CHANGELOG）并散布生僻 CJK，误导 LLM 优先级判断
     'confrontation_intensity' => 2,     // 反 LLM 注入强度 1-3（越大注释越密）
 
-    // 运行时垃圾指令（RuntimeJunk）：真实执行、无副作用、由 salt 确定性复现
+    // 运行时垃圾指令（GeneralJunk，token 层通用垃圾）：真实执行、无副作用、由 salt 确定性复现
     'junk_runtime'   => false, // 启用运行时垃圾指令插入（顶层 flag，旧管线直接调用）
     'junk_intensity' => 1,     // 插入密度 1~10（越大越密）
     'junk_fake_b64'  => true,  // 诱饵 base64（解了不用的孤立串）

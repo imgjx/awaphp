@@ -1,17 +1,20 @@
 <?php
 /**
- * VM 字节码级真实垃圾指令（VmJunk，P7）
+ * VM 字节码级无用字节码覆盖（VmBytecodeJunk，P7）
  *
- * 在【编译期、字节码层面】向已编译的 VM Program 注入"真实执行"的垃圾指令序列：
- * 运行时解释器会逐条执行这些 opcode，但它们
+ * 与 src/Junk/GeneralJunk.php（在【原始 PHP 源码 token 层】插入真实废代码，通用版垃圾）并列的
+ * 两大垃圾模块之一：本模块工作在【编译期、字节码层面】，向已编译的 VM Program 注入"真实执行"的
+ * 大量无用 opcode 序列（故称"无用字节码覆盖"）——运行时解释器会逐条执行这些 opcode，但它们：
  *   1. 仅操作操作数栈（PUSH_C + 算术/位运算/比较/拼接/转型 + DROP），绝不触碰帧变量；
  *   2. 严格栈平衡（入栈与出栈配对，净变化为 0），不破坏后续真实指令的执行；
  *   3. 无输出、无副作用、不调用任何函数、不含控制流跳转，绝不崩溃；
- *   4. 经 salt 确定性生成，可复现（同 salt + 同源码 + 同强度 ⇒ 产物逐字节一致）。
+ *   4. 全部为【极廉价】的单次整数/位运算（用户硬性要求：计算量不能太高，否则卡成傻瓜），
+ *      每条垃圾片段执行成本约等于一条真实算术指令；
+ *   5. 经 salt 确定性生成，可复现（同 salt + 同源码 + 同强度 ⇒ 产物逐字节一致）。
  *
- * 与 src/Optimize/RuntimeJunk.php（在【原始 PHP 源码 token 层】插入真实废代码）的区别：
- * 本类工作在【VM 可编程指令集层】——垃圾指令是 VM opcode 序列，进入分片加密的字节码
- * 容器，静态分析只能看到一串被打乱编号的操作码，看不到任何 PHP 语句，抗分析更强。
+ * 与 src/Junk/GeneralJunk.php 的区别：本类工作在【VM 可编程指令集层】——垃圾指令是 VM opcode
+ * 序列，进入分片加密的字节码容器，静态分析只能看到一串被打乱编号的操作码，看不到任何 PHP 语句，
+ * 抗分析更强；且由 `vm_junk` 配置规模驱动，可在 high/max/ultra 注入【大量】无用字节码。
  *
  * 注入时机：在 RuntimeGenerator::buildArtifact 合并完所有段之后、collectUsed/remap/
  * 控制流平坦化之前插入——保证这些 opcode 被纳入"已用操作码集合"（分配随机编号并生成
@@ -29,10 +32,11 @@
 
 declare(strict_types=1);
 
-final class VmJunk
+final class VmBytecodeJunk
 {
     /** 各垃圾模板：逻辑 opcode 序列（operands 直接内联为常量字面量）。
-     *  约定：所有模板均栈平衡（净栈变化 = 0）。注释标注平衡推导。 */
+     *  约定：所有模板均栈平衡（净栈变化 = 0）。注释标注平衡推导。
+     *  全部为【极廉价】单指令（整数/位运算/比较/转型），绝不引入循环或重计算。 */
     private const TEMPLATES = [
         // —— 二元运算：[a, b] -> 运算 -> 丢弃。结构：PUSH a, PUSH b, OP, DROP
         //   入栈 2，运算净 -1（2->1），DROP 净 -1 → 0。安全。
@@ -72,10 +76,8 @@ final class VmJunk
         ['chain', VmOp::ADD, VmOp::MUL],
         ['chain', VmOp::MUL, VmOp::ADD],
         ['chain', VmOp::BW_XOR, VmOp::BW_OR],
-        // —— 双丢弃：PUSH a, PUSH b, DUP, DROP, DROP（栈：+2, dup +1, 2×drop -2 → +1? 需校验）——
-        //   实际：PUSH a(+1) PUSH b(+1=2) DUP(+1=3) DROP(-1=2) DROP(-1=1) → 净 +1，不平衡！
-        //   故双丢弃改为 PUSH a, DUP, DROP, DROP 也错（净 +1）。改为下面更安全的形式：
-        ['dupdrop', VmOp::DUP],   // PUSH a, DUP, DROP, DROP => +1,+1,-1,-1 = 0 ✓（见 buildSnippet）
+        // —— 双丢弃：PUSH a, DUP, DROP, DROP（栈：+1,+1,-1,-1 = 0 ✓，见 buildSnippet）
+        ['dupdrop', VmOp::DUP],
     ];
 
     private Salt $salt;
@@ -86,7 +88,7 @@ final class VmJunk
     }
 
     /**
-     * 向 Program 注入 $count 条垃圾"片段"（每条片段由多字节码指令组成）。
+     * 向 Program 注入 $count 条垃圾"片段"（每条片段由多字节码指令组成），即"覆盖"大量无用字节码。
      * 注入位置在主段 / 各函数体 / 各方法体内确定性选择，保留可达且无害。
      *
      * @param array<string,mixed> $program
@@ -137,7 +139,6 @@ final class VmJunk
         }
 
         $inserted = 0;
-        $totalIns = 0;
         $pi = 0;
         $usedOnPath = array_fill(0, count($paths), 0);
         for ($k = 0; $k < $count; $k++) {
@@ -165,8 +166,7 @@ final class VmJunk
             $usedOnPath[$pi]++;
             $pi = ($pi + 1) % count($paths);
         }
-        $totalIns = $inserted;
-        return $totalIns;
+        return $inserted;
     }
 
     /** 依 salt 确定性生成第 $k 条垃圾片段（逻辑 opcode 序列） */

@@ -1,9 +1,16 @@
 <?php
 /**
- * 动态垃圾指令（RuntimeJunk）
+ * 通用垃圾指令（GeneralJunk，即"通用版垃圾插入"）
  *
- * 把"死代码"升级为"真实执行"的垃圾指令流：定义无用变量、执行无用运算、解无用 base64，
- * 全部进入真实执行流（不输出、不改动真实变量），由 salt 确定性生成，可复现。
+ * 与 VM 字节码级垃圾（src/Vm/VmBytecodeJunk.php，"无用字节码覆盖"）并列的两大垃圾模块之一：
+ * 本模块工作在【原始 PHP 源码 token 层】，把"真实执行"的垃圾语句插进 token 流——它不依赖 VM，
+ * 任何档位（min 之外的 token 档、shell 档）都能用，是"通用版"而非"VM 专供版"。
+ *
+ * 设计约束（用户硬性要求：计算量不能太高，否则卡成傻瓜）：
+ *   - 每条垃圾片段只动【本地垃圾变量】，无输出、无副作用、绝不崩溃；
+ *   - 全部是【极廉价的本地变量算术 / 赋值 / 字符串长度 / 一次 base64_decode】，
+ *     杜绝 md5 / crc32 / gzdeflate / while 循环这类重计算——纯"执行一下就丢弃"的垃圾；
+ *   - 由 salt 确定性生成，可复现（同 salt + 同源码 + 同强度 ⇒ 产物逐字节一致）。
  *
  * 注入策略：在顶层语句边界（顶层 ';' 之后）插入若干 junk 语句。junk_intensity 1~10
  * 控制插入密度。垃圾模板池每次按 salt 挑选组合，且变量名经 NameStyle 拟真化（无 _junk 指纹）。
@@ -11,7 +18,7 @@
 
 declare(strict_types=1);
 
-final class RuntimeJunk
+final class GeneralJunk
 {
     private NameStyle $style;
     private Salt $salt;
@@ -111,49 +118,50 @@ final class RuntimeJunk
         }
     }
 
-    /** 确定性生成 junk 源码（仅碰本地垃圾变量，无输出、无副作用、绝不崩溃） */
+    /**
+     * 确定性生成极廉价 junk 源码（仅碰本地垃圾变量，纯本地算术 / 赋值 / 一次 base64_decode，
+     * 无 md5/crc32/gzdeflate/while 循环，计算量可忽略——用户要求"只是执行的垃圾"，绝不卡顿）。
+     */
     private function genSnippet(): string
     {
         $v = $this->style->varName('jv');
         $w = $this->style->varName('jw');
         $u = $this->style->varName('ju');
-        $seed = $this->salt->derive('junk-' . $this->salt->deriveInt('jk', 0, 1 << 20), 6);
-        // 一律用 base64 承载随机载荷：base64 字符集 [A-Za-z0-9+/=] 不含引号/反斜杠，
+        // 所有模板均为【极廉价】本地运算；base64 字符集 [A-Za-z0-9+/=] 不含引号/反斜杠，
         // 杜绝把裸二进制拼进单引号字符串字面量导致的语法破坏。
-        $b64 = base64_encode($seed);
+        $b64 = base64_encode($this->salt->derive('junk-' . $this->salt->deriveInt('jk', 0, 1 << 20), 6));
 
-        // ---- 模板池：真实运算类（始终可用）----
+        // ---- 模板池：极廉价本地变量算术（始终可用，无函数调用 / 无循环 / 无重哈希）----
         $templates = [
-            // 类型 A：base64 -> strrev -> md5 -> crc32（字符串/整数运算，全安全）
-            // 注意 ${v}[0] 用花括号复杂语法：若写成 $v[0]，双引号会把 [$v][0] 当成对 $v 字符串取首字符，
-            // 从而把 "变量名[0]" 塌缩成一个孤零零的 '$'，生成 ($??'0') 造成语法错误（salt 相关、偶发）。
-            "$v=base64_decode('$b64');$v=strrev((string)$v).md5((string)(${v}[0]??'0'));$w=crc32((string)$v);",
-            // 类型 A'：gzdeflate -> unpack -> crc32 整数异或（杜绝 string^array 的 PHP8 TypeError）
-            "$v=gzdeflate((string)base64_decode('$b64'));$w=(unpack('N',substr((string)$v,0,4))[1]??0);$w=($w^crc32((string)$v))&0x7fffffff;",
-            // 类型 A''：str_rot13 -> bin2hex -> hex2bin -> strlen
-            "$v=str_rot13((string)base64_decode('$b64'));$w=hex2bin(bin2hex((string)$v));$w=strlen((string)$w);",
-            // 类型 E：无用小循环（整数累加，固定上限 8 次，专用垃圾变量，绝不碰撞真实变量）
-            // 注意：双引号内 "{ $w" 的 '{' 后必须留一个空格，否则 "{$" 会触发 PHP 的花括号复杂插值导致源码解析错误。
-            // $w / $u 均未转义，运行时插值为拟真变量名；'{' 后的空格打断复杂插值。
-            "$w=0;$u=8;while($u-->0){ $w=($w*31+crc32((string)$w))&0x7fffffff;}",
+            // 类型 A：纯整型算术（1 次加法 + 1 次乘法 + 1 次位与），结果即丢弃
+            "$v=1;$v=$v+2;$w=$v*3;$w=$w&255;",
+            // 类型 B：整型减法 + 异或 + 或，结果丢弃
+            "$v=5;$v=$v-1;$w=$v^7;$w=$w|3;",
+            // 类型 C：字符串拼接（极廉价，无 strlen 之外的调用也可，但保留 strlen 增加噪声）
+            "$v='a';$v=$v.'b';$w=strlen($v);$w=$w+0;",
+            // 类型 D：整型左移 + 右移抵消（恒等噪声，纯位运算）
+            "$v=4;$v=$v<<2;$v=$v>>2;$w=$v+0;",
+            // 类型 E：三元无副作用（选取小整数），纯本地比较
+            "$v=2;$w=($v>1?$v:0)+0;$u=$w^0;",
         ];
 
-        // ---- fake_b64：诱饵 base64（永不解码 / 解了不用的孤立串）----
+        // ---- fake_b64：诱饵 base64（解了不用的孤立串；一次 base64_decode 极廉价）----
         if ($this->fakeB64) {
             $d1 = $this->style->varName('jdecoy');
             $d2 = $this->style->varName('jstore');
             $fake1 = base64_encode($this->salt->derive('junk-decoy-' . $this->salt->deriveInt('jd', 0, 1 << 20), 32));
             $fake2 = base64_encode($this->salt->derive('junk-store-' . $this->salt->deriveInt('js', 0, 1 << 20), 24));
-            $templates[] = "$d1='$fake1';";                                  // 纯诱饵：永不读取
-            $templates[] = "$d2=base64_decode('$fake2');";                  // 解了不用的孤立变量
-            $templates[] = "$d1=base64_decode('$fake1');$d2=strlen((string)$d1)&0xff;"; // 解出来只做位运算丢弃
+            // 诱饵：解一次、拼接自身、取长度——全程本地运算，无输出、无重计算
+            $templates[] = "$d1=base64_decode('$fake1');$d1=$d1.$d1;";
+            // 诱饵：解一次、取长度位与——丢弃
+            $templates[] = "$d2=base64_decode('$fake2');$w=strlen((string)$d2)&0xff;";
         }
 
-        // ---- fake_echo：经输出缓冲执行后立即清除，不留任何痕迹 ----
+        // ---- fake_echo：经输出缓冲执行后立即清除（一次 echo 极廉价，输出被 ob 吞掉不留痕）----
         if ($this->fakeEcho) {
             $o = $this->style->varName('job');
-            $templates[] = "ob_start();echo base64_decode('$b64');$o=ob_get_clean();$w=strlen((string)$o)&0xffff;";
-            $templates[] = "ob_start();echo strrev(md5((string)base64_decode('$b64')));$o=ob_get_clean();$w=crc32((string)$o);";
+            // 仅一次 echo + 一次 base64_decode（无 md5/crc32），输出缓冲立即清除
+            $templates[] = "ob_start();echo base64_decode('$b64');$o=ob_get_clean();$w=strlen((string)$o)&0xff;";
         }
 
         $idx = $this->salt->deriveInt('junk-tpl', 0, count($templates) - 1);

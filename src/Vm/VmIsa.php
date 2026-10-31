@@ -115,7 +115,7 @@ final class VmIsa
     /**
      * 重写整个 VM Program：覆盖主段 / 函数体 / 类方法 / 内嵌段。
      * 在 RuntimeGenerator 中于 flatten + fakeFog 之后、collectUsed 之前调用，
-     * 可一并收口「真实码 + VmJunk + VmFakeFog」三类来源的所有族内 opcode。
+     * 可一并收口「真实码 + VmBytecodeJunk + VmFakeFog」三类来源的所有族内 opcode。
      *
      * @param array<string,mixed> $program
      */

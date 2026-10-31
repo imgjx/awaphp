@@ -102,6 +102,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--vm-probe=` | VM 反调试 / 反篡改探针矩阵：注入 N 个探针（xdebug/phpdbg/uopz 检测 + 字节码 crc 自校验），命中即静默停止（>0 生效） |
 | `--vm-p8` | P8 一键总开关：等价开启 keychain+builtin-replace+morph，fake-fog=6、probe=4（单项可再覆盖） |
 | `--no-vm-cpool` | 关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立常量池（指令改索引引用），池以独立密钥加密，静态分析看不到明文常量 |
+| `--no-vm-jit` | 关闭 VM 解释器 JIT 友好模式（默认开，`vm_jit=true`）：开启时操作数栈编码逻辑**内联**进 `MCPUSH` 闭包、整段解释器保持平坦大函数，更易被 OPcache tracing-JIT 追踪编译、且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；关闭则回退到「`MCENC` 编码闭包 + `MCPUSH` 调用它」的旧实现，最大兼容。两种模式语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢） |
 | `--vm-combo[=N]` | VM opcode 组合执行（抗反编译）：把单条 opcode 拆成等价多指令序列（`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP,ADD`、`BOOL_NOT→PUSH_C 0,EQ` 等），打破 1:1 opcode 映射。N=1~3 为强度（默认 2）；`--no-vm-combo` 关闭 |
 | `--confrontation-llm` | Confrontation-LLM 反 LLM 分析：注入误导性注释（假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG 暗示「已被移除」实际仍在执行）并向壳内层散布生僻 CJK 注释，误导 LLM 优先级判断；配合 `--confrontation-intensity=N`（1~3，默认 2）调节密度；`--no-confrontation-llm` 关闭 |
 | `--newline-poison` | 换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符（数量 = `ceil(源字节数 / divisor)`，divisor 默认 2，即源 10KB → 5000 换行），一部分作语句间空行、一部分嵌进最长 base64 载荷串，纠缠进代码而非堆尾部；`mid`/`high`/独立模式下换行在产物中可见，`max`/`ultra`（含结构毒化壳）下换行随内层一同加密进密文；`--newline-poison-divisor=N` 改字节除数（默认 2）、`--newline-poison-min=N` 改下限（默认 0）、`--newline-poison-ratio=F` 改串内比例（默认 0.1）；`--no-newline-poison` 关闭 |

@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.1-blue)
+![Version](https://img.shields.io/badge/version-1.1.3-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -20,7 +20,7 @@
 - **token 级而非字符串级**：所有混淆作用于解析后的 token 流，避免脆弱的正则替换破坏代码。
 - **可复现**：给定相同的输入与 salt，产出的代码本体逐字节一致（仅文件头时间戳不同）。
 - **渐进式**：每一类保护都是独立开关，可按项目需要自由组合强度。
-- **性能可选**，六档从「几乎零成本」到「抗动态分析」：`min` 是**最接近原生**的档（性能贴近原生、几乎零开销）：不引入反调试、无壳、无复杂派生解密（仅做变量名/数字/字符串 base64+XOR 简单解密/去注释/压空白，运行时仍是普通 PHP 文件）——**性能损耗硬约束 ≤1.28×**（原生跑 100 ms 开 `min` 必须 < 128 ms），实测纯计算 1.01×、TP8 与原生同速，产物反而更小；`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——实测 `low` 6.3 ms / `mid` 11.1 ms。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
+- **性能可选**，六档从「几乎零成本」到「抗动态分析」：`min` 是**最接近原生**的档（性能贴近原生、几乎零开销）：不引入反调试、无壳、无复杂派生解密（仅做变量名/数字/字符串 base64+XOR 简单解密/去注释/压空白，运行时仍是普通 PHP 文件）——**性能损耗硬约束 ≤1.28×**（原生跑 100 ms 开 `min` 必须 < 128 ms），实测纯计算 1.01×、TP8 与原生同速，产物反而更小；`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——实测 `low` 6.3 ms / `mid` 11.1 ms。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**；v1.1.3 进一步把编码栈内联进压栈闭包、解释器保持平坦大函数以适配 OPcache 追踪 JIT，再快约 4%（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
 
 ---
 
@@ -63,6 +63,7 @@
 - `echo 'ok';` → 累加器 + 恒等表达式（`strlen(md5(1))===32` / `ord('A')===65` / `base64_decode(base64_encode(x))` 等积木拼出的等价取值）。
 - 每条改写都在**构建期 `eval` 逐字节校验**（改写前 vs 改写后输出一致），不通过则该条原样保留，绝不带着风险出厂。
 - 直接破坏「搜字符串常量定位敏感逻辑」的静态套路。
+- **v1.1.3 强化**：字符串常量输出改为「先解码一个内容、再拼接一个内容」两段式（`base64_decode('p1') . base64_decode('p2')`，切分点按 `crc32` 哈希散列、每次构建位置不同）+ 定义变量承载 + 极廉价恒等运算（`$s = $s ^ 0;`（整数累加器保留并加廉价噪声）/ `$s = (string)$s;`（字符串）/ `$s = $s . '';`），更高混淆密度且**不增加可观计算量**。`low` / `mid` / `high` / `max` / `ultra` 预设已默认覆盖 anti_ast（`min` 刻意不含，保持零开销）。
 
 ### 虚拟机保护（VM）
 把整段程序编译为**自定义字节码**，由内置解释器逐条解密执行（`--vm`）：
@@ -77,6 +78,7 @@
 - **指令集精简**：41 条同构 opcode 合并为 6 个参数化 opcode（`BINOP` / `UNOP` / `CAST_OP` / `INC_OP` / `VAROP` / `ARRAY_BUILD`）+ 隐藏 sub-id 表，消除「每个 opcode 自报家门」的语义指纹。
 - **opcode 组合执行**（`--vm-combo[=N]`）：把单条 opcode 拆成**等价多指令序列**——`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP+ADD`、`PUSH_C 2,POW→DUP+MUL`、`BOOL_NOT→PUSH_C 0,EQ`——打破 1:1 opcode 映射，抗反编译；N=1~3 为强度（默认 2），运行时等价性经 `tests/vm_gen_probe.php` 全量回归。
 - **复杂语法保真**（v1.0.9 拓展）：`list()/[]` 解构支持**表达式键**（字符串层把 `'k'` 编码成括号表达式后仍直接编译）；生成器方法 / `yield from` / 闭包生成器 / Fiber 生成器桥；`parent::` 非虚派发；闭包 `use` 引用写回；trait 方法体保真；heredoc 插值。个别暂不支持的语句走 **EVAL_STMT 语句级兜底**——兜底文本中的类引用自动 **FQCN 化**（`use` 别名展开、命名空间补全），eval 单元（全局作用域）里照常解析；头部序言（`declare` / `namespace`）经归一化安全网恒在最前。
+- **JIT 友好模式（默认开，v1.1.3）**：操作数栈编码逻辑**内联进 `MCPUSH` 闭包**、整段解释器保持**平坦大函数**，**更易被 OPcache tracing-JIT 追踪编译**，且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；`--no-vm-jit` 回退「`MCENC` 编码闭包 + `MCPUSH` 调用它」旧实现，语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢）。
 
 ### 反 LLM 静态分析（Confrontation-LLM）
 现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：
@@ -124,6 +126,7 @@ php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
 ### 运行时垃圾与执行缠结（反删除剥离）
 - **运行时垃圾注入**（`--junk-runtime`，强度 `--junk-intensity=N`）：在真实语句间插入 `crc32` / `base64_decode` / `strrev` 等无副作用计算，稀释真实逻辑密度。
 - **执行缠结**（`--junk-tangle`）：让垃圾值**参与真实赋值**再以恒等式抵消——`$v = intdiv($v * $jt, $jt)`（整型保真）。一旦攻击者删掉 `$jt = ($k|1)` 这类垃圾定义行，缠结行退化为 `intdiv($v * null, null)`，运行即抛 `DivisionByZeroError` 自杀。垃圾从「可剔除的噪音」升级为「正确性的组成部分」，直接反制「删代码块就完事」的剥离式破解。
+- **v1.1.3 模块重构**：垃圾模块重拆为**两个独立、极廉价**模块——`GeneralJunk`（token 层通用垃圾，覆盖全部非 VM 代码，由 `--junk-runtime` 驱动）与 `VmBytecodeJunk`（已编译 VM 字节码层面的无用字节码覆盖，单指令级极廉价、栈平衡恒为 0，由 `--vm-junk=N` 驱动），不再有"VM 专供版"与"通用版"混在一起、强计算废代码拖慢运行的问题；两者计算量均强制极低，绝不"卡成傻瓜"。
 
 ### 完整性防护
 - **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / 调试回溯。

@@ -1,6 +1,6 @@
 <?php
 /**
- * P7 回归测试：VM 字节码级真实垃圾指令（VmJunk）
+ * P7 回归测试：VM 字节码级无用字节码覆盖（VmBytecodeJunk）
  *
  * 验证要点：
  *   1. 语义保真：注入 N 段真实垃圾 opcode 后，VM 执行结果与原始 PHP 完全一致

@@ -151,7 +151,9 @@ final class AntiAst
                 }
             }
             $keyword = $stmtKind === T_RETURN ? 'return' : ($stmtKind === T_PRINT ? 'print' : 'echo');
-            $code .= "{$keyword} \${$accName};\n";
+            // 强化：累加变量再经一次极廉价的恒等运算（int ^ 0），打散 AST
+            $cheap = $this->id->cheapIntOps($accName);
+            $code .= "{$cheap}{$keyword} \${$accName};\n";
             return ['code' => $code, 'accName' => $accName, 'accVal' => $accVal, 'accType' => $accType, 'introDepth' => $introDepth];
         }
 
@@ -165,7 +167,9 @@ final class AntiAst
             $nm = $this->genName();
             $this->usedVars[$nm] = true;
             $keyword = $stmtKind === T_RETURN ? 'return' : ($stmtKind === T_PRINT ? 'print' : 'echo');
-            $code = "\${$nm} = {$expr};\n{$keyword} \${$nm};\n";
+            // 强化：先解码一段、再拼接一段 → 定义变量 → 极廉价运算 → 输出
+            $cheap = $this->id->cheapStringOps($nm);
+            $code = "\${$nm} = {$expr};\n{$cheap}{$keyword} \${$nm};\n";
             // 字符串不改写 accVal/accType（累加器仅用于整数），且不影响整数累加器状态
             return ['code' => $code, 'accName' => $accName, 'accVal' => $accVal, 'accType' => $accType, 'introDepth' => $introDepth];
         }

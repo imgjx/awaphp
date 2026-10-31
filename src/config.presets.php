@@ -82,8 +82,8 @@ return [
     // ===================== low：大部分混淆（无 VM）—— token 级全量 + EVAL/GZ 双层壳 =====================
     // 定位：**能日常上线、又真能挡人**的入门档。VM 壳把每条语句交给解释器逐条执行，是唯一
     // 「开销与业务语句数成正比」的开关，故 low 不用 VM；除此之外的 token 级变换与轻量壳全开：
-    // 变量/函数/类名、数字编码、字符串 XOR 装配、控制流（含 GOTO）、语义恒等改写、运行时垃圾、
-    // 死代码、token 形态、语句拆分、压缩，外挂 EVAL 多层壳 + GZ 壳 + 反调试探针。
+    // 变量/函数/类名、数字编码、字符串 XOR 装配、控制流（含 GOTO）、语义恒等改写、深度反AST、
+    // 运行时垃圾、死代码、token 形态、语句拆分、压缩，外挂 EVAL 多层壳 + GZ 壳 + 反调试探针。
     // 运行时成本仅剩「加载时一次解码」，跑起来与原生同速。
     'low' => [
         'layers' => [
@@ -94,6 +94,7 @@ return [
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 8, 'split' => 2]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 6]],
             ['name' => 'semantic',     'params' => ['strength' => 1]],
+            ['name' => 'anti_ast',     'params' => []],
             ['name' => 'junk_runtime', 'params' => ['intensity' => 2, 'fake_b64' => true, 'fake_echo' => true]],
             ['name' => 'dead',         'params' => ['density' => 2]],
             ['name' => 'comment',      'params' => []],
@@ -143,7 +144,7 @@ return [
         'shell_shield_intensity' => 2,
     ] + $FRAMEWORK_SAFE,
 
-    // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测 =====================
+    // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测（含蜜罐/结构毒化） =====================
     'high' => [
         'layers' => [
             ['name' => 'var',          'params' => ['length' => 16]],
@@ -166,6 +167,8 @@ return [
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 4]],
             ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
             ['name' => 'shell:anti_tamper', 'params' => ['segments' => 6, 'shutdown' => true]],
+            ['name' => 'shell:honeypot',    'params' => ['count' => 2]],
+            ['name' => 'shell:structpoison','params' => ['rounds' => 2]],
         ],
         'shell_shield' => true,
         'shell_shield_intensity' => 2,
