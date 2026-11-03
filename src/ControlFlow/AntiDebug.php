@@ -22,6 +22,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../Support/DeclareHoist.php';
+require_once __DIR__ . '/../ShellBinding.php';
 
 final class AntiDebug
 {
@@ -36,12 +37,14 @@ final class AntiDebug
      *
      * @param array{probes?:string|array,probes?:string,intensity?:int} $opts
      *   probes:    探针组（逗号分隔或数组）：
-     *              ext  扩展加载（xdebug/uopz/runkit/blackfire/tideways/xhprof）
+     *              ext  扩展加载（xdebug/uopz/runkit/blackfire/tideways/xhprof/vld）
      *              func 函数存在（xdebug_break 等）
      *              ini   ini 项（xdebug.mode / profiler_enable / remote_enable …）
-     *              env   环境变量（XDEBUG_CONFIG / PHPDBG）
+     *              env   环境变量（XDEBUG_CONFIG / PHPDBG / 插桩型 LD_PRELOAD）
      *              sapi  phpdbg SAPI
      *              trace 调用栈调试痕迹（debug_backtrace 扫描）
+     *              proc  进程跟踪痕迹（/proc/self/status 的 TracerPid、/proc/self/maps 注入 .so）
+     *              shell 脱壳检测（校验外壳绑定标记，缺失即判「VM 内层被抠出独立运行」）
      *   intensity: 1=明文内联 2=gz+base64 3=拟真命名 4=叠加 XOR
      */
     public function wrap(string $code, array $opts = []): string
@@ -50,7 +53,7 @@ final class AntiDebug
             $this->logger->warn('AntiDebug: 未找到 PHP 开标签，跳过');
             return $code;
         }
-        $probeList = $this->parseProbes($opts['probes'] ?? 'ext,func,ini,env,sapi,trace');
+        $probeList = $this->parseProbes($opts['probes'] ?? 'ext,func,ini,env,sapi,trace,shell');
         $intensity = max(1, min(4, (int) ($opts['intensity'] ?? 2)));
         if ($probeList === []) {
             $this->logger->warn('AntiDebug: 探针组为空，跳过');
@@ -105,7 +108,7 @@ final class AntiDebug
      */
     private function parseProbes($probes): array
     {
-        $valid = ['ext', 'func', 'ini', 'env', 'sapi', 'trace'];
+        $valid = ['ext', 'func', 'ini', 'env', 'sapi', 'trace', 'shell', 'proc'];
         $items = is_array($probes) ? $probes : explode(',', (string) $probes);
         $out = [];
         foreach ($items as $it) {
@@ -129,10 +132,18 @@ final class AntiDebug
             // --- 扩展加载 ---
             'ext' => "if(extension_loaded('xdebug')||extension_loaded('xdebug3'))\$r=true;"
                 . "if(extension_loaded('uopz')||extension_loaded('runkit')||extension_loaded('runkit7'))\$r=true;"
-                . "if(extension_loaded('blackfire')||extension_loaded('tideways')||extension_loaded('tideways_xhprof')||extension_loaded('xhprof'))\$r=true;",
+                . "if(extension_loaded('blackfire')||extension_loaded('tideways')||extension_loaded('tideways_xhprof')||extension_loaded('xhprof'))\$r=true;"
+                // 反汇编/字节码窥探类：VLD（vld 扩展，opcode 导出）、phpdbg 的 oplog 由 func 组覆盖
+                . "if(extension_loaded('vld')||extension_loaded('parsekit'))\$r=true;"
+                // 内存/执行流篡改类：禁用函数列表被改、open_basedir 被放开等常见脱壳调试前置
+                . "if(extension_loaded('taint')||extension_loaded('scream'))\$r=true;",
             // --- 函数存在 ---
             'func' => "if(function_exists('xdebug_break')||function_exists('xdebug_info')||function_exists('xdebug_start_trace'))\$r=true;"
-                . "if(function_exists('phpdbg_break_file')||function_exists('phpdbg_start_oplog'))\$r=true;",
+                . "if(function_exists('phpdbg_break_file')||function_exists('phpdbg_start_oplog'))\$r=true;"
+                // 实际挂载调试器才为真（区别于"装了 xdebug 但没在调试"的 CI 场景）
+                . "if(function_exists('xdebug_is_debugger_active')&&@xdebug_is_debugger_active())\$r=true;"
+                // 常见反编译/内存 dump 工具面：若这些函数被人临时塞回 PHP（patch ext 或 userland 替换）即判命中
+                . "if(function_exists('php_strip_whitespace')&&strpos(ini_get('disable_functions'),'xdebug')===false&&function_exists('xdebug_get_code_coverage'))\$r=true;",
             // --- ini 项 ---
             'ini' => "if((\$xv=@ini_get('xdebug.mode'))!==''&&\$xv!=='off'&&\$xv!==false)\$r=true;"
                 . "if(in_array((string)@ini_get('xdebug.profiler_enable'),array('1','on','true','yes'),true))\$r=true;"
@@ -141,10 +152,34 @@ final class AntiDebug
             // --- 环境变量 ---
             'env' => "if(getenv('XDEBUG_CONFIG'))\$r=true;"
                 . "if(isset(\$_SERVER['XDEBUG_CONFIG']))\$r=true;"
+                . "if(getenv('XDEBUG_SESSION'))\$r=true;"
+                . "if(getenv('PHP_IDE_CONFIG'))\$r=true;"
                 . "if(getenv('PHPDBG'))\$r=true;"
-                . "if(isset(\$_SERVER['PHPDBG_CONFIG']))\$r=true;",
+                . "if(isset(\$_SERVER['PHPDBG_CONFIG']))\$r=true;"
+                // 内存/执行分析器常见环境变量
+                . "if(getenv('BLACKFIRE_CLIENT_ID')||getenv('TIDEWAYS_APIKEY'))\$r=true;"
+                // 动态注入类预加载（frida/xdl/拦截器）：只认明显的插桩/AOP 痕迹，
+                // 不因 LD_PRELOAD 非空就判定——jemalloc 等分配器预加载在正常生产也常见。
+                . "foreach(array('LD_PRELOAD','LD_AUDIT') as \$ek){"
+                . "\$ev=(string)@getenv(\$ek);"
+                . "if(\$ev!==''&&preg_match('/(frida|xdl|substrate|inject|intercept|hook)/i',\$ev))\$r=true;"
+                . "}",
             // --- phpdbg SAPI ---
             'sapi' => "if(defined('PHP_SAPI')&&PHP_SAPI==='phpdbg')\$r=true;",
+            // --- 进程跟踪痕迹（Linux /proc）---
+            // 反调试的最底层信号：进程被 ptrace 附着（gdb/lldb/strace/调试器）时
+            // /proc/self/status 的 TracerPid 非 0；注入式 hook 框架会把自身 .so 映射进
+            // 进程地址空间，在 /proc/self/maps 留下 frida/xdl/substrate 等痕迹。
+            // 全部 @ 抑制 + is_string 兜底：非 Linux / 无 /proc / open_basedir 限制下静默跳过。
+            'proc' => "\$ps=@file_get_contents('/proc/self/status');"
+                . "if(is_string(\$ps)&&preg_match('/^TracerPid:[ \\t]*([0-9]+)/mi',\$ps,\$tm)&&(int)\$tm[1]!==0)\$r=true;"
+                . "\$mp=@file_get_contents('/proc/self/maps');"
+                . "if(is_string(\$mp)&&preg_match('/(frida|xdl|substrate|libinject)/i',\$mp))\$r=true;",
+            // --- 外壳绑定 / 脱壳检测（加强）---
+            // 校验混淆器在最外层注入的「外壳绑定标记」：完整混淆文件携带该盐派生常量；
+            // 一旦把 VM 内层抠出独立运行、或把外层标记 define 整行删掉，常量消失即判脱壳 → 终止。
+            // 仅当 vm_selfcheck 开启（标记确有注入）时由混淆器把 'shell' 纳入探针组，避免无标记时误杀。
+            'shell' => "if(" . ShellBinding::isUnboundExpr($this->salt) . ")\$r=true;",
             // --- 调用栈调试痕迹 ---
             // 只认真正的调试/剖析器符号（xdebug_* / phpdbg_* / Xdebug\* / Blackfire\* …），
             // **绝不用裸 'debug' 子串**：ThinkPHP 自带 think\debug\*、think\trace\TraceDebug、

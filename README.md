@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.4-blue)
+![Version](https://img.shields.io/badge/version-1.1.5-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -80,6 +80,7 @@
 - **复杂语法保真**（v1.0.9 拓展）：`list()/[]` 解构支持**表达式键**（字符串层把 `'k'` 编码成括号表达式后仍直接编译）；生成器方法 / `yield from` / 闭包生成器 / Fiber 生成器桥；`parent::` 非虚派发；闭包 `use` 引用写回；trait 方法体保真；heredoc 插值。个别暂不支持的语句走 **EVAL_STMT 语句级兜底**——兜底文本中的类引用自动 **FQCN 化**（`use` 别名展开、命名空间补全），eval 单元（全局作用域）里照常解析；头部序言（`declare` / `namespace`）经归一化安全网恒在最前。
 - **JIT 友好模式（默认开，v1.1.3）**：操作数栈编码逻辑**内联进 `MCPUSH` 闭包**、整段解释器保持**平坦大函数**，**更易被 OPcache tracing-JIT 追踪编译**，且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；`--no-vm-jit` 回退「`MCENC` 编码闭包 + `MCPUSH` 调用它」旧实现，语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢）。
 - **VM 内反调试（默认随 `--vm-probe` 开启，v1.1.4）**：解释器 **dispatch 循环内**每 512~8192 条指令（间隔盐派生）复检调试器/hook 扩展（phpdbg SAPI、uopz、runkit7、xdebug 实际挂载）；命中**不 `exit`**，而是把盐派生污染因子异或进 opcode 解码——指令流静默错乱、提前结束，**没有可下断点的比较分支、也没有可 patch 的 `exit`**；正常环境零语义影响，开销约 2~3 ns/指令。`--no-vm-inloop` 关闭。
+- **VM 高级环境自检（脱壳独立执行检测，默认开，v1.1.5）**：解释器初始化 + dispatch 循环内**双点**校验「外壳绑定标记」——混淆器在最外层 `define()` 一个盐派生常量，内层只持其 **sha256 摘要**（`hash_equals` 比摘要，**拿不到原文就无法伪造**）。把 runtime 闭包 + 字节码整段抠出独立运行、或删掉外层 define，自检即失败并把污染因子写进 opcode 解码 → **零输出、零报错**，无可下断点、无可 patch 的 exit。`--no-vm-selfcheck` 关闭。
 
 ### 反 LLM 静态分析（Confrontation-LLM）
 现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：
@@ -130,7 +131,8 @@ php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
 - **v1.1.3 模块重构**：垃圾模块重拆为**两个独立、极廉价**模块——`GeneralJunk`（token 层通用垃圾，覆盖全部非 VM 代码，由 `--junk-runtime` 驱动）与 `VmBytecodeJunk`（已编译 VM 字节码层面的无用字节码覆盖，单指令级极廉价、栈平衡恒为 0，由 `--vm-junk=N` 驱动），不再有"VM 专供版"与"通用版"混在一起、强计算废代码拖慢运行的问题；两者计算量均强制极低，绝不"卡成傻瓜"。
 
 ### 完整性防护
-- **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / 调试回溯。
+- **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / vld·parsekit / 调试回溯；**v1.1.5 新增 `proc` 组**——`/proc/self/status` 的 `TracerPid`（被 ptrace 附着：gdb/lldb/strace）+ `/proc/self/maps` 的 `frida|xdl|substrate|libinject`（注入式 hook 框架），并加强 `env` 组（`LD_PRELOAD`/`LD_AUDIT` 中的插桩痕迹，**不因非空就误杀 jemalloc 之类正常预加载**）。
+- **脱壳检测（外壳绑定标记，v1.1.5）**：外层 `define()` 盐派生常量 + 内层只持 sha256 摘要校验；缺标记即判定「VM 内层被抠出独立运行 / 标记被剥离」——反调试守卫走**显式终止**，VM 自检走**静默污染**（纵深两道）。
 - **防 hook eval**（`--anti-hook`）：运行期探针验证 eval 真实生效，识别被 uopz / runkit 劫持。
 - **守卫内移藏匿**：反调试 / 防 hook 守卫置于 VM / EVAL / GZ 编码壳**最内层**，被后续壳裹入密文——攻击者剥离外层代码块时够不到它们；自校验 / 授权绑定因依赖 `__FILE__` 明文锚点，仍留在最外层。
 - **自校验防篡改**（`--anti-tamper`）：掩码自校验 + 分段哈希 + 总长校验 + shutdown 二次校验。

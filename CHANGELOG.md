@@ -1,5 +1,90 @@
 # 更新日志（CHANGELOG）
 
+## v1.1.5 — 外壳反调试加强 + VM 高级环境自检（脱壳独立执行检测）
+
+> 主题：**给"被抠出来单独运行的 VM 内层"上一道单向锁**。v1.1.4 的 in-loop 探针解决的是
+> 「运行中被附加调试器」；本版解决「攻击者把 runtime 闭包 + 字节码整段抠走、丢进自己的
+> 脚手架里独立跑」。做法不是加 if-else 去 exit（那只是多一个可 patch 的点），而是让
+> **内层代码自己无法证明"我运行在完整混淆文件里"**——一旦证明失败，opcode 解码被污染，
+> 指令流静默错乱，没有任何提示、没有任何出口可下断点。
+
+### 新增 · 外壳绑定标记（`src/ShellBinding.php`）
+
+- **原理**：混淆器在最外层（一切编码壳之外）`define()` 一个盐派生的全局常量；
+  该常量名 = `_` + 11 位盐派生 hex，值 = 32 位盐派生 hex。VM 解释器初始化时校验它——
+  完整文件运行时它一定先就位；一旦把 VM 内层抠出独立运行，或把 define 整行删掉，
+  常量消失即判定「已脱壳 / 独立执行」。
+- **单向摘要（关键设计）**：运行期没有 salt，期望值只能固化进产物。若把**原始 token**
+  写进内层校验表达式，攻击者抠出内层即可读到期望值、自行 `define()` 伪造，整个自检归零。
+  故改为：外层 `define(NAME, TOKEN)` 是**唯一**持有原文处，内层只持
+  `DIGEST = sha256(TOKEN)`，校验 `hash_equals(DIGEST, hash('sha256', (string)constant(NAME)))`。
+  攻击者只拿到摘要，无法构造原像 → 判定无法绕过。原始 token 在整份产物中只出现一次。
+- **注入位置（三条约束同时满足）**：紧随 `shell:vm` 层之后注入——
+  ① 在 VM 产物**之外**（落在其 `<?php` 之后、VM 闭包之前，运行期先 define 再跑 VM）；
+  ② 在后续 eval/gz 载荷**之内**（随后被编码壳裹进密文，明文文件里看不到）；
+  ③ 在 `shell:anti_tamper` 应用**之前**（纳入其基线哈希，改一字节即触发自校验）。
+- **序言安全**：注入点经 `DeclareHoist::split()` 定位，`declare(strict_types=1)` /
+  `namespace` 恒留在最前，不会出现 "strict_types declaration must be the very first statement"。
+
+### 新增 · VM 高级环境自检（`vm_selfcheck`，默认开）
+
+- **命中反制：污染而非终止**。自检失败时写 `$___PZ0___ = <盐派生污染因子>`，该因子在每轮
+  取指时与 v1.1.4 的 `$___PZ___` 一并异或进 opcode 解码
+  （`OP = (INS[0]^SCRAMBLE)^(PZ^PZ0)`）→ 跳转表查不到 → `default: break 2` → 静默结束。
+  全程**没有 exit、没有异常、没有提示串**；实测抠出内层独立运行 → **零输出、零报错**。
+- **双点注入**：① 解释器初始化一处；② dispatch 循环内**周期复检**一处（每 512~8192 条指令，
+  与 in-loop 探针共用检查点）。只 patch 掉初始化那一行不足以恢复执行——下一条检查点会
+  重新种下污染因子。开销：每数千条指令一次 `defined+constant+sha256`（≈0.3 µs），可忽略。
+- **污染态异常静默收尾**：指令流错乱后，任何 `Throwable` 都只是错乱副产物。原先它会
+  rethrow 成 `Uncaught TypeError: count(): Argument #1 must be of type Countable|array, null given`
+  并暴露 VM 内部文件行号；现在 `catch` 开头判 `if(PZ|PZ0){break;}` 直接静默收尾，
+  并把收尾返回值改为 `is_array(STACK)&&count(STACK) ? pop() : null`。
+- **开关**：`--no-vm-selfcheck` 关闭（`vm_selfcheck=false`）；仅当 VM 层确实存在时才生效
+  （分层配置按「是否存在 `shell:vm` 层」判定，而非 `vm` 配置键）。
+
+### 加强 · 外壳反调试探针面
+
+- **新增 `proc` 探针组（Linux /proc）**：`/proc/self/status` 的 `TracerPid != 0`（被
+  ptrace 附着：gdb / lldb / strace）；`/proc/self/maps` 中出现 `frida|xdl|substrate|libinject`
+  （注入式 hook 框架把自身 `.so` 映射进进程）。全部 `@` 抑制 + `is_string` 兜底，
+  非 Linux / 无 `/proc` / `open_basedir` 限制下静默跳过。
+- **`env` 组加强**：`LD_PRELOAD` / `LD_AUDIT` 中出现 `frida|xdl|substrate|inject|intercept|hook`
+  即命中。**刻意不因非空就判**——jemalloc 等分配器预加载在正常生产也常见，误杀代价太大。
+- **`ext` / `func` 组加强**：补 `vld`（opcode 导出）、`parsekit`、`taint`、`scream`；
+  `func` 组补「实际挂载调试器」判定 `xdebug_is_debugger_active()` 与
+  `php_strip_whitespace + xdebug_get_code_coverage` 组合。
+- **新增 `shell` 探针组（脱壳检测）**：反调试守卫内校验同一个外壳绑定标记，缺失即显式终止。
+  与 VM 自检形成纵深：守卫是「显式终止」，VM 自检是「静默污染」。
+- **分层档位自动并入 `shell` 组**：`LayerDescriptor` 的 `T_LIST` 按 `options` 白名单过滤，
+  未登记的组名会被**静默丢弃**；故不再依赖预设手写，而是在 `applyShellLayer()` 里按
+  `selfcheck` 自动并入，并把 `shell` / `proc` 登记进 options（预设手写也合法）。
+
+### 修复
+
+- **P0 `high` / `max` / `ultra` 产物一运行即致命错误**：分层管线 `runLayered()` 从未注入
+  外壳绑定标记（只有 legacy 单管线注入了），而 `shell:vm` 层又把 `selfcheck=1` 传给 VM →
+  VM 判定「脱壳」→ opcode 污染 → `count(null)`。现已在 `shell:vm` 层应用后立即注入
+  （用 v1.1.4 遗留未用的 `$bindingInjected` 标志保证只注一次）。
+- **`ShellBinding::guardSource()` 语义反转**：`boundExpr()` 表示「绑定完好」，却被直接写进
+  `if(...)` → 变成「绑定完好就报错」。改为 `if(isUnboundExpr(...))`。
+- **`vm_inloop_probe` 兼容**：污染态静默收尾后，命中路径的输出更干净（仍无 Fatal/Parse）。
+
+### 测试与回归
+
+- 新增 `tests/vm_selfcheck.php`（12 项）：结构注入 / 内层不含 token 原文 / 双点注入计数 /
+  标记就位时逐字节等价 / 抠出内层输出被污染且无 Fatal·Parse·提示串 / 关闭自检后裸产物正常 /
+  守卫缺标记先于业务代码终止。
+- 新增 `tests/preset_e2e.php`（72 项 = 6 档 × 3 fixture × 6 断言）：**预设档位的端到端兜底**。
+  历史多次漏网都出在「legacy 单管线正常、分层预设致命错误」，此前没有任何测试覆盖预设路径；
+  现每档都跑 构建 → `php -l` → 运行 → 与原生逐字节比对 → 无告警 → 结构不变式。
+- 全量：`run_tests` 32、`hardening_test` 32、`syntax_compat` 7、`token_obf` 32、`antiast_check` 11、
+  `vm_inloop_probe` 6、`vm_selfcheck` 12、`preset_e2e` 72、`vm_junk` 120、`vm_p8` 77、
+  `vm_gen_probe` 290、`vm_comprehensive` 全绿；`vm_ref_e2e` 13/14、`vm_syntax_probe`
+  （617/7/32）与 1.1.3/1.1.4 基线完全一致（既存缺口，与本次改动无关）。
+- 文档：`README.md`、`docs/VM_FEATURES.md`（§11.19）、`docs/CLI_OPTIONS.md`
+  （`--no-vm-selfcheck` + 探针组）、`docs/PERFORMANCE.md`（自检开销）。
+- 版本号：`entry.php` 升至 `1.1.5`。
+
 ## v1.1.4 — VM 内反调试（dispatch 循环内周期探针 + 命中污染指令流）
 
 > 主题：**把反调试从"入口一次"推进到"执行全程"**。此前 VM 探针（`--vm-probe`）只在解释器

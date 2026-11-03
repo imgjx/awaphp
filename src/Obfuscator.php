@@ -33,6 +33,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/ShellBinding.php';
+
 final class Obfuscator
 {
     /**
@@ -121,11 +123,19 @@ final class Obfuscator
         $phpVer->setTarget((string) $this->config->get('php_version'));
         $current = $this->shell($current, '目标PHP版本外壳', fn ($c) => $phpVer->wrap($c), 'phpver');
 
+        // 外壳绑定 / 脱壳检测：仅当 vm + vm_selfcheck 同时开启时注入（标记定义由外壳层负责，
+        // 反调试守卫与 VM 运行期各自独立校验）。该常量仅完整混淆文件携带，VM 被抠出独立运行即失效。
+        $this->selfcheck = (bool) $this->config->get('vm_selfcheck') && (bool) $this->config->get('vm');
+
         // 反调试 / 防 hook eval：置于编码壳之前（最内层），被 vm/eval/gz 裹入密文，
         // 攻击者须先破壳才能看到、更无从"整段删除代码块"让保护蒸发。
         if ($this->config->get('anti_debug')) {
+            $adProbes = (string) $this->config->get('ad_probes');
+            if ($this->selfcheck && strpos($adProbes, 'shell') === false) {
+                $adProbes = $adProbes === '' ? 'shell' : $adProbes . ',shell';
+            }
             $adOpts = [
-                'probes'    => (string) $this->config->get('ad_probes'),
+                'probes'    => $adProbes,
                 'intensity' => (int) $this->config->get('ad_intensity'),
             ];
             $current = $this->injectTicks($current, 'anti_debug');
@@ -164,6 +174,8 @@ final class Obfuscator
                 // VM JIT 友好模式（--no-vm-jit 关）：内联编码栈，利于 OPcache JIT 追踪。
                 'jit'            => (bool) $this->config->get('vm_jit'),
                 'inloop'         => (bool) $this->config->get('vm_inloop'),
+                // VM 高级环境自检（脱壳独立执行检测）：仅混淆器显式开启，见 buildArtifact selfcheck 选项。
+                'selfcheck'      => $this->selfcheck,
             ];
             $current = $this->injectTicks($current, 'vm');
         $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
@@ -179,6 +191,13 @@ final class Obfuscator
             ];
             $current = $this->injectTicks($current, 'gz');
             $current = $this->shell($current, 'GZ压缩加壳', fn ($c) => (new GzEncoder($this->logger, $this->salt))->wrap($c, $gzOpts), 'gz');
+        }
+        // 外壳绑定标记（脱壳检测）：注入在 gz/eval/vm 全部编码壳【之外】，但仍在 Copyright /
+        // 自校验 / 授权守卫等外层之前——既保证标记不被裹进 VM 内层（VM 被抠出独立运行时标记随之
+        // 消失、自检判定脱壳并污染指令），又让自校验防篡改的基线哈希覆盖到本标记（避免误报篡改）。
+        // 仅 vm+vm_selfcheck 开启时注入。
+        if ($this->selfcheck) {
+            $current = $this->injectShellBinding($current);
         }
         // 诱饵函数：拟真命名 + 拟真函数体，整体编码进 gzinflate/base64 壳（不暴露明文），
         // 永不调用、零运行期开销；追加在加壳之后、自校验之前，使防篡改基线包含该壳行。
@@ -303,6 +322,16 @@ final class Obfuscator
             }
         }
         $layers = $this->orderShellLayers($rawLayers);
+        // 外壳绑定 / 脱壳检测：分层模式下 VM 由 shell:vm 层启用（vm 配置键未必为真），
+        // 故以"是否存在 shell:vm 层"判定是否启用；与 vm_selfcheck 配置共同决定。
+        $hasVmLayer = false;
+        foreach ($rawLayers as $l) {
+            if (($l['name'] ?? '') === 'shell:vm') {
+                $hasVmLayer = true;
+                break;
+            }
+        }
+        $this->selfcheck = (bool) $this->config->get('vm_selfcheck') && $hasVmLayer;
         // 换行缠绕配额：输入源码字节数 / divisor，按"每一层壳"平均分摊（见 poisonTick）
         $this->mcActive = true;
         $this->nlInit(
@@ -311,6 +340,7 @@ final class Obfuscator
         );
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
+        $bindingInjected = false;
 
         // 文件头 banner 必须位于【毒化壳之内】：毒化壳的指纹对象是除载荷外的完整最终
         // 文件，若 banner 在壳之后追加，构建期骨架与运行期 __FILE__ 永久不等 → 全量毒化。
@@ -341,6 +371,16 @@ final class Obfuscator
                 $bannerDone = true;
             }
             $current = $this->applyLayer($layer, $tokens, $current);
+            // 外壳绑定标记（VM 高级环境自检的外侧锚点）：必须紧随 shell:vm 之后注入。
+            // 位置约束三条同时成立：
+            //   1) 在 VM 产物【之外】—— 落在其 <?php 之后、VM 闭包之前，运行期先 define 再跑 VM；
+            //   2) 在后续 eval/gz 载荷【之内】—— 后面才被编码壳裹进密文，明文文件里看不到；
+            //   3) 在 anti_tamper 应用【之前】—— 纳入其基线哈希，改一个字节即触发自校验。
+            // 分层模式下 VM 由 shell:vm 层启用（vm 配置键未必为真），故不能用 $this->vm 判定。
+            if ($this->selfcheck && !$bindingInjected && ($layer['name'] ?? '') === 'shell:vm') {
+                $current = $this->injectShellBinding($current);
+                $bindingInjected = true;
+            }
         }
         if ($tokens !== null) {
             $current = $this->emit($tokens);
@@ -614,8 +654,29 @@ final class Obfuscator
         return $this->poisonTick($code, $key);
     }
 
+    /**
+     * 注入「外壳绑定标记」：在最外层、一切编码壳之外（先于 VM/eval/gz 解码逻辑）定义盐派生的
+     * 全局常量，并紧跟一个守卫——标记缺失/不匹配即终止（外壳反调试加强：脱壳检测）。
+     * 完整混淆文件运行时标记先就位，VM 运行期自检 / 反调试守卫据此区分「完整文件」与
+     * 「VM 内层被抠出独立运行 / 标记 define 被删除」。仅 vm+vm_selfcheck 开启时调用。
+     */
+    private function injectShellBinding(string $code): string
+    {
+        $inject = ShellBinding::defineSource($this->salt) . "\n" . ShellBinding::guardSource($this->salt) . "\n";
+        // 必须落在 declare(strict_types=1) / namespace 序言【之后】：若直接插在开标签后，
+        // 会把序言挤成非首语句 → 产物致命错误（strict_types / namespace 头部约束）。
+        // DeclareHoist::split() 给出的前缀正是"开标签 + 前导 declare/namespace"。
+        $parts = DeclareHoist::split($code);
+        if ($parts['prefix'] === '') {
+            return "<?php\n" . $inject . $parts['body'];
+        }
+        return rtrim($parts['prefix']) . "\n" . $inject . $parts['body'];
+    }
+
     /** 互斥注释的投放开关（结构毒化壳之后必须关闭，否则指纹失配） */
     private bool $mcActive = true;
+    /** 是否启用外壳绑定 / 脱壳检测（vm + vm_selfcheck 同时开启时为真） */
+    private bool $selfcheck = false;
 
     /**
      * 互斥注释（Confrontation 家族）：把"互相打脸"的成对注释投进【壳内部】。
@@ -886,8 +947,23 @@ final class Obfuscator
                     'chunks' => (int) ($params['chunks'] ?? 3),
                 ]);
             case 'anti_debug':
+                // 外壳绑定 / 脱壳检测探针（'shell' 组）：分层模式是否注入绑定标记由 shell:vm 层
+                // 决定（见 runLayered），故在此按 $this->selfcheck 自动并入，而非指望预设手写——
+                // LayerDescriptor 的 T_LIST 白名单会静默丢弃未登记的组名，手写并不可靠。
+                // 该组只在 anti_debug 位于 VM 内层时才有意义：抠出 VM 内层独立运行 → 标记消失 → 终止。
+                $probes = (string) ($params['probes'] ?? 'ext,func,ini,env,sapi,trace,proc');
+                $list = [];
+                foreach (explode(',', $probes) as $p) {
+                    $p = trim($p);
+                    if ($p !== '' && !in_array($p, $list, true)) {
+                        $list[] = $p;
+                    }
+                }
+                if ($this->selfcheck && !in_array('shell', $list, true)) {
+                    $list[] = 'shell';
+                }
                 return (new AntiDebug($this->salt, $this->logger))->wrap($code, [
-                    'probes'    => (string) ($params['probes'] ?? 'ext,func,ini,env,sapi,trace'),
+                    'probes'    => $list,
                     'intensity' => (int) ($params['intensity'] ?? 2),
                 ]);
             case 'anti_hook':
@@ -1147,6 +1223,7 @@ final class Obfuscator
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
             'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
             'inloop'         => (bool) ($params['inloop'] ?? $this->config->get('vm_inloop')),
+            'selfcheck'      => (bool) ($params['selfcheck'] ?? $this->selfcheck),
         ];
     }
 

@@ -104,12 +104,13 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--no-vm-cpool` | 关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立常量池（指令改索引引用），池以独立密钥加密，静态分析看不到明文常量 |
 | `--no-vm-jit` | 关闭 VM 解释器 JIT 友好模式（默认开，`vm_jit=true`）：开启时操作数栈编码逻辑**内联**进 `MCPUSH` 闭包、整段解释器保持平坦大函数，更易被 OPcache tracing-JIT 追踪编译、且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；关闭则回退到「`MCENC` 编码闭包 + `MCPUSH` 调用它」的旧实现，最大兼容。两种模式语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢） |
 | `--no-vm-inloop` | 关闭 VM 内反调试（默认随 `--vm-probe` 开启，`vm_inloop=true`）：解释器 dispatch 循环内每 512~8192 条指令复检一次调试器/hook 扩展（phpdbg SAPI、uopz、runkit7、xdebug 实际挂载），命中**不 exit**，而是把盐派生污染因子异或进 opcode 解码，使指令流静默错乱并提前结束——没有可下断点的比较分支、也没有可 patch 的 exit；正常环境零语义影响（污染因子恒 0），开销约 2~3 ns/指令。`shell:vm` 的 `inloop` 参数可覆盖 |
+| `--no-vm-selfcheck` | 关闭 VM 高级环境自检（默认开，`vm_selfcheck=true`）：解释器初始化 + dispatch 循环内**双点**校验「外壳绑定标记」——混淆器在最外层定义盐派生常量，内层只持其 sha256 摘要并用 `hash_equals` 比对；把 VM 内层整段抠出独立运行、或删掉外层 define，自检即失败并把盐派生污染因子写进 opcode 解码 → 零输出、零报错（无可下断点、无可 patch 的 exit）。仅当产物含 VM 层时生效；`shell:anti_debug` 的 `probes` 含 `shell` 组时，守卫额外做一次显式终止校验 |
 | `--vm-combo[=N]` | VM opcode 组合执行（抗反编译）：把单条 opcode 拆成等价多指令序列（`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP,ADD`、`BOOL_NOT→PUSH_C 0,EQ` 等），打破 1:1 opcode 映射。N=1~3 为强度（默认 2）；`--no-vm-combo` 关闭 |
 | `--confrontation-llm` | Confrontation-LLM 反 LLM 分析：注入误导性注释（假 `@deprecated`/`@see`/`@todo`/`@fixme` + 伪造 CHANGELOG 暗示「已被移除」实际仍在执行）并向壳内层散布生僻 CJK 注释，误导 LLM 优先级判断；配合 `--confrontation-intensity=N`（1~3，默认 2）调节密度；`--no-confrontation-llm` 关闭 |
 | `--newline-poison` | 换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符（数量 = `ceil(源字节数 / divisor)`，divisor 默认 2，即源 10KB → 5000 换行），一部分作语句间空行、一部分嵌进最长 base64 载荷串，纠缠进代码而非堆尾部；`mid`/`high`/独立模式下换行在产物中可见，`max`/`ultra`（含结构毒化壳）下换行随内层一同加密进密文；`--newline-poison-divisor=N` 改字节除数（默认 2）、`--newline-poison-min=N` 改下限（默认 0）、`--newline-poison-ratio=F` 改串内比例（默认 0.1）；`--no-newline-poison` 关闭 |
 | `--eval` | EVAL 多层加壳 |
 | `--eval-layers=` | EVAL 加壳层数（默认 3） |
-| `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等） |
+| `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等）。探针组可由配置项 `ad_probes` 指定（逗号分隔）：`ext`（扩展加载：xdebug/uopz/runkit/blackfire/tideways/xhprof/vld/parsekit/taint/scream）、`func`（函数存在 + xdebug 实际挂载）、`ini`、`env`（XDEBUG_CONFIG / PHPDBG / 插桩型 LD_PRELOAD·LD_AUDIT）、`sapi`（phpdbg）、`trace`（调用栈）、`proc`（`/proc/self/status` 的 TracerPid、`/proc/self/maps` 注入 .so）、`shell`（脱壳检测：外壳绑定标记缺失即终止）。分层档位下 `shell` 组由混淆器按 `vm_selfcheck` 自动并入 |
 | `--anti-hook` | 防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测） |
 | `--anti-tamper` | 自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验） |
 | `--shell-shield-intensity=` | 逐层壳自保护强度 `1-3`（默认随等级：min,low=1 / mid,high=2 / max,ultra=3；`min` 的 `shell_shield` 本身为关，此项对其无效）；仅控制语义变换激进度，变量重命名始终开启 |

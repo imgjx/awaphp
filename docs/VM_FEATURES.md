@@ -685,3 +685,47 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   in-loop 负责「运行中被附加调试器」的持续检测。两者覆盖「运行前」与「运行中」两个窗口。
 - **测试**：`tests/vm_inloop_probe.php` 6 项——结构注入、正常环境逐字节等价、假调试器命中
   后输出被污染且无 Fatal/Parse、关闭 in-loop 后假调试器不生效（证明是 in-loop 独有能力）。
+
+### 11.19 v1.1.5：VM 高级环境自检（脱壳独立执行检测 + 指令流污染）
+
+> 主题：攻击者不一定要破你的壳——他可以把 **runtime 闭包 + 字节码整段抠走**，
+> 丢进自己的脚手架里直接调用（脱壳独立执行）。这一层专门检测「我是否运行在完整混淆文件里」。
+
+- **外壳绑定标记（单向锁）**：混淆器在最外层（一切编码壳之外）`define()` 一个盐派生常量
+  （名 = `_` + 11 位 hex，值 = 32 位 hex）。内层校验它**是否存在且值匹配**——完整文件运行时它
+  必然先就位；抠出内层或删掉 define 行，常量即消失。
+- **为什么内层只持摘要**：运行期没有 salt，期望值只能固化进产物。若把**原始 token** 写进内层
+  校验表达式，攻击者抠出内层就能读到期望值、自行 `define()` 伪造，自检归零。故：
+  ```php
+  // 外层（产物中 token 唯一出现处）
+  if(!defined('_9f3a1c8e2b7')){define('_9f3a1c8e2b7','<32 hex token>');}
+  // 内层（只有摘要，无法反推原文）
+  if(!(defined('_9f3a1c8e2b7') && is_string($v=constant('_9f3a1c8e2b7'))
+       && hash_equals('<sha256(token)>', hash('sha256',$v)))) { $PZ0 = <盐派生污染因子>; }
+  ```
+  攻击者需要 sha256 原像才能构造出可通过校验的常量值 → 判定无法绕过。
+- **命中反制：污染而非终止**。`$PZ0` 与 v1.1.4 的 `$PZ` 一并异或进 opcode 解码
+  （`OP = (INS[0]^SCRAMBLE)^(PZ^PZ0)`）→ 跳转表查不到 → `default: break 2` →
+  **零输出、零报错**。没有 exit、没有异常、没有提示串；实测抠出内层独立运行 = 程序安静地什么都不做。
+- **双点注入（抗单点 patch）**：
+  1. 解释器初始化（`$PZ0=0;` 之后）——第一条指令起即生效；
+  2. dispatch 循环内**周期复检**（与 in-loop 探针共用检查点，每 512~8192 条指令）——
+     patch 掉第 1 处不解决问题，下一条检查点会重新种下污染因子。
+     开销：每数千条指令一次 `defined+constant+sha256`（≈0.3 µs），可忽略。
+- **污染态异常静默收尾**：错乱指令流抛出的任何 `Throwable` 都只是副产物。原先它会 rethrow 成
+  `Uncaught TypeError: count(): Argument #1 must be of type Countable|array, null given`
+  并暴露 VM 内部行号；现在 `catch` 开头 `if(PZ|PZ0){break;}` 直接静默收尾，收尾返回值改为
+  `is_array(STACK)&&count(STACK) ? pop() : null`。正常运行时 `PZ|PZ0 == 0`，两处均等同不存在。
+- **注入点（三条约束）**：紧随 `shell:vm` 层之后 —— ① 在 VM 产物之外（`<?php` 之后、闭包之前，
+  运行期先 define 再跑 VM）；② 在后续 eval/gz 载荷之内（随后被裹进密文，明文不可见）；
+  ③ 在 `shell:anti_tamper` 之前（纳入基线哈希）。注入点经 `DeclareHoist::split()` 定位，
+  `declare(strict_types=1)` / `namespace` 恒在最前。
+- **纵深第二道（显式终止）**：`shell:anti_debug` 的 `shell` 探针组校验同一标记，缺失即
+  `trigger_error(...E_USER_ERROR)` + `exit(1)`。守卫在 VM 内层（被编译进字节码），VM 自检在
+  解释器运行时——前者显式、后者静默，攻击者要同时绕过两个不同机制。
+- **开关**：`--no-vm-selfcheck`（`vm_selfcheck=false`）。仅当产物确有 VM 层时生效
+  （分层配置按「是否存在 `shell:vm` 层」判定，不依赖 `vm` 配置键）。
+- **测试**：`tests/vm_selfcheck.php` 12 项——结构注入 / 内层不含 token 原文 / 双点注入计数 /
+  标记就位时逐字节等价 / 抠出内层零输出零报错 / 关闭自检后裸产物正常 / 守卫缺标记先于业务终止。
+  另加 `tests/preset_e2e.php`（6 档 × 3 fixture × 6 断言）覆盖预设分层路径——本版修的 P0
+  （分层管线漏注绑定标记导致 `high/max/ultra` 致命错误）正是此前没有预设 e2e 才漏网的。

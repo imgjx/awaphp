@@ -10,13 +10,14 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.4');
+define('OBFUSCATOR_VERSION', '1.1.5');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
 $root = __DIR__;
 foreach ([
     'src/Salt.php',
+    'src/ShellBinding.php',
     'src/SemanticRewriter.php',
     'src/Support/Random.php',
     'src/Support/NameGenerator.php',
@@ -118,6 +119,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-inloop') {
             $out['vm_inloop'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-selfcheck') {
+            $out['vm_selfcheck'] = false;
             continue;
         }
         if ($a === '--no-confrontation-llm') {
@@ -277,6 +282,9 @@ function obf_help(): string
       --no-vm-inloop   关闭 VM 内反调试（默认随 --vm-probe 开启）：解释器 dispatch
                        循环内每 512~8192 条指令复检调试器/hook 扩展，命中把盐派生
                        污染因子混入 opcode 解码，指令流静默错乱（无可下断点的 exit）
+      --no-vm-selfcheck 关闭 VM 高级环境自检（默认开）：解释器初始化校验「外壳绑定标记」
+                       （混淆器在最外层注入的盐派生常量）。标记缺失/被删即判定 VM 被抠出
+                       独立运行，把污染因子混入 opcode 解码使其静默错乱（脱壳检测）
       --vm-combo[=N]   VM opcode 组合执行：把单条 opcode 拆成等价多指令序列
                        （如 SUB→NEG+ADD、PUSH_C 2,MUL→DUP,ADD、BOOL_NOT→PUSH_C 0,EQ），
                        打破 1:1 opcode 映射，抗反编译。N=1~3 为强度（默认 2），

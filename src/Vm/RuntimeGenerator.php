@@ -22,6 +22,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../ShellBinding.php';
+
 final class VmRuntimeGenerator
 {
     private const ST_KEY = "\x00vm_st\x00";   // 平坦化状态变量（非法 PHP 变量名，绝不碰撞）
@@ -42,6 +44,11 @@ final class VmRuntimeGenerator
     // hook 扩展，命中不显式 exit，而是把污染因子混入 opcode 解码 → 指令流静默错乱、提前
     // 结束，比入口序章一次性探针更难定位与 patch。--no-vm-inloop / inloop=0 关闭。
     private bool $probeInloop = true;
+    // VM 高级环境自检（脱壳独立执行检测，默认关，仅混淆器显式开启）：解释器初始化时校验
+    // 外壳绑定标记（混淆器在最外层定义的盐派生常量）。标记缺失/不匹配即视为「VM 被抠出独立
+    // 运行」——把盐派生污染因子混入 opcode 解码，指令流静默错乱、提前结束，无可见 exit。
+    // 仅由 Obfuscator 在 vm 开启且 vm_selfcheck 开启时显式传 selfcheck=1，避免裸产物测试误伤。
+    private bool $vmSelfCheck = false;
 
     public function __construct(?Salt $salt = null)
     {
@@ -94,6 +101,8 @@ final class VmRuntimeGenerator
         } else {
             $this->probeInloop = $probe > 0;
         }
+        // VM 高级环境自检（脱壳独立执行检测）：仅混淆器显式传 selfcheck=1 时开启。
+        $this->vmSelfCheck = (bool) ($opts['selfcheck'] ?? false);
         // natTbl 名编码密钥：盐派生（空盐时仍为确定性值，仅用于"非常量明文"，非保密）
         $this->natKey         = $this->salt->derive('vm-natkey', 64);
         // include/require 解析：构建期静态求值可达的文件编入嵌入表；
@@ -729,6 +738,9 @@ final class VmRuntimeGenerator
         // VM 内反调试：dispatch 循环内周期性探针（命中污染 opcode 解码）。必须在 strtr 前注入，
         // 块内的 ___PRB___ / ___PZ___ 占位符需与整段模板一同随机化。
         $runtime = str_replace('___INLOOP_PROBE___', $this->probeInloop ? $this->inLoopProbe() : '', $runtime);
+        // VM 高级环境自检（脱壳独立执行检测）：把「外壳绑定标记校验」注入到取指循环之前。
+        // 占位符在 strtr 前替换，块内 ___PZ0___ 占位符与整段模板一同随机化。
+        $runtime = str_replace('/*___SELFCHECK___*/', $this->selfCheckInit(), $runtime);
         $runtime = strtr($runtime, $this->placeholderMap($nm, $scramble, $jt));
         // GEN_HEAD 的【重映射后】操作码编号：RUN 入口靠它识别生成器段。
         // 必须在 remap 之后取 mapping 值——段内操作数已是随机编号，写死常量会永不命中。
@@ -826,6 +838,7 @@ final class VmRuntimeGenerator
             'calledCls' => $g('calledCls'),
             'prb'     => $g('prb'),
             'pz'      => $g('pz'),
+            'pz0'     => $g('pz0'),   // VM 自检污染因子（init 期写入，脱壳独立执行时非零）
             'fcc'     => $g('fcc'),
         ];
         // 去重：极少数情况下 salt 派生可能撞名，这里追加 Unicode 数字直至唯一
@@ -946,6 +959,7 @@ final class VmRuntimeGenerator
             // VM 内反调试：探针计数器与污染因子（随机化，避免固定指纹）
             '___PRB___'      => $nm['prb'],
             '___PZ___'       => $nm['pz'],
+            '___PZ0___'      => $nm['pz0'],
             '___TFWD___'    => $this->genName('t-fwd'),
             // —— handler 内部临时变量占位符（Task：裸名消歧）——
             // 背景：EVAL_STMT/INCLUDE_RT 桥接会把用户变量以【引用】导出到运行期
@@ -1088,17 +1102,22 @@ $___MCKI___=unpack('q',substr($___MCKEY___,0,8))[1];
 // 出栈解码内联在闭包里（不再二次调用 $MCDEC）：每多一层闭包调用 ≈ 26ns，而每条字节码
 // 指令都要弹栈，解释 260 万条指令时这一层就是上百毫秒级开销。
 $___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___F___=array_pop($___MCFLAGS___);$___V___=array_pop($___STACK___);if($___F___===null)return null;if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};
-$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___PRB___=0;$___PZ___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
+$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___PRB___=0;$___PZ___=0;$___PZ0___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;/*___SELFCHECK___*/
 // —— 异常处理（try/catch/finally 真编译）——
 // 外层 try 包装内层取指循环：运行期 opcode 抛出的异常（除法错 / 调用用户码 / THROW）在此
 // 捕获，按异常表（exTab，绝对 pc 区间 + 处理器 pc）路由到 catch 或 finally；无处理器则重抛。
 // 与静态参考运行时 runtime.php::__exec 的异常分发保持同一套语义。
 while($___LOOP___){try{
 while($___PC___<$___N___){___INLOOP_PROBE___
-$___INS___=$___CODE___[$___PC___++];$___OP___=($___INS___[0]^___SCRAMBLE___)^$___PZ___;$___JT___=___JTARR___[$___OP___^___SCRAMBLE2___]??0;switch($___JT___){___SWITCH___
+$___INS___=$___CODE___[$___PC___++];$___OP___=($___INS___[0]^___SCRAMBLE___)^($___PZ___^$___PZ0___);$___JT___=___JTARR___[$___OP___^___SCRAMBLE2___]??0;switch($___JT___){___SWITCH___
 default:break 2;}}
 $___LOOP___=false;
 }catch(\Throwable $___XERR___){
+// 污染态（反调试命中 / 脱壳自检命中）下，指令流已错乱，任何异常都只是错乱的副产物：
+// 直接静默收尾（返回栈顶或 null），不再 rethrow —— 避免把 "count(): null given" 这类
+// VM 内部致命错误连同文件名行号抛给攻击者，也避免出现可下断点的错误路径。
+// 正常运行时 PZ/PZ0 恒为 0，本行等同不存在。
+if($___PZ___|$___PZ0___){break;}
 if($___INFINALLY___){throw $___XERR___;}
 $___XPT___=$___PC___-1;$___XHANDLED___=false;
 if($___EXTAB___!==null){
@@ -1107,7 +1126,7 @@ foreach($___EXTAB___ as $___XE___){if($___XE___[0]<=$___XPT___&&$___XPT___<$___X
 if($___XH___!==null){if($___XH___[3]==='finally'){$___PENDING___=$___XERR___;$___PC___=$___XH___[2];}else{if($___XH___[5]!==''){$___VARS___[$___XH___[5]]=$___XERR___;}$___PC___=$___XH___[2];$___PENDING___=null;}$___XHANDLED___=true;}
 }
 if($___XHANDLED___){continue;}throw $___XERR___;
-}}return $___RETSET___?$___RET___:(count($___STACK___)?$___MCPOP___():null);};
+}}return $___RETSET___?$___RET___:(is_array($___STACK___)&&count($___STACK___)?$___MCPOP___():null);};
 TPL;
     }
 
@@ -1128,13 +1147,46 @@ TPL;
         $mask  = (1 << $shift) - 1;
         $xor   = $this->salt->deriveInt('vm-inloop-xor', 0x10000, 0x7FFFFF);
 
-        return 'if(!(++$___PRB___&' . $mask . ')){'
-            . '$___PZ___=((int)(PHP_SAPI===\'phpdbg\')'
+        $body = '$___PZ___=((int)(PHP_SAPI===\'phpdbg\')'
             . '|(int)extension_loaded(\'uopz\')'
             . '|(int)extension_loaded(\'runkit7\')'
             . '|(int)(function_exists(\'xdebug_is_debugger_active\')&&xdebug_is_debugger_active()))'
-            . '?' . $xor . ':0;'
-            . '}';
+            . '?' . $xor . ':0;';
+        // 脱壳自检的周期复检：即便初始化的自检行被静态 patch 掉，dispatch 循环内也会每 N 条
+        // 指令重新判定一次并重新种下污染因子 —— 单点 patch 不足以恢复执行。
+        // 开销：每 512~8192 条指令一次 defined+constant+sha256（约 0.3µs），可忽略。
+        if ($this->vmSelfCheck) {
+            $body .= 'if(' . ShellBinding::isUnboundExpr($this->salt) . '){$___PZ0___=' . $this->selfCheckXor() . ';}';
+        }
+        return 'if(!(++$___PRB___&' . $mask . ')){' . $body . '}';
+    }
+
+    /** 自检污染因子（盐派生：每个构建不同，无固定特征值可 patch）。 */
+    private function selfCheckXor(): int
+    {
+        return $this->salt->deriveInt('vm-selfcheck-xor', 0x10000, 0x7FFFFF);
+    }
+
+    /**
+     * VM 高级环境自检（脱壳独立执行检测）初始化块。
+     *
+     * 解释器启动前校验「外壳绑定标记」：该常量由混淆器在最外层（编码壳之外）定义，仅完整混淆
+     * 文件携带。一旦把 VM 内层（runtime 闭包 + 字节码）单独抠出独立运行、或把外层标记 define
+     * 整行删掉，常量即消失 → 把盐派生的非零污染因子写进 $___PZ0___，后者在每轮取指时与
+     * 循环期 $___PZ___ 一并异或进 opcode 解码 → 指令流静默错乱、提前结束，无可下断点的 exit。
+     *
+     * 仅在 $this->vmSelfCheck 为真时注入（由 Obfuscator 在 vm+vm_selfcheck 开启时显式传入，
+     * 裸产物构建默认关，避免 vm_inloop_probe 等直接 buildArtifact 的测试误伤）。
+     * 正常（完整文件）运行：常量存在且值匹配 → $___PZ0___ 恒 0，opcode 解码结果不变（零语义影响）。
+     */
+    private function selfCheckInit(): string
+    {
+        if (!$this->vmSelfCheck) {
+            return '';
+        }
+        $xor = $this->selfCheckXor();
+        $expr = ShellBinding::isUnboundExpr($this->salt);
+        return 'if(' . $expr . '){$___PZ0___=' . $xor . ';}';
     }
 
     /**
