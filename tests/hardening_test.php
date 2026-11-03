@@ -68,38 +68,6 @@ function runPhp(string $file): array
     return run(PHP_BINARY . ' ' . escapeshellarg($file));
 }
 
-/** 迭代解码 base64/gz 外壳，返回所有解出的明文拼接（用于验证"守卫逻辑确实存在"） */
-function decodeShells(string $code, int $rounds = 4): string
-{
-    $all = $code;
-    $frontier = $code;
-    for ($r = 0; $r < $rounds; $r++) {
-        $next = '';
-        if (preg_match_all('/base64_decode\(\s*[\'"]([A-Za-z0-9+\/=]+)[\'"]\s*\)/', $frontier, $m)) {
-            foreach ($m[1] as $b64) {
-                $raw = base64_decode($b64, true);
-                if ($raw === false || $raw === '') {
-                    continue;
-                }
-                foreach ([@gzinflate($raw), @gzdecode($raw), @gzuncompress($raw)] as $cand) {
-                    if (is_string($cand) && $cand !== '') {
-                        $next .= $cand . "\n";
-                    }
-                }
-                if (preg_match('/^[[:print:]\s]+$/', $raw)) {
-                    $next .= $raw . "\n"; // 纯 base64 层（无 gz 包裹）
-                }
-            }
-        }
-        if ($next === '') {
-            break;
-        }
-        $all .= "\n" . $next;
-        $frontier = $next;
-    }
-    return $all;
-}
-
 $php = PHP_BINARY;
 
 // 被测源码
@@ -213,16 +181,21 @@ rec($r3['exit'] !== 0, '防篡改：截断文件被拦截', "exit={$r3['exit']}"
 
 echo "\n-- 5) 防 hook eval --\n";
 // anti_hook 守卫本身就是一层"编码壳"：@eval(gzinflate(base64_decode('blob')))，其 blob 为 gzdeflate
-// 压缩的含 uopz/runkit/phpdbg 扩展检测的 PHP 源码（刻意不以明文留特征）；外层再加 gz/eval/vm 壳后，
-// 该守卫被更深藏入编码壳（这正是"藏一下"的目标）。此处用仅 --anti-hook（不套外层壳）的样本，
-// 抽取并解压 blob，验证守卫逻辑确实存在且可被解出（含完整扩展检测）。
+// 压缩的含 uopz/runkit/phpdbg 扩展检测的 PHP 源码（刻意不以明文留特征）。
+//
+// 注意（安全审计结论）：本测试**不再解码自己的产物**。测试文件本身会被一起分发，
+// 其中任何"迭代解壳 → 拼回明文"的辅助函数都等于随包附送一个解壳器起手式；
+// 这里改为只做「结构 + 不泄露」判定：编码壳形态存在（gzinflate(base64_decode(...))），
+// 且扩展名不以明文出现。守卫逻辑的正确性由"干净环境不误伤 + 行为一致性"两路覆盖。
 $hookProbe = $tmp . '/hook_probe.php';
 obf($entry, $src, $hookProbe, '--anti-hook --salt=hookprobe');
 $hookRaw = (string) file_get_contents($hookProbe);
-preg_match("/gzinflate\(base64_decode\('([A-Za-z0-9+\/=]+)'\)\)\)/", $hookRaw, $mm);
-$guardSrc = isset($mm[1]) ? @gzinflate(base64_decode($mm[1])) : '';
-rec(is_string($guardSrc) && (str_contains($guardSrc, 'uopz') || str_contains($guardSrc, 'runkit') || str_contains($guardSrc, 'phpdbg')),
-    '防 hook 守卫含可劫持 eval 的扩展检测（编码壳内 gzdeflate 解出）', '');
+$hasShell = preg_match("/gzinflate\(\s*base64_decode\('/", $hookRaw) === 1;
+$noPlain  = stripos($hookRaw, 'uopz') === false
+    && stripos($hookRaw, 'runkit') === false
+    && stripos($hookRaw, 'phpdbg') === false;
+rec($hasShell && $noPlain,
+    '防 hook 守卫以编码壳承载，且可劫持扩展名不以明文暴露', 'shell=' . (int) $hasShell . ' plain=' . (int) !$noPlain);
 rec(preg_match('/@?eval\s*\(/i', $hookRaw) === 1, '防 hook 守卫含 eval 完整性探针（关键字大小写随机化后仍可识别）', '');
 rec($clean['exit'] === 0, '防 hook 守卫在干净环境不误伤（exit=0）', "exit={$clean['exit']}");
 

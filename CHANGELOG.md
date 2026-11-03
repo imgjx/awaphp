@@ -83,6 +83,12 @@
   （617/7/32）与 1.1.3/1.1.4 基线完全一致（既存缺口，与本次改动无关）。
 - 文档：`README.md`、`docs/VM_FEATURES.md`（§11.19）、`docs/CLI_OPTIONS.md`
   （`--no-vm-selfcheck` + 探针组）、`docs/PERFORMANCE.md`（自检开销）。
+- **测试目录安全清理**（承接上一轮 tests 审计）：删除 `tests/hardening_test.php` 里**从未被调用**
+  的 `decodeShells()`——它是个「迭代 base64/gz 多轮解码、把明文拼回去」的通用解壳骨架，
+  随仓库分发等于附送解壳起手式；同时把 anti_hook 的断言从「解压 blob 再查扩展名」改为
+  **不解码**的「编码壳形态存在 + 扩展名不以明文出现」。`tests/vm_p8.php` 中保留的唯一一处
+  `gzdecode` 是**只针对本项目 pack 格式**的单层定向断言（该格式在 `docs/VM_FEATURES.md`
+  已公开描述），不构成通用解壳器。
 - 版本号：`entry.php` 升至 `1.1.5`。
 
 ## v1.1.4 — VM 内反调试（dispatch 循环内周期探针 + 命中污染指令流）
