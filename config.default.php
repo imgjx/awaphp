@@ -59,6 +59,7 @@ return [
     'goto_cpx'     => 0,       // GOTO 混淆每分发器最大语句数（>1 生效）
     'vm'           => false,   // VM 虚拟机壳
     'vm_jit'       => true,    // VM JIT 友好模式：解释器以可被 OPcache 追踪 JIT 编译的内联栈形式发射（false=回退旧闭包栈，最大兼容）
+    'vm_inloop'    => true,    // VM 内反调试：dispatch 循环内每 N 条指令复检调试器/hook 扩展，命中污染 opcode 解码（静默错乱，不显式 exit）
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
     'eval'         => false,   // EVAL 多层加壳

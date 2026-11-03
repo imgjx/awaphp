@@ -163,6 +163,7 @@ final class Obfuscator
                 'combo'          => (int) $this->config->get('vm_combo'),
                 // VM JIT 友好模式（--no-vm-jit 关）：内联编码栈，利于 OPcache JIT 追踪。
                 'jit'            => (bool) $this->config->get('vm_jit'),
+                'inloop'         => (bool) $this->config->get('vm_inloop'),
             ];
             $current = $this->injectTicks($current, 'vm');
         $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
@@ -1145,6 +1146,7 @@ final class Obfuscator
             'cpool'          => (bool) ($params['cpool'] ?? true),
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
             'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
+            'inloop'         => (bool) ($params['inloop'] ?? $this->config->get('vm_inloop')),
         ];
     }
 

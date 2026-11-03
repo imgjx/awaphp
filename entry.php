@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.3');
+define('OBFUSCATOR_VERSION', '1.1.4');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -114,6 +114,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-jit') {
             $out['vm_jit'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-inloop') {
+            $out['vm_inloop'] = false;
             continue;
         }
         if ($a === '--no-confrontation-llm') {
@@ -270,6 +274,9 @@ function obf_help(): string
                        fake-fog=6、probe=4（单项可再覆盖）
       --no-vm-cpool    关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立
                        加密常量池、指令改索引引用，静态分析看不到明文常量
+      --no-vm-inloop   关闭 VM 内反调试（默认随 --vm-probe 开启）：解释器 dispatch
+                       循环内每 512~8192 条指令复检调试器/hook 扩展，命中把盐派生
+                       污染因子混入 opcode 解码，指令流静默错乱（无可下断点的 exit）
       --vm-combo[=N]   VM opcode 组合执行：把单条 opcode 拆成等价多指令序列
                        （如 SUB→NEG+ADD、PUSH_C 2,MUL→DUP,ADD、BOOL_NOT→PUSH_C 0,EQ），
                        打破 1:1 opcode 映射，抗反编译。N=1~3 为强度（默认 2），

@@ -38,6 +38,10 @@ final class VmRuntimeGenerator
     // 关时（--no-vm-cpool）退化为字面量内联，产物与旧行为一致。
     private bool $cpool = true;
     private bool $jit = true;               // VM JIT 友好模式：内联编码栈（默认开）
+    // VM 内反调试（默认随 probe 开启）：在解释器 dispatch 循环内每 N 条指令复检一次调试器/
+    // hook 扩展，命中不显式 exit，而是把污染因子混入 opcode 解码 → 指令流静默错乱、提前
+    // 结束，比入口序章一次性探针更难定位与 patch。--no-vm-inloop / inloop=0 关闭。
+    private bool $probeInloop = true;
 
     public function __construct(?Salt $salt = null)
     {
@@ -84,6 +88,12 @@ final class VmRuntimeGenerator
         // false 回退旧闭包栈（MCENC 闭包 + MCPUSH 调用它），最大兼容。
         $jit = (bool) ($opts['jit'] ?? true);
         $this->jit = $jit;
+        // VM 内反调试：显式 inloop 优先；未指定时随 probe>0 自动开启（high/max/ultra 均 probe>0）。
+        if (array_key_exists('inloop', $opts)) {
+            $this->probeInloop = (bool) $opts['inloop'];
+        } else {
+            $this->probeInloop = $probe > 0;
+        }
         // natTbl 名编码密钥：盐派生（空盐时仍为确定性值，仅用于"非常量明文"，非保密）
         $this->natKey         = $this->salt->derive('vm-natkey', 64);
         // include/require 解析：构建期静态求值可达的文件编入嵌入表；
@@ -716,6 +726,9 @@ final class VmRuntimeGenerator
         // 必须在 strtr 占位符替换之前注入——引导块内使用 ___STACK___ 等占位符，需与
         // 整段模板一同被随机化，否则与后续 MCPOP/MCPEEK 闭包引用的栈变量名脱节。
         $runtime = str_replace('/*___MCBOOT___*/', $this->stackBootstrap($this->jit), $runtime);
+        // VM 内反调试：dispatch 循环内周期性探针（命中污染 opcode 解码）。必须在 strtr 前注入，
+        // 块内的 ___PRB___ / ___PZ___ 占位符需与整段模板一同随机化。
+        $runtime = str_replace('___INLOOP_PROBE___', $this->probeInloop ? $this->inLoopProbe() : '', $runtime);
         $runtime = strtr($runtime, $this->placeholderMap($nm, $scramble, $jt));
         // GEN_HEAD 的【重映射后】操作码编号：RUN 入口靠它识别生成器段。
         // 必须在 remap 之后取 mapping 值——段内操作数已是随机编号，写死常量会永不命中。
@@ -811,6 +824,8 @@ final class VmRuntimeGenerator
             'cco'     => $g('cco'),
             'mo'      => $g('mo'),
             'calledCls' => $g('calledCls'),
+            'prb'     => $g('prb'),
+            'pz'      => $g('pz'),
             'fcc'     => $g('fcc'),
         ];
         // 去重：极少数情况下 salt 派生可能撞名，这里追加 Unicode 数字直至唯一
@@ -928,6 +943,9 @@ final class VmRuntimeGenerator
             // called-class 栈（LSB）：跨闭包共享（CALLMETHOD/NEWOBJ/VMCB/RUN/CALLFN
             // 均按引用捕获），必须经占位符随机化——声明与各捕获点名字一致。
             '___CALLEDCLS___' => $nm['calledCls'],
+            // VM 内反调试：探针计数器与污染因子（随机化，避免固定指纹）
+            '___PRB___'      => $nm['prb'],
+            '___PZ___'       => $nm['pz'],
             '___TFWD___'    => $this->genName('t-fwd'),
             // —— handler 内部临时变量占位符（Task：裸名消歧）——
             // 背景：EVAL_STMT/INCLUDE_RT 桥接会把用户变量以【引用】导出到运行期
@@ -1070,13 +1088,14 @@ $___MCKI___=unpack('q',substr($___MCKEY___,0,8))[1];
 // 出栈解码内联在闭包里（不再二次调用 $MCDEC）：每多一层闭包调用 ≈ 26ns，而每条字节码
 // 指令都要弹栈，解释 260 万条指令时这一层就是上百毫秒级开销。
 $___MCPOP___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___F___=array_pop($___MCFLAGS___);$___V___=array_pop($___STACK___);if($___F___===null)return null;if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};
-$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
+$___MCPEEK___=function()use(&$___STACK___,&$___MCFLAGS___,&$___MCPLAIN___,$___MCPAD___,$___MCKI___){$___C___=count($___STACK___);if(!$___C___)return null;$___F___=$___MCFLAGS___[$___C___-1];$___V___=$___STACK___[$___C___-1];if($___F___===3)return $___V___^$___MCKI___;if($___F___===4)return $___V___^substr($___MCPAD___,0,strlen($___V___));if($___F___===1)return $___MCPLAIN___[$___V___];if($___F___===2)return $___V___[1];if($___F___===5)return $___V___;return unserialize($___V___^substr($___MCPAD___,0,strlen($___V___)));};$___PC___=0;$___N___=count($___CODE___);$___YAK___=0;$___PRB___=0;$___PZ___=0;$___RET___=null;$___RETSET___=false;$___PENDING___=null;$___INFINALLY___=false;$___LOOP___=true;
 // —— 异常处理（try/catch/finally 真编译）——
 // 外层 try 包装内层取指循环：运行期 opcode 抛出的异常（除法错 / 调用用户码 / THROW）在此
 // 捕获，按异常表（exTab，绝对 pc 区间 + 处理器 pc）路由到 catch 或 finally；无处理器则重抛。
 // 与静态参考运行时 runtime.php::__exec 的异常分发保持同一套语义。
 while($___LOOP___){try{
-while($___PC___<$___N___){$___INS___=$___CODE___[$___PC___++];$___OP___=$___INS___[0]^___SCRAMBLE___;$___JT___=___JTARR___[$___OP___^___SCRAMBLE2___]??0;switch($___JT___){___SWITCH___
+while($___PC___<$___N___){___INLOOP_PROBE___
+$___INS___=$___CODE___[$___PC___++];$___OP___=($___INS___[0]^___SCRAMBLE___)^$___PZ___;$___JT___=___JTARR___[$___OP___^___SCRAMBLE2___]??0;switch($___JT___){___SWITCH___
 default:break 2;}}
 $___LOOP___=false;
 }catch(\Throwable $___XERR___){
@@ -1090,6 +1109,32 @@ if($___XH___!==null){if($___XH___[3]==='finally'){$___PENDING___=$___XERR___;$__
 if($___XHANDLED___){continue;}throw $___XERR___;
 }}return $___RETSET___?$___RET___:(count($___STACK___)?$___MCPOP___():null);};
 TPL;
+    }
+
+    /**
+     * VM 内反调试探针：dispatch 循环内每 N 条指令复检一次调试器 / hook 扩展。
+     *
+     * 设计要点：
+     *  - 检查点间隔由盐派生（512~8192 条指令），每个构建不同，无法按固定周期下断点；
+     *  - 只认强信号（phpdbg SAPI / uopz / runkit7 / xdebug 实际挂载调试器），
+     *    不因「装了 xdebug 但没在调试」误杀正常环境；
+     *  - 命中不 exit：把盐派生的污染值写进 $___PZ___，后者在每轮取指时异或进 opcode，
+     *    指令流静默错乱并提前结束——没有可下断点的 exit，也没有固定 if 特征；
+     *  - 正常运行时 $___PZ___ 恒 0，opcode 解码结果不变（零语义影响、开销约 2~3 ns/指令）。
+     */
+    private function inLoopProbe(): string
+    {
+        $shift = $this->salt->deriveInt('vm-inloop-shift', 9, 13);      // 512 ~ 8192
+        $mask  = (1 << $shift) - 1;
+        $xor   = $this->salt->deriveInt('vm-inloop-xor', 0x10000, 0x7FFFFF);
+
+        return 'if(!(++$___PRB___&' . $mask . ')){'
+            . '$___PZ___=((int)(PHP_SAPI===\'phpdbg\')'
+            . '|(int)extension_loaded(\'uopz\')'
+            . '|(int)extension_loaded(\'runkit7\')'
+            . '|(int)(function_exists(\'xdebug_is_debugger_active\')&&xdebug_is_debugger_active()))'
+            . '?' . $xor . ':0;'
+            . '}';
     }
 
     /**

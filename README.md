@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.3-blue)
+![Version](https://img.shields.io/badge/version-1.1.4-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -79,6 +79,7 @@
 - **opcode 组合执行**（`--vm-combo[=N]`）：把单条 opcode 拆成**等价多指令序列**——`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP+ADD`、`PUSH_C 2,POW→DUP+MUL`、`BOOL_NOT→PUSH_C 0,EQ`——打破 1:1 opcode 映射，抗反编译；N=1~3 为强度（默认 2），运行时等价性经 `tests/vm_gen_probe.php` 全量回归。
 - **复杂语法保真**（v1.0.9 拓展）：`list()/[]` 解构支持**表达式键**（字符串层把 `'k'` 编码成括号表达式后仍直接编译）；生成器方法 / `yield from` / 闭包生成器 / Fiber 生成器桥；`parent::` 非虚派发；闭包 `use` 引用写回；trait 方法体保真；heredoc 插值。个别暂不支持的语句走 **EVAL_STMT 语句级兜底**——兜底文本中的类引用自动 **FQCN 化**（`use` 别名展开、命名空间补全），eval 单元（全局作用域）里照常解析；头部序言（`declare` / `namespace`）经归一化安全网恒在最前。
 - **JIT 友好模式（默认开，v1.1.3）**：操作数栈编码逻辑**内联进 `MCPUSH` 闭包**、整段解释器保持**平坦大函数**，**更易被 OPcache tracing-JIT 追踪编译**，且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；`--no-vm-jit` 回退「`MCENC` 编码闭包 + `MCPUSH` 调用它」旧实现，语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢）。
+- **VM 内反调试（默认随 `--vm-probe` 开启，v1.1.4）**：解释器 **dispatch 循环内**每 512~8192 条指令（间隔盐派生）复检调试器/hook 扩展（phpdbg SAPI、uopz、runkit7、xdebug 实际挂载）；命中**不 `exit`**，而是把盐派生污染因子异或进 opcode 解码——指令流静默错乱、提前结束，**没有可下断点的比较分支、也没有可 patch 的 `exit`**；正常环境零语义影响，开销约 2~3 ns/指令。`--no-vm-inloop` 关闭。
 
 ### 反 LLM 静态分析（Confrontation-LLM）
 现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：

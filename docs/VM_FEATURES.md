@@ -654,3 +654,34 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   - 两种模式对象均走明文槽 `$___MCPLAIN___`（flag1，按引用返回），属性写回不丢（此前 jit 路径因缺 `is_array` 分支把对象误走 serialize 明文槽导致属性写回丢失，已修）；
   - 实测 jit 内联比 nojit 闭包约快 **4%**（隔离栈编码路径，CLI 关 OPcache JIT，2M 次压栈）。
 - **回归**：`run_tests` 32、`hardening_test` 32、`syntax_compat` 7、`token_obf` 32 全绿；VM 专项 `vm_gen_probe` 290（FAIL=0）、`vm_comprehensive`、`vm_class_debug`、`vm_ref_e2e`（13/14，1 个为参考运行期 `runtime.php` 既存数组元素引用限制，发货产物 `RuntimeGenerator` 对 `ref_arr_of_ref` 输出 `1020` 与原生一致）、`vm_p8` 77、`vm_syntax_probe`（真编译 617 / 回退 7 / 失败 32，失败均为 VM 编译器已知语法覆盖缺口，与本次改动无关）、`antiast_check` 11 全绿。
+
+### 11.18 v1.1.4：VM 内反调试（dispatch 循环内周期探针 + 命中污染指令流）
+
+> 主题：反调试从「入口一次」推进到「执行全程」。
+
+- **旧探针的缺口**：`--vm-probe` 的 `VmProbeMatrix` 只在解释器**序章**执行一次，命中即 `exit(0)`。
+  攻击者在序章之后下断点、或直接 patch 掉那个 `exit`，即可完整绕过。
+- **in-loop 探针**：注入到取指循环开头——
+  ```php
+  while (PC < N) {
+      if (!(++PRB & MASK)) { PZ = 检测 ? XOR : 0; }   // 每 512~8192 条指令一次，间隔盐派生
+      INS = CODE[PC++];
+      OP  = (INS[0] ^ SCRAMBLE) ^ PZ;                 // 污染因子混入 opcode 解码
+      JT  = JTARR[OP ^ SCRAMBLE2] ?? 0;               // 污染后查不到 → default → break 2
+      switch (JT) { ... }
+  }
+  ```
+- **检测信号（只认强信号）**：`PHP_SAPI === 'phpdbg'`、`extension_loaded('uopz')`、
+  `extension_loaded('runkit7')`、`xdebug_is_debugger_active()`（实际挂载调试器才为真，
+  不像 `extension_loaded('xdebug')` 那样误杀「装了 xdebug 但没在调试」的 CI/预发环境）。
+- **反制**：不 `exit`、不抛异常。`PZ` 置为盐派生随机值 → opcode 解码错误 → 跳转表落空 →
+  `default: break 2` → 内层循环静默退出、返回当前栈顶/`RET`。表现为「跑完但结果为空/错误」，
+  **没有可下断点的比较分支，也没有可 patch 的 `exit`**。
+- **零语义影响**：正常环境 `PZ` 恒 0，解码结果与未注入时逐字节一致；开销 ≈ **2~3 ns/指令**
+  （一次自增 + 按位与 + 未命中跳过），百万条指令量级下 <5%。
+- **开关**：默认随 `--vm-probe` 开启（`high`/`max`/`ultra` 的 probe 均 >0）；`--no-vm-inloop`
+  关闭；分层配置 `shell:vm` 的 `inloop` 参数可覆盖（`inloop=false`）。
+- **与序章探针的分工**：序章负责「入口处调试器/hook 扩展 + 字节码 CRC、命中 `exit(0)`」；
+  in-loop 负责「运行中被附加调试器」的持续检测。两者覆盖「运行前」与「运行中」两个窗口。
+- **测试**：`tests/vm_inloop_probe.php` 6 项——结构注入、正常环境逐字节等价、假调试器命中
+  后输出被污染且无 Fatal/Parse、关闭 in-loop 后假调试器不生效（证明是 in-loop 独有能力）。

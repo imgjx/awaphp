@@ -1,5 +1,43 @@
 # 更新日志（CHANGELOG）
 
+## v1.1.4 — VM 内反调试（dispatch 循环内周期探针 + 命中污染指令流）
+
+> 主题：**把反调试从"入口一次"推进到"执行全程"**。此前 VM 探针（`--vm-probe`）只在解释器
+> 序章执行一次、命中即 `exit(0)`——攻击者在序章后下断点、或直接 patch 掉那个 exit 即可绕过。
+> 本版在 **dispatch 循环内部**周期性复检，命中不 exit，而是把污染因子混入 opcode 解码，
+> 让指令流静默错乱、程序提前结束：没有可下断点的比较分支，也没有可 patch 的 `exit`。
+
+### 新增 · VM 内反调试（`vm_inloop`）
+
+- **注入位置**：解释器取指循环开头（`while(PC<N){ <probe> ; INS=CODE[PC++]; ... }`），
+  每 **512~8192 条指令**（间隔由盐派生、每构建不同）复检一次；检查点无法按固定周期预测。
+- **检测信号（只认强信号，避免误杀）**：
+  - `PHP_SAPI === 'phpdbg'`（phpdbg 调试会话）；
+  - `extension_loaded('uopz')` / `extension_loaded('runkit7')`（运行期 hook 扩展）；
+  - `xdebug_is_debugger_active()`（**实际挂载了调试器**才为真；不像 `extension_loaded('xdebug')`
+    那样把"装了 xdebug 但没在调试"的 CI/预发环境一并误杀）。
+- **命中反制（关键）**：不 `exit`、不抛异常，而是把盐派生的随机污染值写进 `$___PZ___`；
+  该变量在**每轮取指时异或进 opcode**（`OP = (INS[0]^SCRAMBLE)^PZ`），污染后跳转表查不到
+  对应 case → 走 `default: break 2` → 内层循环静默退出、返回当前栈顶/`RET`。
+  表现为「程序正常跑完但结果为空/错误」，比直接终止更难定位与 patch。
+- **零语义影响**：正常环境 `PZ` 恒 0，opcode 解码结果与未注入时逐字节一致；开销约
+  **2~3 ns/指令**（一次自增 + 按位与 + 未命中即跳过），百万条指令量级下 <5%。
+- **开关**：默认**随 `--vm-probe` 开启**（`high`/`max`/`ultra` 的 probe 均 >0）；`--no-vm-inloop`
+  关闭；分层配置 `shell:vm` 的 `inloop` 参数可覆盖（`inloop=false`）。
+- **与序章探针的分工**：序章（`VmProbeMatrix`）继续负责「入口处的调试器/hook 扩展 + 字节码
+  CRC 自校验、命中即 `exit(0)`」；in-loop 负责「运行中被附加调试器」的持续检测。两者叠加，
+  覆盖「运行前」与「运行中」两个时间窗口。
+
+### 测试与回归
+
+- 新增 `tests/vm_inloop_probe.php`（6 项）：结构注入、正常环境逐字节等价、假调试器命中后
+  输出被污染且无 Fatal/Parse、关闭 in-loop 后假调试器不生效（证明是 in-loop 独有能力）。
+- VM 回归：`run_tests` 32、`vm_junk` 120、`vm_comprehensive`、`vm_class_debug`、`vm_ref_e2e`、
+  `vm_p8` 77、`vm_gen_probe` 290 全绿；`vm_syntax_probe` 既存语法缺口数量不变。
+- 文档：`docs/VM_FEATURES.md`（§4 性能注 + §11.18）、`docs/CLI_OPTIONS.md`（`--no-vm-inloop`）、
+  `docs/PERFORMANCE.md`（探针开销）、`README.md`（VM 特性）同步更新。
+- 版本号：`entry.php` 升至 `1.1.4`。
+
 ## v1.1.3 — 档位功能补全 + 垃圾模块重构 + 深度反AST加固 + VM JIT 友好模式（不改架构）
 
 > 主题：**四件主线一起落地**——① 六档功能覆盖补齐（low 补 anti_ast、high 补蜜罐/结构毒化壳）；
