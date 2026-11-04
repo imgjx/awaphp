@@ -729,3 +729,65 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-layers=3 --vm-p8
   标记就位时逐字节等价 / 抠出内层零输出零报错 / 关闭自检后裸产物正常 / 守卫缺标记先于业务终止。
   另加 `tests/preset_e2e.php`（6 档 × 3 fixture × 6 断言）覆盖预设分层路径——本版修的 P0
   （分层管线漏注绑定标记导致 `high/max/ultra` 致命错误）正是此前没有预设 e2e 才漏网的。
+
+---
+
+## 11.20 v1.1.6：原生状态机层（状态机脱离 VM）
+
+### 11.20.1 为什么要拆
+
+「状态机」此前只以 `shell:vm` 的 `stateMachine` 选项存在——**字节码级**、与 VM 壳强耦合。
+这带来两个问题：
+
+1. **mid 档（无 VM）用不上**：mid 档只有 `shell:eval` / `shell:gz` 等编码壳，没有 VM，
+   也就没有状态机。控制流平坦化只剩 `GotoObfuscator`（语句分发器：随机标签 + 诱饵死状态），
+   强度低于 VM 同款。
+2. **实现重复**：VM 侧有一套随机状态 ID + 诱饵状态，改一处要改两处。
+
+v1.1.6 把这套机制抽成 `src/ControlFlow/StateMachine.php`（`StateMachineObfuscator`），
+作为**独立的 token 级层** `statemachine`，**不依赖 VM 壳**即可生效。
+
+### 11.20.2 与 GOTO 分发器的差异
+
+| | GotoObfuscator（`--goto`） | StateMachineObfuscator（`statemachine`） |
+|---|---|---|
+| 转移形式 | `$s = <label>;` 直接赋值 | `if(($o^$o)===0){$s=$next;}else{$s=$trap;}` |
+| 不透明谓词 | 无 | **有**（恒真、无副作用；else 是指向诱饵的死路） |
+| 诱饵死状态 | 有（不可达 case） | 有（不可达 case + 自锁写回） |
+| 覆盖范围 | 函数体 | 函数体 **+ 顶层语句段** |
+| 状态 ID | 连续标签 | **非连续随机数**（十进制 / 十六进制随机展示） |
+| 分派形态 | `switch` | `switch` / `if-elseif` 链（随机） |
+
+### 11.20.3 顶层语句段改写
+
+此前状态机只处理**函数体**——纯脚本（无函数定义）等于完全空转，白付层成本。
+现新增顶层处理：把文件顶层**连续 ≥2 条**可安全包裹的语句纳入分发器。
+
+安全边界（作为屏障原样保留的顶层语句）：
+- 开标签 / 闭标签 / 内联 HTML（截断或污染输出）
+- `class` / `interface` / `trait` / `enum` / `function` 声明（条件声明语义变化）
+- `const` 声明（PHP 不允许嵌在 switch case 里）
+- `declare` / `namespace`（必须位于文件最前）
+- `goto`（跨分发器跳转非法）
+- 插值上下文（`"{$x}"` / `"${x}"`）
+
+顶层作用域引入的状态变量在分发器结束后**立即 `unset`**，不污染全局；状态变量名与
+用户代码已用变量名**自动避碰**（避免覆盖用户数据）。
+
+### 11.20.4 参数
+
+| 配置键 | CLI | 默认 | 范围 | 含义 |
+|--------|-----|------|------|------|
+| `sm_complexity` | `--sm-complexity=` | 8 | 2~32 | 每分发器容纳的最大语句数（超出分块） |
+| `sm_passes` | `--sm-passes=` | 2 | 1~5 | 嵌套层数（把上一层每个分发器再分发，形成分发树） |
+| `sm_traps` | `--sm-traps=` | 2 | 0~4 | 诱饵死状态数 |
+| `sm_opaque` | `--no-sm-opaque` | true | bool | 转移是否包不透明谓词 |
+
+六档预设接入：`low`(6/1/1) · `mid`(8/2/2) · `high`(8/2/2) · `max`(10/2/3) · `ultra`(12/3/4)。
+
+### 11.20.5 测试
+
+- `tests/statemachine_native.php`（60 项）：六档预设输出一致性 + 非 VM 产物断言；
+  隔离构建（仅 token 层、无 eval/gz 壳）下的明文结构断言——分发循环头
+  （`for(;;)` / `while(1)` / `while(true)`）、不透明谓词（`($x^$x)===0`）、诱饵死状态（`*3` 自锁）。
+- `tests/antidebug_probe_check.php`（39 项）：探针组语法自检回归。

@@ -131,15 +131,30 @@ final class Obfuscator
         // 攻击者须先破壳才能看到、更无从"整段删除代码块"让保护蒸发。
         if ($this->config->get('anti_debug')) {
             $adProbes = (string) $this->config->get('ad_probes');
-            if ($this->selfcheck && strpos($adProbes, 'shell') === false) {
-                $adProbes = $adProbes === '' ? 'shell' : $adProbes . ',shell';
+            // 'shell' 探针校验的是「外壳绑定标记」——该标记只在 selfcheck 开启时
+            // 才被注入产物。若标记不存在而探针仍在，守卫会永远判定"脱壳"→
+            // 产物一运行就 exit(1)。故此处把两者绑定：标记不存在则剔除该组。
+            $hasBinding = $this->selfcheck;
+            if ($hasBinding) {
+                if (strpos($adProbes, 'shell') === false) {
+                    $adProbes = $adProbes === '' ? 'shell' : $adProbes . ',shell';
+                }
+            } else {
+                $adProbes = trim(str_replace('shell', '', $adProbes), ',');
+                if (trim((string) $this->config->get('ad_probes')) !== '' && strpos((string) $this->config->get('ad_probes'), 'shell') !== false) {
+                    $this->logger->warn('反调试：未启用 VM 自检，\'shell\' 探针已剔除（无绑定标记可比对）');
+                }
             }
             $adOpts = [
                 'probes'    => $adProbes,
                 'intensity' => (int) $this->config->get('ad_intensity'),
             ];
-            $current = $this->injectTicks($current, 'anti_debug');
-            $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts), 'anti_debug');
+            if ($adProbes === '') {
+                $this->logger->warn('反调试：无有效探针组，跳过反调试层');
+            } else {
+                $current = $this->injectTicks($current, 'anti_debug');
+                $current = $this->shell($current, '反调试探针', fn ($c) => (new AntiDebug($this->salt, $this->logger))->wrap($c, $adOpts), 'anti_debug');
+            }
         }
         if ($this->config->get('anti_hook')) {
             $ahOpts = ['strict' => (bool) $this->config->get('ah_strict')];
@@ -819,6 +834,9 @@ final class Obfuscator
                 $tokens = (new ControlFlowObfuscator($this->logger, $this->salt))->process($tokens, $cfg, true);
                 $tokens = (new GotoObfuscator($this->logger, $this->salt))->process($tokens, $cfg, true);
                 break;
+            case 'statemachine':
+                $tokens = (new StateMachineObfuscator($this->logger, $this->salt))->process($tokens, $cfg, true);
+                break;
             case 'number':
                 $tokens = (new NumberEncoder($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
@@ -886,6 +904,12 @@ final class Obfuscator
                 $map['goto'] = (int) ($params['goto'] ?? 0);
                 $map['goto_cpx'] = (int) ($params['goto_cpx'] ?? 0);
                 $map['goto_trap'] = (int) ($params['trap'] ?? 2);
+                break;
+            case 'statemachine':
+                $map['sm_complexity'] = (int) ($params['complexity'] ?? 8);
+                $map['sm_passes']     = (int) ($params['passes'] ?? 2);
+                $map['sm_traps']      = (int) ($params['traps'] ?? 2);
+                $map['sm_opaque']     = (bool) ($params['opaque'] ?? true);
                 break;
             case 'number':
                 $map['num_enc'] = (bool) ($params['on'] ?? false);
@@ -959,8 +983,13 @@ final class Obfuscator
                         $list[] = $p;
                     }
                 }
-                if ($this->selfcheck && !in_array('shell', $list, true)) {
-                    $list[] = 'shell';
+                if ($this->selfcheck) {
+                    if (!in_array('shell', $list, true)) {
+                        $list[] = 'shell';
+                    }
+                } else {
+                    // 绑定标记未注入 → 'shell' 组永远判定"脱壳" → 产物一运行就 exit(1)
+                    $list = array_values(array_filter($list, fn ($p) => $p !== 'shell'));
                 }
                 return (new AntiDebug($this->salt, $this->logger))->wrap($code, [
                     'probes'    => $list,

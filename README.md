@@ -1,12 +1,26 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.5-blue)
+![Version](https://img.shields.io/badge/version-1.1.6-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 > 基于 PHP `tokenizer` 的源码混淆与运行时保护工具：把可读的 PHP 源码转换成**等价、可运行、但极难静态逆向**的形态。
 
 混淆结果经 `php -l` 校验，且**运行输出与原文严格一致**——它抬高逆向成本，而不是改变程序行为。
+
+---
+
+<span style="color:red">
+
+> ⚠️ **关于火绒（Huorong）误报 `VirtualMachine.php` 为 Webshell 的说明**
+>
+> 火绒这次也是抽风了——我自己在本地开发迭代的时候，就被它把我整个项目给「搞炸」了：就因为 `src/ControlFlow/VirtualMachine.php` 这一个文件被它判成 Webshell，我也是无语😅。
+>
+> 本项目**源码 100% 开源**，VM 解释器只是把 PHP 编译成自定义 ISA 字节码再逐条分发执行，**没有任何恶意行为、不联网、不落盘、不反弹**。火绒的启发式规则把「运行时拼接 + eval 派发」这类正常混淆特征当成了 Webshell 特征，属于典型的误报。
+>
+> **如果各位在 IDE / 火绒里看到 `VirtualMachine.php` 报毒，直接把这个文件加进杀软的信任区（白名单）即可**，不必理会。其它文件若也误报，同理加信任区，源码都在仓库里，可自行审计。
+
+</span>
 
 ---
 
@@ -49,6 +63,7 @@
 ### 控制流混淆
 - 不透明谓词、条件取反 + 分支交换、永不执行诱饵分支（`--cfg=low|medium|high`）。
 - **GOTO 状态机扁平化**（`--goto` / `--goto-cpx`）：函数体改写为 `while (1) { switch ($__s) { … } }`，支持嵌套与分块。
+- **原生状态机层（`statemachine`，v1.1.6 新增）**：从 VM 字节码层**拆出来**的通用控制流平坦化——**不依赖 VM 壳**，`mid` 档（无 VM）也能用上同款强度。每条状态转移包一层**恒真的不透明谓词** `if(($o^$o)===0){$s=$next;}else{$s=$trap;}`（else 是指向自锁诱饵的死路），并混入**诱饵死状态**（不可达标签，强行跳入即自锁死循环）。随机化状态 ID（非连续随机）、分派形态（`switch` / `if-elseif` 链）、循环头形态（`while(1)` / `while(true)` / `for(;;)`）、标签进制（十进制 / 十六进制），静态模板批量识别失效。**覆盖函数体 + 顶层语句段**（纯脚本同样生效），状态变量名与用户变量**自动避碰**、顶层作用域用完立即 `unset` 不污染全局。开关：`--sm-complexity=N`（每分发器语句数 2~32）、`--sm-passes=N`（嵌套层数 1~5）、`--sm-traps=N`（诱饵数 0~4）、`--no-sm-opaque`（关不透明谓词）。
 
 ### 语义等价变换（反静态模式匹配）
 用**类型安全、恒等保真**的重写打乱静态分析赖以匹配的代码形态（`--semantic`，强度 `--semantic-strength=1|2|3` 递增施加）：
@@ -131,7 +146,8 @@ php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
 - **v1.1.3 模块重构**：垃圾模块重拆为**两个独立、极廉价**模块——`GeneralJunk`（token 层通用垃圾，覆盖全部非 VM 代码，由 `--junk-runtime` 驱动）与 `VmBytecodeJunk`（已编译 VM 字节码层面的无用字节码覆盖，单指令级极廉价、栈平衡恒为 0，由 `--vm-junk=N` 驱动），不再有"VM 专供版"与"通用版"混在一起、强计算废代码拖慢运行的问题；两者计算量均强制极低，绝不"卡成傻瓜"。
 
 ### 完整性防护
-- **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / vld·parsekit / 调试回溯；**v1.1.5 新增 `proc` 组**——`/proc/self/status` 的 `TracerPid`（被 ptrace 附着：gdb/lldb/strace）+ `/proc/self/maps` 的 `frida|xdl|substrate|libinject`（注入式 hook 框架），并加强 `env` 组（`LD_PRELOAD`/`LD_AUDIT` 中的插桩痕迹，**不因非空就误杀 jemalloc 之类正常预加载**）。
+- **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / vld·parsekit / 调试回溯；**v1.1.5 新增 `proc` 组**——`/proc/self/status` 的 `TracerPid`（被 ptrace 附着：gdb/lldb/strace）+ `/proc/self/maps` 的 `frida|xdl|substrate|libinject`（注入式 hook 框架），并加强 `env` 组（`LD_PRELOAD`/`LD_AUDIT` 中的插桩痕迹，**不因非空就误杀 jemalloc 之类正常预加载**）；**v1.1.6** 再补 `ini` 组的 `auto_prepend_file`/`auto_append_file`（脱壳时挂解壳器的常用入口）与 `opcache.jit`。
+- **探针语法自检（v1.1.6）**：探针组是手写拼接的 PHP 源码，一个括号错位就会让整份产物 Parse error，而构建期**零告警**、只有跑产物才暴露。现每个探针组在**构建期**独立做一次 `php -l` 自检，出错的组**整组剔除**并明确告警、其余组照常生效——损失被限制在出错的那一组，**产物可运行性优先于探针覆盖度**。
 - **脱壳检测（外壳绑定标记，v1.1.5）**：外层 `define()` 盐派生常量 + 内层只持 sha256 摘要校验；缺标记即判定「VM 内层被抠出独立运行 / 标记被剥离」——反调试守卫走**显式终止**，VM 自检走**静默污染**（纵深两道）。
 - **防 hook eval**（`--anti-hook`）：运行期探针验证 eval 真实生效，识别被 uopz / runkit 劫持。
 - **守卫内移藏匿**：反调试 / 防 hook 守卫置于 VM / EVAL / GZ 编码壳**最内层**，被后续壳裹入密文——攻击者剥离外层代码块时够不到它们；自校验 / 授权绑定因依赖 `__FILE__` 明文锚点，仍留在最外层。
@@ -170,7 +186,7 @@ src/
   Encode/            HtmlEncoder（实体编码）、GzEncoder（压缩加壳）
   Optimize/          去注释、插死代码、空白/压缩、序列化钩子
   AntiDetect/        字符串运行时异或装配（每串独立密钥）
-  ControlFlow/       控制流混淆、GOTO 状态机、VM 壳、EVAL 壳、反调试、防 hook、防篡改、诱饵函数、授权守卫
+  ControlFlow/       控制流混淆、GOTO 状态机、原生状态机层、VM 壳、EVAL 壳、反调试、防 hook、防篡改、诱饵函数、授权守卫
   Layer/             层描述（LayerDescriptor）+ 层注册表（CLI 共用的参数 schema）
   Project/           SymbolTable（全局符号表）+ ProjectBuilder（整套系统两遍扫描构建）
   Support/           NameStyle（拟真命名）、DynamicSymbols（动态符号保守排除）、

@@ -91,6 +91,10 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--cfg=` | 控制流混淆：`low\|medium\|high` |
 | `--goto=` | GOTO 混淆嵌套层数（>0 生效） |
 | `--goto-cpx=` | GOTO 每分发器最大语句数（>0 生效） |
+| `--sm-complexity=` | 原生状态机每分发器最大语句数（2~32，默认 8）：把连续语句切块后每块一个分发器 |
+| `--sm-passes=` | 原生状态机嵌套层数（1~5，默认 2）：把上一层每个分发器再分发，形成分发树 |
+| `--sm-traps=` | 原生状态机诱饵死状态数（0~4，默认 2）：不可达标签，强行跳入即自锁死循环 |
+| `--no-sm-opaque` | 关闭状态机转移上的不透明谓词（默认开：`if(($o^$o)===0)` 恒真谓词，else 为指向诱饵的死路） |
 | `--vm` | VM 虚拟机壳（自定义指令集 + 解释器） |
 | `--vm-layers=` | VM 嵌套层数（真·嵌套 VM）：`>=2` 时把上一层 VM 产物再喂给 VM 编译，逐层叠加多层 VM 壳；默认 `1`（单层） |
 | `--vm-linker=` | ModuleLinker 模块目录（JSON 清单）：命中清单的函数调用内联进同一 Program，产物中无模块路径、无 include 指令 |
@@ -110,7 +114,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--newline-poison` | 换行缠绕壳（结构指纹毒化壳配套）：注入大量换行符（数量 = `ceil(源字节数 / divisor)`，divisor 默认 2，即源 10KB → 5000 换行），一部分作语句间空行、一部分嵌进最长 base64 载荷串，纠缠进代码而非堆尾部；`mid`/`high`/独立模式下换行在产物中可见，`max`/`ultra`（含结构毒化壳）下换行随内层一同加密进密文；`--newline-poison-divisor=N` 改字节除数（默认 2）、`--newline-poison-min=N` 改下限（默认 0）、`--newline-poison-ratio=F` 改串内比例（默认 0.1）；`--no-newline-poison` 关闭 |
 | `--eval` | EVAL 多层加壳 |
 | `--eval-layers=` | EVAL 加壳层数（默认 3） |
-| `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等）。探针组可由配置项 `ad_probes` 指定（逗号分隔）：`ext`（扩展加载：xdebug/uopz/runkit/blackfire/tideways/xhprof/vld/parsekit/taint/scream）、`func`（函数存在 + xdebug 实际挂载）、`ini`、`env`（XDEBUG_CONFIG / PHPDBG / 插桩型 LD_PRELOAD·LD_AUDIT）、`sapi`（phpdbg）、`trace`（调用栈）、`proc`（`/proc/self/status` 的 TracerPid、`/proc/self/maps` 注入 .so）、`shell`（脱壳检测：外壳绑定标记缺失即终止）。分层档位下 `shell` 组由混淆器按 `vm_selfcheck` 自动并入 |
+| `--anti-debug` | 反调试探针（检测 phpdbg / xdebug 等）。探针组可由配置项 `ad_probes` 指定（逗号分隔）：`ext`（扩展加载：xdebug/uopz/runkit/blackfire/tideways/xhprof/vld/parsekit/taint/scream/pcov）、`func`（函数存在 + xdebug 实际挂载）、`ini`（xdebug.mode/profiler/remote + `auto_prepend_file`/`auto_append_file`/`opcache.jit`）、`env`（XDEBUG_CONFIG / XDEBUG_MODE / PHPDBG / 插桩型 LD_PRELOAD·LD_AUDIT）、`sapi`（phpdbg）、`trace`（调用栈）、`proc`（`/proc/self/status` 的 TracerPid、`/proc/self/maps` 注入 .so）、`shell`（脱壳检测：外壳绑定标记缺失即终止）。分层档位下 `shell` 组由混淆器按 `vm_selfcheck` 自动并入；**未开 VM 自检时该组会被自动剔除**（无绑定标记可比对，否则产物一运行就误杀退出）。每个探针组在构建期做一次 `php -l` 语法自检，出错的组整组剔除并告警 |
 | `--anti-hook` | 防 hook eval（eval 完整性探针 + uopz/runkit/phpdbg 检测） |
 | `--anti-tamper` | 自校验防篡改（掩码自校验 + 分段哈希 + shutdown 二次校验） |
 | `--shell-shield-intensity=` | 逐层壳自保护强度 `1-3`（默认随等级：min,low=1 / mid,high=2 / max,ultra=3；`min` 的 `shell_shield` 本身为关，此项对其无效）；仅控制语义变换激进度，变量重命名始终开启 |

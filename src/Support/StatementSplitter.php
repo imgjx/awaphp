@@ -23,6 +23,113 @@ declare(strict_types=1);
 final class StatementSplitter
 {
     /**
+     * 将 token 数组切分为「顶层语句」的 token 区间列表。
+     *
+     * 与 split() 的区别：
+     *  1) 本方法**不丢弃**任何 token（含空白与注释）——区间连续覆盖整个数组，
+     *     相邻语句之间的空白/注释归属于**后一条**语句的区间，调用方在原位替换区间时
+     *     不会丢失注释。
+     *  2) 开标签（<?php）单独成一个区间，便于调用方识别"文件头部序言"。
+     *
+     * 每个区间为 [起始下标, 结束下标) 半开区间，区间末尾包含语句终结符（';' 或 '}'）。
+     * 切分规则与 split() 完全一致（同一套语句块/表达式括号/冒号体深度判定）。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<int,array{0:int,1:int}>
+     */
+    public static function splitRanges(array $tokens): array
+    {
+        $ranges = [];
+        $depth = 0;   // 大括号深度（语句块）
+        $pdepth = 0;  // 圆括号深度
+        $bdepth = 0;  // 方括号深度
+        $eDepth = 0;  // 表达式内花括号深度（闭包体/match 体/匿名类体，非语句边界）
+        $iDepth = 0;  // 插值串深度
+        $altDepth = 0; // 替代语法冒号体深度
+        $n = count($tokens);
+        $curStart = 0;
+
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            $isArr = is_array($t);
+            $type = $isArr ? $t[0] : null;
+            $char = is_string($t) ? $t : null;
+
+            $terminator = false;
+
+            if ($char === '(') {
+                $pdepth++;
+            } elseif ($char === ')') {
+                if ($pdepth > 0) {
+                    $pdepth--;
+                }
+            } elseif ($char === '[') {
+                $bdepth++;
+            } elseif ($char === ']') {
+                if ($bdepth > 0) {
+                    $bdepth--;
+                }
+            } elseif ($type === T_CURLY_OPEN) {
+                $iDepth++;
+            } elseif ($type === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $iDepth++;
+            } elseif ($type === T_OPEN_TAG || (defined('T_OPEN_TAG_WITH_ECHO') && $type === T_OPEN_TAG_WITH_ECHO)) {
+                // 开标签单独成区间（文件头序言）
+                $terminator = true;
+            } elseif ($char === '{') {
+                if ($pdepth > 0 || $eDepth > 0) {
+                    $eDepth++;
+                } else {
+                    $depth++;
+                }
+            } elseif ($char === '}') {
+                if ($iDepth > 0) {
+                    $iDepth--;
+                } elseif ($eDepth > 0) {
+                    $eDepth--;
+                } else {
+                    if ($depth > 0) {
+                        $depth--;
+                    }
+                    // depth 归零的 '}' 有两种收尾：
+                    //  a) 后续是 else/elseif/catch/finally/while → 同一语句延续，不终结
+                    //  b) 后续紧跟 ';'（如 `$f = function(){};`、`if(){};`）→ 分号才是
+                    //     真正的终结符，必须与 '}' 归入同一区间；否则 ';' 被切到下一区间，
+                    //     调用方保留前半段时会丢掉分号 → 产物 Parse error。
+                    if ($depth === 0 && !self::nextIsContinuation($tokens, $i) && !self::nextIsSemicolon($tokens, $i)) {
+                        $terminator = true;
+                    }
+                }
+            } elseif ($char === ';') {
+                if ($depth === 0 && $pdepth === 0 && $bdepth === 0 && $altDepth === 0) {
+                    $terminator = true;
+                }
+            } elseif ($char === ':' && $depth === 0 && $pdepth === 0 && $bdepth === 0
+                && $eDepth === 0 && $iDepth === 0 && self::isAltSyntaxColon($tokens, $i)) {
+                $altDepth++;
+            } elseif ($type !== null && in_array($type, [T_ENDIF, T_ENDFOR, T_ENDWHILE, T_ENDFOREACH, T_ENDSWITCH], true)) {
+                if ($altDepth > 0) {
+                    $altDepth--;
+                }
+                if ($depth === 0 && $pdepth === 0 && $bdepth === 0 && $altDepth === 0) {
+                    $terminator = true;
+                }
+            }
+
+            if ($terminator) {
+                $ranges[] = [$curStart, $i + 1];
+                $curStart = $i + 1;
+            }
+        }
+
+        // 末尾未以终结符收尾的残余（如无结尾分号的最后一条语句）
+        if ($curStart < $n) {
+            $ranges[] = [$curStart, $n];
+        }
+        return $ranges;
+    }
+
+    /**
      * 将 token 数组切分为顶层语句列表，每个元素为 token 数组。
      * @param array<int,mixed> $tokens
      * @return array<int,array<int,mixed>>
@@ -200,6 +307,26 @@ final class StatementSplitter
                 continue;
             }
             return in_array($type, [T_ELSE, T_ELSEIF, T_CATCH, T_FINALLY, T_WHILE], true);
+        }
+        return false;
+    }
+
+    /**
+     * 下一个有效 token 是否为分号 ';'（即当前 '}' 只是语句块闭合，分号才是终结符）。
+     * @param array<int,mixed> $tokens
+     */
+    private static function nextIsSemicolon(array $tokens, int $i): bool
+    {
+        $n = count($tokens);
+        for ($j = $i + 1; $j < $n; $j++) {
+            $t = $tokens[$j];
+            if (is_array($t)) {
+                if (in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                return false;
+            }
+            return $t === ';';
         }
         return false;
     }

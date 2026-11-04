@@ -179,6 +179,20 @@ final class LayerDescriptor
                 'tags' => ['反分析'],
             ],
 
+            // ===================== 原生状态机（从 VM 字节码层拆出的通用控制流层）=====================
+            'statemachine' => [
+                'kind'  => 'token',
+                'label' => '状态机混淆',
+                'desc'  => '与 VM 解耦的原生控制流平坦化：随机状态 ID + 诱饵死状态 + 不透明谓词转移（VM 同款加固，无需 VM 即可用）',
+                'params' => [
+                    'complexity' => ['label' => '单分派器复杂度', 'type' => self::T_INT, 'default' => 8, 'min' => 2, 'max' => 32, 'hint' => '每个分派器最多容纳的语句数，超出分块'],
+                    'passes'     => ['label' => '嵌套层数', 'type' => self::T_INT, 'default' => 2, 'min' => 1, 'max' => 5, 'hint' => '把上一层每个分派器再分发，形成分发树'],
+                    'traps'      => ['label' => '诱饵死状态', 'type' => self::T_INT, 'default' => 2, 'min' => 0, 'max' => 4, 'hint' => '不可达分支数，被强行跳入即自锁'],
+                    'opaque'     => ['label' => '不透明谓词', 'type' => self::T_BOOL, 'default' => true, 'hint' => '每条转移包一层恒真谓词（else 指向自锁诱饵），破坏线性还原'],
+                ],
+                'tags' => ['控制流'],
+            ],
+
             // ===================== shell 层（按序包裹源码字符串）=====================
             'shell:vm' => [
                 'kind'  => 'shell',

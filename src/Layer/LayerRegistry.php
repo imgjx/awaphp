@@ -14,7 +14,7 @@ final class LayerRegistry
 {
     /** token 级层：作用于同一 token 流，按序累积 */
     private const TOKEN = [
-        'var', 'func', 'class', 'controlflow', 'number',
+        'var', 'func', 'class', 'controlflow', 'statemachine', 'number',
         'string', 'comment', 'stat', 'ws', 'dead', 'junk_runtime', 'token', 'semantic',
         'anti_ast',
     ];

@@ -73,6 +73,18 @@ final class AntiDebug
         $fn = $style->funcName('antidebug-guard');
         $lineVar = $style->varName('antidebug-line');
 
+        // 探针块是手写拼接的 PHP 源码，一个括号错位就会让整份产物 Parse error，
+        // 且这类错误在"构建期无告警、只有跑产物才暴露"。此处逐组做语法自检：
+        // 出错的组整组剔除，其余组照常生效——把损失限制在出错的那一组。
+        // 必须在构造 $guard **之前**执行，否则守卫里仍是含错组的旧代码。
+        if ($probeList !== []) {
+            $probeList = $this->filterValidProbes($probeList);
+            if ($probeList === []) {
+                $this->logger->warn('AntiDebug: 所有探针组语法自检失败，跳过反调试层');
+                return $code;
+            }
+        }
+
         $guard = "if(!function_exists('" . $fn . "')){function " . $fn . "(){"
             . "\$r=false;"
             . $this->probeBlock($probeList)
@@ -123,6 +135,46 @@ final class AntiDebug
     }
 
     /**
+     * 语法自检：把 PHP 源码片段交给 php -l 校验。
+     * @param string $src
+     */
+    private function isSyntaxValid(string $src): bool
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'adchk') . '.php';
+        file_put_contents($tmp, "<?php\n" . $src . "\n");
+        $cmd = escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($tmp) . ' 2>&1';
+        exec($cmd, $out, $code);
+        @unlink($tmp);
+        return $code === 0;
+    }
+
+    /**
+     * 逐组筛选：只保留语法有效的探针组。
+     * 手写探针块时一个括号错位就会让整份产物 Parse error；构建期无告警、
+     * 只有跑产物才暴露。逐组剔除把损失限制在出错的那一组。
+     *
+     * @param array<int,string> $probes
+     * @return array<int,string>
+     */
+    private function filterValidProbes(array $probes): array
+    {
+        $ok = [];
+        foreach ($probes as $p) {
+            // 用与真实守卫同构的壳做自检：探针块里若有裸语句，其在函数体内合法、
+            // 在守卫壳外可能非法（如 const 声明）——必须按真实形态校验。
+            $snippet = "function __awa_probe_check__(){\$r=false;"
+                . $this->probeBlock([$p])
+                . "return \$r;}";
+            if ($this->isSyntaxValid($snippet)) {
+                $ok[] = $p;
+            } else {
+                $this->logger->warn("AntiDebug: 探针组 '{$p}' 语法自检失败，已剔除");
+            }
+        }
+        return $ok;
+    }
+
+    /**
      * 按探针组生成判定逻辑（拼进守卫函数体）。
      * @param array<int,string> $probes
      */
@@ -136,7 +188,9 @@ final class AntiDebug
                 // 反汇编/字节码窥探类：VLD（vld 扩展，opcode 导出）、phpdbg 的 oplog 由 func 组覆盖
                 . "if(extension_loaded('vld')||extension_loaded('parsekit'))\$r=true;"
                 // 内存/执行流篡改类：禁用函数列表被改、open_basedir 被放开等常见脱壳调试前置
-                . "if(extension_loaded('taint')||extension_loaded('scream'))\$r=true;",
+                . "if(extension_loaded('taint')||extension_loaded('scream'))\$r=true;"
+                // 覆盖率/执行追踪类（常与调试配合）：pcov 是 PHP 8 的覆盖率扩展，phpdbg 提供 opcode 日志
+                . "if(extension_loaded('pcov')||extension_loaded('phpdbg'))\$r=true;",
             // --- 函数存在 ---
             'func' => "if(function_exists('xdebug_break')||function_exists('xdebug_info')||function_exists('xdebug_start_trace'))\$r=true;"
                 . "if(function_exists('phpdbg_break_file')||function_exists('phpdbg_start_oplog'))\$r=true;"
@@ -148,7 +202,12 @@ final class AntiDebug
             'ini' => "if((\$xv=@ini_get('xdebug.mode'))!==''&&\$xv!=='off'&&\$xv!==false)\$r=true;"
                 . "if(in_array((string)@ini_get('xdebug.profiler_enable'),array('1','on','true','yes'),true))\$r=true;"
                 . "if(in_array((string)@ini_get('xdebug.remote_enable'),array('1','on','true','yes'),true))\$r=true;"
-                . "if(in_array((string)@ini_get('xdebug.start_with_request'),array('1','yes','trigger'),true))\$r=true;",
+                . "if(in_array((string)@ini_get('xdebug.start_with_request'),array('1','yes','trigger'),true))\$r=true;"
+                // 自动前/后置脚本：脱壳时常用 auto_prepend_file 把自己的解壳器挂进去，
+                // 正常应用极少配置这两项（框架的 bootstrap 一般走 include 而非 ini）。
+                . "if((string)@ini_get('auto_prepend_file')!==''||(string)@ini_get('auto_append_file')!=='')\$r=true;"
+                // zend_extension / opcache 的 JIT 调试旁路：opcache.jit=1 常与 xdebug 调试同开
+                . "if(in_array((string)@ini_get('opcache.jit'),array('1','on','true','yes'),true))\$r=true;",
             // --- 环境变量 ---
             'env' => "if(getenv('XDEBUG_CONFIG'))\$r=true;"
                 . "if(isset(\$_SERVER['XDEBUG_CONFIG']))\$r=true;"
@@ -158,6 +217,8 @@ final class AntiDebug
                 . "if(isset(\$_SERVER['PHPDBG_CONFIG']))\$r=true;"
                 // 内存/执行分析器常见环境变量
                 . "if(getenv('BLACKFIRE_CLIENT_ID')||getenv('TIDEWAYS_APIKEY'))\$r=true;"
+                // XDEBUG_MODE=debug/coverage/trace 等：xdebug 3 的就绪信号（区别于 mode=off）
+                . "if((\$xm=(string)@getenv('XDEBUG_MODE'))!==''&&preg_match('/debug|coverage|trace|profile|develop/i',\$xm))\$r=true;"
                 // 动态注入类预加载（frida/xdl/拦截器）：只认明显的插桩/AOP 痕迹，
                 // 不因 LD_PRELOAD 非空就判定——jemalloc 等分配器预加载在正常生产也常见。
                 . "foreach(array('LD_PRELOAD','LD_AUDIT') as \$ek){"

@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.5');
+define('OBFUSCATOR_VERSION', '1.1.6');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -55,6 +55,7 @@ foreach ([
     'src/Support/StatementSplitter.php',
     'src/Support/PhpVersion.php',
     'src/ControlFlow/GotoObfuscator.php',
+    'src/ControlFlow/StateMachine.php',
     'src/ControlFlow/ControlFlowObfuscator.php',
     'src/ControlFlow/VirtualMachine.php',
     'src/Vm/Op.php',
@@ -123,6 +124,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-selfcheck') {
             $out['vm_selfcheck'] = false;
+            continue;
+        }
+        if ($a === '--no-sm-opaque') {
+            $out['sm_opaque'] = false;
             continue;
         }
         if ($a === '--no-confrontation-llm') {
@@ -256,6 +261,11 @@ function obf_help(): string
       --cfg=          控制流混淆：low|medium|high
       --goto=         GOTO 混淆嵌套层数（>0 生效）
       --goto-cpx=      GOTO 每分发器最大语句数（>0 生效）
+      --goto-trap=N    GOTO 诱饵死状态数（每个分派器 0-4 个不可达分支，强跳即自锁）
+      --sm-complexity=N  原生状态机每分发器最大语句数（2-32，默认 8；越大越平）
+      --sm-passes=N    原生状态机嵌套层数（1-5，默认 2；形成分发树）
+      --sm-traps=N     原生状态机诱饵死状态数（0-4，默认 2）
+      --no-sm-opaque   关闭状态机的不透明谓词转移（默认开：(x^x)===0 恒真谓词）
       --vm             VM 虚拟机壳（自定义指令集 + 解释器）
       --vm-layers=      VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层 VM 产物再喂给 VM 编译，
                        逐层叠加多层 VM 壳（默认 1，单层）

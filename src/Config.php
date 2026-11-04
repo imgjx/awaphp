@@ -91,6 +91,11 @@ final class Config
         $this->data['goto_cpx']      = max(0, $i($this->data['goto_cpx']));
         // GOTO 诱饵死状态数：每个分派器注入 N 个不可达 case（调试器强跳即自锁），默认 2
         $this->data['goto_trap']     = max(0, min(4, $i($this->data['goto_trap'] ?? 2)));
+        // 原生状态机层（从 VM 字节码层拆出的通用控制流混淆，默认中强度）
+        $this->data['sm_complexity'] = max(2, min(32, $i($this->data['sm_complexity'] ?? 8)));
+        $this->data['sm_passes']     = max(1, min(5, $i($this->data['sm_passes'] ?? 2)));
+        $this->data['sm_traps']      = max(0, min(4, $i($this->data['sm_traps'] ?? 2)));
+        $this->data['sm_opaque']     = $b($this->data['sm_opaque'] ?? true) ?? true;
         $this->data['eval_layers']   = max(1, $i($this->data['eval_layers']));
         $this->data['junk_funcs']    = max(0, $i($this->data['junk_funcs']));
         $this->data['cfg']           = in_array($this->data['cfg'], ['low', 'medium', 'high'], true) ? $this->data['cfg'] : '';
