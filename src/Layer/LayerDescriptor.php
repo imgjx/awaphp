@@ -211,6 +211,7 @@ final class LayerDescriptor
                     'fakeFog'        => ['label' => '诱饵函数', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 200, 'hint' => '注入 N 个永不调用的栈平衡假函数，淹没真实 opcode 集合、膨胀函数表'],
                     'probe'          => ['label' => '反分析探针', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 50, 'hint' => '反调试/反篡改探针矩阵（xdebug/phpdbg/uopz 检测 + 字节码 crc 自校验），命中即静默停止'],
                     'cpool'          => ['label' => '常量池加密', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'PUSH_C 字面量抽入独立常量池（索引引用），池以独立密钥加密，静态分析看不到明文常量'],
+                    'symbols'        => ['label' => '符号名密文', 'type' => self::T_BOOL, 'default' => true, 'hint' => '程序容器内的类名/方法名/变量名/常量名等全部加密落盘，运行期解包还原；静态提取密钥后 strings 也读不到符号名'],
                     'combo'          => ['label' => 'opcode 组合执行', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 3, 'hint' => '把单条 opcode 拆成等价多指令序列（0=关，越高越密）'],
                 ],
                 'tags' => ['VM'],

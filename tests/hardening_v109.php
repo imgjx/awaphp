@@ -181,7 +181,9 @@ foreach ([
     ok(lintOk($o), "{$tag} php -l 通过");
     $src = (string) file_get_contents($o);
     // declare 必须在 <?php 之后的第一条语句位（前面只允许注释/空白）
-    $firstStmt = preg_match('/<\?php\b(?:[^;{]*?)(declare\s*\(|namespace\s+[A-Za-z_\\\\])/s', $src, $m) === 1;
+    // 开标签大小写不敏感（`<?php` / `<?PHP` 等价）——加 i 修饰符，避免 token 形态层
+    // 把开标签随机成大写时误判「头部语句顺序非法」。
+    $firstStmt = preg_match('/<\?php\b(?:[^;{]*?)(declare\s*\(|namespace\s+[A-Za-z_\\\\])/si', $src, $m) === 1;
     ok($firstStmt, "{$tag} 头部语句顺序合法");
     $got = trim((string) run($o));
     ok($got === $hdrNative, "{$tag} 运行输出一致", 'got=' . substr($got, 0, 60));

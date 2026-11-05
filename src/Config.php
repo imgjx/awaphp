@@ -81,6 +81,9 @@ final class Config
         $this->data['vm_selfcheck']  = $b($this->data['vm_selfcheck'] ?? true) ?? true;
         // VM 常量池加密（默认开）：PUSH_C 字面量抽入独立加密常量池；--no-vm-cpool 关
         $this->data['vm_cpool']      = $b($this->data['vm_cpool'] ?? true) ?? true;
+        // VM 符号密文化（默认开）：程序容器内的类名/方法名/函数名/变量名/属性名/常量名
+        // 全部以盐派生密钥加密落盘，运行期解包时还原；--no-vm-symbols 关
+        $this->data['vm_symbols']    = $b($this->data['vm_symbols'] ?? true) ?? true;
         $this->data['eval']          = $b($this->data['eval']) ?? false;
         $this->data['anti_debug']    = $b($this->data['anti_debug']) ?? false;
         $this->data['anti_hook']     = $b($this->data['anti_hook']) ?? false;

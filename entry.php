@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.7');
+define('OBFUSCATOR_VERSION', '1.1.8');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -104,6 +104,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-cpool') {
             $out['vm_cpool'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-symbols') {
+            $out['vm_symbols'] = false;
             continue;
         }
         if ($a === '--no-shell-shield') {
@@ -289,6 +293,9 @@ function obf_help(): string
                        fake-fog=6、probe=4（单项可再覆盖）
       --no-vm-cpool    关闭 VM 常量池加密（默认开）：PUSH_C 字面量默认抽入独立
                        加密常量池、指令改索引引用，静态分析看不到明文常量
+      --no-vm-symbols  关闭 VM 符号名密文（默认开）：程序容器内的类名/方法名/函数名/
+                       变量名/属性名/常量名等全部加密落盘、运行期解包时还原，即便静态
+                       提取出分片密钥，strings 也读不到任何符号名
       --no-vm-inloop   关闭 VM 内反调试（默认随 --vm-probe 开启）：解释器 dispatch
                        循环内每 512~8192 条指令复检调试器/hook 扩展，命中把盐派生
                        污染因子混入 opcode 解码，指令流静默错乱（无可下断点的 exit）

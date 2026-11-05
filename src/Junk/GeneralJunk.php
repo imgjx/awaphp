@@ -46,6 +46,11 @@ final class GeneralJunk
         }
         $this->fakeB64 = (bool) $cfg->get('junk_fake_b64');
         $this->fakeEcho = (bool) $cfg->get('junk_fake_echo');
+        // v1.1.8：登记本文件已用的变量名，避免垃圾变量与状态机 / 死代码 / 诱饵层生成的
+        // 状态变量**同名**——同名时垃圾赋值会覆盖状态机初值，分派器 switch 到别的分支
+        // 甚至直接落 default 退出，表现为「产物零输出且无任何报错」。
+        // 详见 NameStyle::reserve() 的说明。
+        $this->reserveUsedVars($tokens);
 
         $out = $tokens;
         if ($intensity >= 1) {
@@ -166,6 +171,25 @@ final class GeneralJunk
 
         $idx = $this->salt->deriveInt('junk-tpl', 0, count($templates) - 1);
         return $templates[$idx];
+    }
+
+    /**
+     * v1.1.8：把代码中已出现的变量名登记进 NameStyle 的保留表。
+     *
+     * 拟真变量名来自固定词池（HEADS × TAILS），而状态机层 / 死代码层 / 诱饵层
+     * **共用同一词池**——它们生成的状态变量与本层垃圾变量可能同名。同名时，
+     * 垃圾语句的赋值会覆盖状态变量的初值，状态机分派器随即 switch 到非预期分支
+     * （甚至直接落 default 退出），产物表现为「零输出且无任何报错」。
+     *
+     * @param array<int,mixed> $tokens
+     */
+    private function reserveUsedVars(array $tokens): void
+    {
+        foreach ($tokens as $t) {
+            if (is_array($t) && ($t[0] ?? null) === T_VARIABLE) {
+                $this->style->reserve((string) ($t[1] ?? ''));
+            }
+        }
     }
 
     /**

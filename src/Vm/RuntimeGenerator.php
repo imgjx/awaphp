@@ -40,6 +40,20 @@ final class VmRuntimeGenerator
     // 关时（--no-vm-cpool）退化为字面量内联，产物与旧行为一致。
     private bool $cpool = true;
     private bool $jit = true;               // VM JIT 友好模式：内联编码栈（默认开）
+    // VM 符号密文化（默认开，v1.1.8）：程序容器内的**全部字符串**（类名 / 方法名 / 函数名 /
+    // 变量名 / 属性名 / 常量名 / 异常表 kind-type-varName / 指令操作数里的符号串）以
+    // 盐派生密钥加密落盘，运行期解包时还原。效果：即便攻击者从产物里提取出分片密钥并
+    // 解开字节码容器，`strings` 也读不到任何符号名——只剩一坨密文。
+    // 密钥独立于分片密钥（vm-chunk-*）与常量池密钥（vm-cpool），单点提取互不影响。
+    private bool $symbols = true;
+    private string $symKey = '';           // VM 符号密文密钥（盐派生）
+    // v1.1.8 容器格式随机化：二进制容器的【类型标记字节】原本是固定序列
+    // （TAG_NULL=0 / TAG_INT=1 / TAG_STR=2 / TAG_BOOL=3 / TAG_FLT=4 / TAG_SEG=5），
+    // 构成容器格式的固定指纹——通用解容器脚本按这组常量即可直接套用。
+    // 现把 6 个语义标记映射到【每次构建都不同】的随机字节（按源文件内容派生），
+    // 打包与解包两侧共用同一张映射表，语义完全不变，但容器格式逐构建不同。
+    private array $tagMap = [];            // 语义 TAG => 实际写入的字节
+    private array $tagUnmap = [];          // 实际字节 => 语义 TAG（构建期读回用）
     // VM 内反调试（默认随 probe 开启）：在解释器 dispatch 循环内每 N 条指令复检一次调试器/
     // hook 扩展，命中不显式 exit，而是把污染因子混入 opcode 解码 → 指令流静默错乱、提前
     // 结束，比入口序章一次性探针更难定位与 patch。--no-vm-inloop / inloop=0 关闭。
@@ -105,6 +119,14 @@ final class VmRuntimeGenerator
         $this->vmSelfCheck = (bool) ($opts['selfcheck'] ?? false);
         // natTbl 名编码密钥：盐派生（空盐时仍为确定性值，仅用于"非常量明文"，非保密）
         $this->natKey         = $this->salt->derive('vm-natkey', 64);
+        // VM 符号密文密钥（v1.1.8）：与 natKey / cpoolKey / 分片密钥完全独立派生。
+        // **按源文件内容派生**（而非全局一把）：密钥不跨文件复用——攻击者从 A 产物里
+        // 提取到的符号密钥解不开 B 产物，批量解密整站产物的做法失效。
+        // symbols 关时（--no-vm-symbols）退化为旧行为（符号明文入容器），产物逐字节等价。
+        $this->symKey         = $this->salt->derive('vm-symkey:' . substr(sha1($source), 0, 16), 64);
+        $this->symbols       = (bool) ($opts['symbols'] ?? true);
+        // 容器格式随机化：类型标记字节映射（按源文件内容派生，密钥不跨文件复用）
+        $this->initTagMap($source);
         // include/require 解析：构建期静态求值可达的文件编入嵌入表；
         // 计划（有序）注入编译器，编译期按遇到顺序消费。
         $resolver = new IncludeResolver();
@@ -365,6 +387,19 @@ final class VmRuntimeGenerator
         $runVar = $body['runVar'];
 
         $decodeHelpers = $this->bytecodeHelpersTemplate();
+        // v1.1.8 符号密文密钥注入：符号密文化开启时写入真实密钥；关闭时写空串——
+        // $___val___ 见到空密钥即「原样返回」，行为与 v1.1.7 逐字节等价。
+        $decodeHelpers = str_replace(
+            'AWA_SYMKEY_PLACEHOLDER',
+            $this->symbols ? base64_encode($this->symKey) : '',
+            $decodeHelpers
+        );
+        // v1.1.8 容器格式随机化：注入「实际字节 => 语义 TAG」映射表（逐构建不同）。
+        $decodeHelpers = str_replace(
+            'AWA_TAGMAP_PLACEHOLDER',
+            var_export($this->tagUnmap, true),
+            $decodeHelpers
+        );
         if ($keychain) {
             // 链式解码：keys 仅存 master seed，逐片推进 k=sha256(k‖i)
             $decodePrologue = '$___CHUNKS___=' . $chunksPhp . ';'
@@ -2067,31 +2102,39 @@ TPL;
         return ($z & 1) ? -(($z + 1) >> 1) : ($z >> 1);
     }
 
-    /** @param mixed $v */
-    private function bWriteVal(string &$b, $v): void
+    /**
+     * 写一个值。$enc=true 时字符串走【符号密文】（symEncode），与运行期
+     * $___sval___ 的解密互为逆操作；常量池段（extractConstPool）传 false，
+     * 因其自带独立加密（cpoolEncrypt），不可再叠一层。
+     * @param mixed $v
+     */
+    private function bWriteVal(string &$b, $v, bool $enc = false): void
     {
         if ($v === null) {
-            $b .= chr(self::TAG_NULL);
+            $b .= chr($this->tagOf(self::TAG_NULL));
         } elseif (is_bool($v)) {
-            $b .= chr(self::TAG_BOOL) . chr($v ? 1 : 0);
+            $b .= chr($this->tagOf(self::TAG_BOOL)) . chr($v ? 1 : 0);
         } elseif (is_int($v)) {
-            $b .= chr(self::TAG_INT);
+            $b .= chr($this->tagOf(self::TAG_INT));
             $this->bWriteZig($b, $v);
         } elseif (is_float($v)) {
-            $b .= chr(self::TAG_FLT) . pack('d', $v);
+            $b .= chr($this->tagOf(self::TAG_FLT)) . pack('d', $v);
         } elseif (is_string($v)) {
-            $b .= chr(self::TAG_STR);
-            $this->bWriteVarint($b, strlen($v));
-            $b .= $v;
+            $s = $enc ? $this->symEncode($v) : $v;
+            $b .= chr($this->tagOf(self::TAG_STR));
+            $this->bWriteVarint($b, strlen($s));
+            $b .= $s;
         } else {
-            $b .= chr(self::TAG_NULL);
+            $b .= chr($this->tagOf(self::TAG_NULL));
         }
     }
 
     /** @return mixed */
     private function bReadVal(string $b, int &$p)
     {
-        $t = ord($b[$p++]);
+        // 容器格式随机化：读回的字节先经逆映射还原为【语义 TAG】（未知字节 → -1，
+        // 落入 default 返回 null，与旧版「未知 tag 返回 null」的语义一致）。
+        $t = $this->tagSem(ord($b[$p++]));
         switch ($t) {
             case self::TAG_NULL:
                 return null;
@@ -2114,7 +2157,7 @@ TPL;
     }
 
     /** @param array<int,array<int,mixed>> $seg */
-    private function bWriteSeg(string &$b, array $seg): void
+    private function bWriteSeg(string &$b, array $seg, bool $enc = false): void
     {
         $this->bWriteVarint($b, count($seg));
         foreach ($seg as $ins) {
@@ -2122,7 +2165,7 @@ TPL;
             $argc = count($ins) - 1;
             $this->bWriteVarint($b, $argc);
             for ($k = 1; $k <= $argc; $k++) {
-                $this->bWriteVal($b, $ins[$k] ?? null);
+                $this->bWriteVal($b, $ins[$k] ?? null, $enc);
             }
         }
     }
@@ -2252,7 +2295,10 @@ TPL;
         $b = '';
         $this->bWriteVarint($b, count($pool));
         foreach ($pool as $v) {
-            $this->bWriteVal($b, $v);
+            // 与程序容器同一套符号密文：运行期 $___val___ 解密还原（cpool 段整体
+            // 另有计数器流加密，两层独立密钥）。cpool 关闭时字面量内联在指令流里，
+            // 由 packProgram 的 bWriteSeg(..., true) 走同一条加密路径——两种模式对称。
+            $this->bWriteVal($b, $v, true);
         }
         return $b;
     }
@@ -2304,44 +2350,48 @@ TPL;
     private function packProgram(array $program): string
     {
         $b = '';
-        $this->bWriteSeg($b, $program['main'] ?? []);
+        // v1.1.8 符号密文化：本函数写入的**所有字符串**均以 symKey 加密落盘
+        // （运行期由 $___sval___ 系列读取器整表还原，语义零影响）。唯一例外是
+        // natTbl —— 它自带 builtinReplace 的名编码、且在 CALLFN 内按需单条解码
+        // （不是整表还原），保持「程序内存里也不出现原生函数名」的既有语义不变。
+        $this->bWriteSeg($b, $program['main'] ?? [], true);
         $funcs = $program['funcs'] ?? [];
         $this->bWriteVarint($b, count($funcs));
         foreach ($funcs as $name => $seg) {
-            $this->bWriteVal($b, $name);
-            $this->bWriteSeg($b, $seg);
+            $this->bWriteVal($b, $name, true);
+            $this->bWriteSeg($b, $seg, true);
         }
         $classes = $program['classes'] ?? [];
         $this->bWriteVarint($b, count($classes));
         foreach ($classes as $cname => $cls) {
-            $this->bWriteVal($b, $cname);
+            $this->bWriteVal($b, $cname, true);
             $props = $cls['props'] ?? [];
             $this->bWriteVarint($b, count($props));
             foreach ($props as $pn => $def) {
-                $this->bWriteVal($b, $pn);
+                $this->bWriteVal($b, $pn, true);
                 if ($def === null) {
-                    $b .= chr(self::TAG_NULL);
+                    $b .= chr($this->tagOf(self::TAG_NULL));
                 } else {
-                    $b .= chr(self::TAG_SEG);
-                    $this->bWriteSeg($b, $def);
+                    $b .= chr($this->tagOf(self::TAG_SEG));
+                    $this->bWriteSeg($b, $def, true);
                 }
             }
             $methods = $cls['methods'] ?? [];
             $this->bWriteVarint($b, count($methods));
             foreach ($methods as $mn => $seg) {
-                $this->bWriteVal($b, $mn);
-                $this->bWriteSeg($b, $seg);
+                $this->bWriteVal($b, $mn, true);
+                $this->bWriteSeg($b, $seg, true);
             }
             // 类常量（值同为可执行小段，SPROP 时惰性求值）
             $consts = $cls['consts'] ?? [];
             $this->bWriteVarint($b, count($consts));
             foreach ($consts as $cn => $cseg) {
-                $this->bWriteVal($b, $cn);
+                $this->bWriteVal($b, $cn, true);
                 if ($cseg === null) {
-                    $b .= chr(self::TAG_NULL);
+                    $b .= chr($this->tagOf(self::TAG_NULL));
                 } else {
-                    $b .= chr(self::TAG_SEG);
-                    $this->bWriteSeg($b, $cseg);
+                    $b .= chr($this->tagOf(self::TAG_SEG));
+                    $this->bWriteSeg($b, $cseg, true);
                 }
             }
         }
@@ -2349,24 +2399,24 @@ TPL;
         $gl = $program['globals'] ?? [];
         $this->bWriteVarint($b, count($gl));
         foreach ($gl as $g) {
-            $this->bWriteVal($b, (string) $g);
+            $this->bWriteVal($b, (string) $g, true);
         }
         // 函数参数规格（默认值段，供运行期补齐缺失实参）
         $fp = $program['funcParams'] ?? [];
         $this->bWriteVarint($b, count($fp));
         foreach ($fp as $fname => $spec) {
-            $this->bWriteVal($b, (string) $fname);
-            $this->bWriteParamSpec($b, $spec);
+            $this->bWriteVal($b, (string) $fname, true);
+            $this->bWriteParamSpec($b, $spec, true);
         }
         // 类方法参数规格（默认值段）
         $cp = $program['classParams'] ?? [];
         $this->bWriteVarint($b, count($cp));
         foreach ($cp as $cname => $specs) {
-            $this->bWriteVal($b, (string) $cname);
+            $this->bWriteVal($b, (string) $cname, true);
             $this->bWriteVarint($b, count($specs));
             foreach ($specs as $mn => $spec) {
-                $this->bWriteVal($b, (string) $mn);
-                $this->bWriteParamSpec($b, $spec);
+                $this->bWriteVal($b, (string) $mn, true);
+                $this->bWriteParamSpec($b, $spec, true);
             }
         }
         // 类层级：classParents（类名=>父类名）与 classImpl（类名=>接口名集合），
@@ -2375,58 +2425,61 @@ TPL;
         $cps = $program['classParents'] ?? [];
         $this->bWriteVarint($b, count($cps));
         foreach ($cps as $cname => $parent) {
-            $this->bWriteVal($b, (string) $cname);
-            $this->bWriteVal($b, (string) $parent);
+            $this->bWriteVal($b, (string) $cname, true);
+            $this->bWriteVal($b, (string) $parent, true);
         }
         $cis = $program['classImpl'] ?? [];
         $this->bWriteVarint($b, count($cis));
         foreach ($cis as $cname => $ifaces) {
-            $this->bWriteVal($b, (string) $cname);
+            $this->bWriteVal($b, (string) $cname, true);
             $this->bWriteVarint($b, count($ifaces));
             foreach ($ifaces as $iname => $_) {
-                $this->bWriteVal($b, (string) $iname);
+                $this->bWriteVal($b, (string) $iname, true);
             }
         }
         // include 嵌入段（被包含文件编译产物，INCLUDE_EMBED 时按 id 取用）
         $embeds = $program['embeds'] ?? [];
         $this->bWriteVarint($b, count($embeds));
         foreach ($embeds as $seg) {
-            $this->bWriteSeg($b, $seg);
+            $this->bWriteSeg($b, $seg, true);
         }
         // 源文件基目录：运行期动态 include 的相对路径回退基准
         // （原生按"调用脚本所在目录"解析，单文件产物已无该目录，退而求其次保意图）
-        $this->bWriteVal($b, (string) ($program['srcBase'] ?? ''));
+        $this->bWriteVal($b, (string) ($program['srcBase'] ?? ''), true);
         // 原生函数名表（CALL_NATIVE 间接调用用）：count + 各名字
         // P8 arch_builtin_replace：开时把函数名盐化 XOR + base64 编码后再写入二进制包，
         // 静态分析在解包数据里看不到 strlen/array_map 等明文（运行期 CALLFN 内解码还原）。
         $natTbl = $program['natTbl'] ?? [];
         $this->bWriteVarint($b, count($natTbl));
         foreach ($natTbl as $n => $idx) {
-            $this->bWriteVal($b, $this->builtinReplace ? $this->natNameEncode((string) $n) : (string) $n);
+            // 不走符号密文：natTbl 在运行期由 CALLFN **单条**解码（builtinReplace 时用
+            // natKey），必须保持「整表不解密」的既有语义，否则程序内存里会重新出现
+            // 明文原生函数名，抵消 arch_builtin_replace 的意义。
+            $this->bWriteVal($b, $this->builtinReplace ? $this->natNameEncode((string) $n) : (string) $n, false);
         }
         // 异常表（try/catch/finally 真编译）：与 packProgram 写入顺序严格对应。
         // mainET 扁平表 → funcET(名=>表) → classET(类=>方法=>表) → embedET(按序表)。
-        $this->bWriteExTab($b, $program['mainET'] ?? []);
+        $this->bWriteExTab($b, $program['mainET'] ?? [], true);
         $funcET = $program['funcET'] ?? [];
         $this->bWriteVarint($b, count($funcET));
         foreach ($funcET as $name => $entries) {
-            $this->bWriteVal($b, (string) $name);
-            $this->bWriteExTab($b, $entries);
+            $this->bWriteVal($b, (string) $name, true);
+            $this->bWriteExTab($b, $entries, true);
         }
         $classET = $program['classET'] ?? [];
         $this->bWriteVarint($b, count($classET));
         foreach ($classET as $owner => $ms) {
-            $this->bWriteVal($b, (string) $owner);
+            $this->bWriteVal($b, (string) $owner, true);
             $this->bWriteVarint($b, count($ms));
             foreach ($ms as $mn => $entries) {
-                $this->bWriteVal($b, (string) $mn);
-                $this->bWriteExTab($b, $entries);
+                $this->bWriteVal($b, (string) $mn, true);
+                $this->bWriteExTab($b, $entries, true);
             }
         }
         $embedET = $program['embedET'] ?? [];
         $this->bWriteVarint($b, count($embedET));
         foreach ($embedET as $entries) {
-            $this->bWriteExTab($b, $entries);
+            $this->bWriteExTab($b, $entries, true);
         }
         // 静态方法表（FCC 创建期校验：C::m(...) 对非静态方法即抛 Error）：
         // 类名 => 静态方法名集合。追加在末尾——顺序必须与 bytecodeHelpersTemplate
@@ -2434,10 +2487,10 @@ TPL;
         $cs = $program['classStatic'] ?? [];
         $this->bWriteVarint($b, count($cs));
         foreach ($cs as $cname => $ms) {
-            $this->bWriteVal($b, (string) $cname);
+            $this->bWriteVal($b, (string) $cname, true);
             $this->bWriteVarint($b, count($ms));
             foreach ($ms as $mn => $_) {
-                $this->bWriteVal($b, (string) $mn);
+                $this->bWriteVal($b, (string) $mn, true);
             }
         }
         return $b;
@@ -2454,22 +2507,89 @@ TPL;
     }
 
     /**
+     * v1.1.8 VM 符号密文：base64( 符号 XOR keystream(symKey) )。
+     * 与 natNameEncode 同构但**密钥独立**（vm-symkey vs vm-natkey），
+     * 也与分片密钥（vm-chunk-*）、常量池密钥（vm-cpool）互不派生。
+     *
+     * 覆盖对象：程序容器内的**全部字符串**——类名 / 方法名 / 函数名 / 变量名 /
+     * 属性名 / 常量名 / 异常表 kind-type-varName / 指令操作数里的符号串。
+     * 运行期由 $___sval___ 系列读取器在解包时整表还原，语义零影响。
+     *
+     * 效果：攻击者即便从产物里提取出分片密钥并解开字节码容器，`strings` 也读不到
+     * 任何符号名——只剩一坨密文。关掉（--no-vm-symbols）则退化为旧行为。
+     */
+    private function symEncode(string $s): string
+    {
+        if ($s === '' || !$this->symbols) {
+            return $s;
+        }
+        return base64_encode($this->xorKeystream($s, $this->symKey));
+    }
+
+    /**
+     * v1.1.8 容器格式随机化：为 6 个语义类型标记分配【本次构建专属】的字节值。
+     * 按源文件内容派生（与 symKey 同源但不共用标签），保证：
+     *   - 同 salt + 同源码 → 同一映射（构建可复现）；
+     *   - 不同文件 → 不同映射（通用解容器脚本无法跨文件套用）；
+     *   - 映射为双射（打包 / 解包严格互逆，语义零影响）。
+     */
+    private function initTagMap(string $source): void
+    {
+        $semantics = [
+            self::TAG_NULL, self::TAG_INT, self::TAG_STR,
+            self::TAG_BOOL, self::TAG_FLT, self::TAG_SEG,
+        ];
+        $label = 'vm-tag:' . substr(sha1($source), 0, 16);
+        $bytes = [];
+        for ($i = 0; $i < 4096 && count($bytes) < count($semantics); $i++) {
+            $b = $this->salt->deriveInt($label . ':' . $i, 0, 255);
+            if (!in_array($b, $bytes, true)) {
+                $bytes[] = $b;
+            }
+        }
+        // 派生出重复值时的兜底：补齐尚未占用的字节，保证映射仍是双射
+        for ($b = 0; $b < 256 && count($bytes) < count($semantics); $b++) {
+            if (!in_array($b, $bytes, true)) {
+                $bytes[] = $b;
+            }
+        }
+        $this->tagMap = [];
+        $this->tagUnmap = [];
+        foreach ($semantics as $k => $sem) {
+            $this->tagMap[$sem] = $bytes[$k];
+            $this->tagUnmap[$bytes[$k]] = $sem;
+        }
+    }
+
+    /** 语义 TAG => 实际写入容器的字节 */
+    private function tagOf(int $semantic): int
+    {
+        return $this->tagMap[$semantic] ?? $semantic;
+    }
+
+    /** 实际字节 => 语义 TAG（未知字节返回 -1） */
+    private function tagSem(int $byte): int
+    {
+        return $this->tagUnmap[$byte] ?? -1;
+    }
+
+    /**
      * 序列化一组参数规格：[ [参数名, 默认值段|null, 标志位], ... ]
      * 标志位 bit0 = 引用参数（&$x），bit1 = 可变参数（...$x）。
      * 读取端见 bytecodeHelpersTemplate 的 $___ps___，顺序必须严格一致。
      * @param array<int,array{0:string,1:array<int,array<int,mixed>>|null,2:int}> $spec
      */
-    private function bWriteParamSpec(string &$b, array $spec): void
+    private function bWriteParamSpec(string &$b, array $spec, bool $enc = false): void
     {
         $this->bWriteVarint($b, count($spec));
         foreach ($spec as $p) {
-            $this->bWriteVal($b, (string) $p[0]);
+            $this->bWriteVal($b, (string) $p[0], $enc);
             $this->bWriteVarint($b, (int) ($p[2] ?? 0));
             if ($p[1] === null) {
-                $b .= chr(self::TAG_NULL);
+                $b .= chr($this->tagOf(self::TAG_NULL));
             } else {
-                $b .= chr(self::TAG_SEG);
-                $this->bWriteSeg($b, $p[1]);
+                $b .= chr($this->tagOf(self::TAG_SEG));
+                $this->bWriteSeg($b, $p[1], $enc);
             }
         }
     }
@@ -2480,16 +2600,16 @@ TPL;
      * 与 $___xet___（bytecodeHelpersTemplate）严格对应。
      * @param array<int,array{0:int,1:int,2:int,3:string,4:string,5:string}> $entries
      */
-    private function bWriteExTab(string &$b, array $entries): void
+    private function bWriteExTab(string &$b, array $entries, bool $enc = false): void
     {
         $this->bWriteVarint($b, count($entries));
         foreach ($entries as $e) {
             $this->bWriteVarint($b, (int) ($e[0] ?? 0));
             $this->bWriteVarint($b, (int) ($e[1] ?? 0));
             $this->bWriteVarint($b, (int) ($e[2] ?? 0));
-            $this->bWriteVal($b, (string) ($e[3] ?? ''));
-            $this->bWriteVal($b, (string) ($e[4] ?? ''));
-            $this->bWriteVal($b, (string) ($e[5] ?? ''));
+            $this->bWriteVal($b, (string) ($e[3] ?? ''), $enc);
+            $this->bWriteVal($b, (string) ($e[4] ?? ''), $enc);
+            $this->bWriteVal($b, (string) ($e[5] ?? ''), $enc);
         }
     }
 
@@ -2564,12 +2684,24 @@ $___XOR___=function(string $d,string $k):string{if(($m=strlen($k))===0){return $
 // （cpoolDecodePhp）共用，避免各自闭包内重复定义/顶层不可见。
 $___rv___=function(string $bb,int &$p){$v=0;$s=0;while(true){$c=ord($bb[$p++]);$v|=($c&0x7f)<<$s;if(!($c&0x80)){break;}$s+=7;}return $v;};
 $___rz___=function(string $bb,int &$p)use($___rv___){$z=$___rv___($bb,$p);return ($z&1)?-(($z+1)>>1):($z>>1);};
-$___val___=function(string $bb,int &$p)use($___rv___,$___rz___){$t=ord($bb[$p++]);if($t===0){return null;}if($t===3){return ord($bb[$p++])===1;}if($t===1){return $___rz___($bb,$p);}if($t===4){$x=unpack('d',substr($bb,$p,8));$p+=8;return ($x===false)?0.0:$x[1];}$n=$___rv___($bb,$p);$s=substr($bb,$p,$n);$p+=$n;return $s;};
+// v1.1.8 VM 符号密文：$___SYMK___ 为盐派生密钥（构建期注入）。程序容器内写入的
+// 字符串（类名/方法名/函数名/变量名/属性名/常量名/异常表三字段/指令操作数符号串）
+// 全部以它加密落盘；本读取器负责解密还原，语义与旧版逐字节等价。
+// $___rval___ 是**不解密**的原版读取器：仅供 natTbl 使用（natTbl 自带
+// builtinReplace 的名编码、在 CALLFN 内单条解码，不能整表还原，否则程序内存里
+// 会重新出现明文原生函数名，抵消 arch_builtin_replace 的意义）。
+$___SYMK___=base64_decode('AWA_SYMKEY_PLACEHOLDER');
+// v1.1.8 容器格式随机化：$___TM___ 是「实际字节 => 语义 TAG」的映射表（构建期注入，
+// 逐构建不同）。读取器一律先查表再判断类型；未知字节按旧版行为退化为 STR
+// （与 v1.1.7 的 default 分支语义一致），保证语义零影响。
+$___TM___=AWA_TAGMAP_PLACEHOLDER;
+$___rval___=function(string $bb,int &$p)use($___rv___,$___rz___,$___TM___){$t=$___TM___[ord($bb[$p++])]??2;if($t===0){return null;}if($t===3){return ord($bb[$p++])===1;}if($t===1){return $___rz___($bb,$p);}if($t===4){$x=unpack('d',substr($bb,$p,8));$p+=8;return ($x===false)?0.0:$x[1];}$n=$___rv___($bb,$p);$s=substr($bb,$p,$n);$p+=$n;return $s;};
+$___val___=function(string $bb,int &$p)use($___rv___,$___rz___,$___SYMK___,$___TM___){$t=$___TM___[ord($bb[$p++])]??2;if($t===0){return null;}if($t===3){return ord($bb[$p++])===1;}if($t===1){return $___rz___($bb,$p);}if($t===4){$x=unpack('d',substr($bb,$p,8));$p+=8;return ($x===false)?0.0:$x[1];}$n=$___rv___($bb,$p);$s=substr($bb,$p,$n);$p+=$n;$m=strlen($___SYMK___);if($m===0){return $s;}$d=base64_decode($s);if($d===false||$d===''){return $s;}$r='';for($j=0,$l=strlen($d);$j<$l;$j++){$r.=chr(ord($d[$j])^ord($___SYMK___[$j%$m]));}return $r;};
 $___seg___=function(string $bb,int &$p)use($___rv___,$___val___){$n=$___rv___($bb,$p);$seg=[];for($i=0;$i<$n;$i++){$op=$___rv___($bb,$p);$argc=$___rv___($bb,$p);$ins=[$op];for($k=0;$k<$argc;$k++){$ins[]=$___val___($bb,$p);}$seg[]=$ins;}return $seg;};
-$___ps___=function(string $bb,int &$p)use($___rv___,$___val___,$___seg___){$n=$___rv___($bb,$p);$spec=[];for($i=0;$i<$n;$i++){$pn=$___val___($bb,$p);$fl=$___rv___($bb,$p);$tt=ord($bb[$p++]);$spec[]=[$pn,($tt===0?null:$___seg___($bb,$p)),$fl];}return $spec;};
+$___ps___=function(string $bb,int &$p)use($___rv___,$___val___,$___seg___,$___TM___){$n=$___rv___($bb,$p);$spec=[];for($i=0;$i<$n;$i++){$pn=$___val___($bb,$p);$fl=$___rv___($bb,$p);$tt=$___TM___[ord($bb[$p++])]??5;$spec[]=[$pn,($tt===0?null:$___seg___($bb,$p)),$fl];}return $spec;};
 $___xet___=function(string $bb,int &$p)use($___rv___,$___val___){$n=$___rv___($bb,$p);$tab=[];for($i=0;$i<$n;$i++){$a=$___rv___($bb,$p);$b2=$___rv___($bb,$p);$c=$___rv___($bb,$p);$k=$___val___($bb,$p);$t=$___val___($bb,$p);$v=$___val___($bb,$p);$tab[]=[$a,$b2,$c,$k,$t,$v];}return $tab;};
-$___UNPACK___=function(string $b)use($___rv___,$___val___,$___seg___,$___ps___,$___xet___){
-$p=0;$main=$___seg___($b,$p);$nF=$___rv___($b,$p);$funcs=[];for($i=0;$i<$nF;$i++){$name=$___val___($b,$p);$funcs[$name]=$___seg___($b,$p);}$nC=$___rv___($b,$p);$classes=[];for($i=0;$i<$nC;$i++){$cname=$___val___($b,$p);$nP=$___rv___($b,$p);$props=[];for($j=0;$j<$nP;$j++){$pn=$___val___($b,$p);$tt=ord($b[$p++]);if($tt===0){$props[$pn]=null;}else{$props[$pn]=$___seg___($b,$p);}}$nM=$___rv___($b,$p);$methods=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$methods[$mn]=$___seg___($b,$p);}$nK=$___rv___($b,$p);$consts=[];for($j=0;$j<$nK;$j++){$cn=$___val___($b,$p);$tt=ord($b[$p++]);if($tt===0){$consts[$cn]=null;}else{$consts[$cn]=$___seg___($b,$p);}}$classes[$cname]=['props'=>$props,'methods'=>$methods,'consts'=>$consts];}$nG=$___rv___($b,$p);$globals=[];for($i=0;$i<$nG;$i++){$globals[]=$___val___($b,$p);}$nFP=$___rv___($b,$p);$funcParams=[];for($i=0;$i<$nFP;$i++){$name=$___val___($b,$p);$funcParams[$name]=$___ps___($b,$p);}$nCP=$___rv___($b,$p);$classParams=[];for($i=0;$i<$nCP;$i++){$cname=$___val___($b,$p);$nM=$___rv___($b,$p);$sp=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$sp[$mn]=$___ps___($b,$p);}$classParams[$cname]=$sp;}$nCPS=$___rv___($b,$p);$classParents=[];for($i=0;$i<$nCPS;$i++){$cname=$___val___($b,$p);$classParents[$cname]=$___val___($b,$p);}$nCIS=$___rv___($b,$p);$classImpl=[];for($i=0;$i<$nCIS;$i++){$cname=$___val___($b,$p);$nI=$___rv___($b,$p);$ifs=[];for($j=0;$j<$nI;$j++){$ifs[$___val___($b,$p)]=true;}$classImpl[$cname]=$ifs;}$nE=$___rv___($b,$p);$embeds=[];for($i=0;$i<$nE;$i++){$embeds[]=$___seg___($b,$p);}$srcBase=$___val___($b,$p);$nN=$___rv___($b,$p);$natTbl=[];for($i=0;$i<$nN;$i++){$natTbl[]=$___val___($b,$p);}$mainET=$___xet___($b,$p);$nFE=$___rv___($b,$p);$funcET=[];for($i=0;$i<$nFE;$i++){$fn=$___val___($b,$p);$funcET[$fn]=$___xet___($b,$p);}$nCE=$___rv___($b,$p);$classET=[];for($i=0;$i<$nCE;$i++){$co=$___val___($b,$p);$nM=$___rv___($b,$p);$ms=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$ms[$mn]=$___xet___($b,$p);}$classET[$co]=$ms;}$nEE=$___rv___($b,$p);$embedET=[];for($i=0;$i<$nEE;$i++){$embedET[]=$___xet___($b,$p);}$nCS=$___rv___($b,$p);$classStatic=[];for($i=0;$i<$nCS;$i++){$cname=$___val___($b,$p);$nM=$___rv___($b,$p);$sm=[];for($j=0;$j<$nM;$j++){$sm[$___val___($b,$p)]=true;}$classStatic[$cname]=$sm;}return ['main'=>$main,'funcs'=>$funcs,'classes'=>$classes,'globals'=>$globals,'funcParams'=>$funcParams,'classParams'=>$classParams,'classParents'=>$classParents,'classImpl'=>$classImpl,'embeds'=>$embeds,'srcBase'=>$srcBase,'natTbl'=>$natTbl,'mainET'=>$mainET,'funcET'=>$funcET,'classET'=>$classET,'embedET'=>$embedET,'classStatic'=>$classStatic];};
+$___UNPACK___=function(string $b)use($___rv___,$___val___,$___rval___,$___seg___,$___ps___,$___xet___,$___TM___){
+$p=0;$main=$___seg___($b,$p);$nF=$___rv___($b,$p);$funcs=[];for($i=0;$i<$nF;$i++){$name=$___val___($b,$p);$funcs[$name]=$___seg___($b,$p);}$nC=$___rv___($b,$p);$classes=[];for($i=0;$i<$nC;$i++){$cname=$___val___($b,$p);$nP=$___rv___($b,$p);$props=[];for($j=0;$j<$nP;$j++){$pn=$___val___($b,$p);$tt=$___TM___[ord($b[$p++])]??5;if($tt===0){$props[$pn]=null;}else{$props[$pn]=$___seg___($b,$p);}}$nM=$___rv___($b,$p);$methods=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$methods[$mn]=$___seg___($b,$p);}$nK=$___rv___($b,$p);$consts=[];for($j=0;$j<$nK;$j++){$cn=$___val___($b,$p);$tt=$___TM___[ord($b[$p++])]??5;if($tt===0){$consts[$cn]=null;}else{$consts[$cn]=$___seg___($b,$p);}}$classes[$cname]=['props'=>$props,'methods'=>$methods,'consts'=>$consts];}$nG=$___rv___($b,$p);$globals=[];for($i=0;$i<$nG;$i++){$globals[]=$___val___($b,$p);}$nFP=$___rv___($b,$p);$funcParams=[];for($i=0;$i<$nFP;$i++){$name=$___val___($b,$p);$funcParams[$name]=$___ps___($b,$p);}$nCP=$___rv___($b,$p);$classParams=[];for($i=0;$i<$nCP;$i++){$cname=$___val___($b,$p);$nM=$___rv___($b,$p);$sp=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$sp[$mn]=$___ps___($b,$p);}$classParams[$cname]=$sp;}$nCPS=$___rv___($b,$p);$classParents=[];for($i=0;$i<$nCPS;$i++){$cname=$___val___($b,$p);$classParents[$cname]=$___val___($b,$p);}$nCIS=$___rv___($b,$p);$classImpl=[];for($i=0;$i<$nCIS;$i++){$cname=$___val___($b,$p);$nI=$___rv___($b,$p);$ifs=[];for($j=0;$j<$nI;$j++){$ifs[$___val___($b,$p)]=true;}$classImpl[$cname]=$ifs;}$nE=$___rv___($b,$p);$embeds=[];for($i=0;$i<$nE;$i++){$embeds[]=$___seg___($b,$p);}$srcBase=$___val___($b,$p);$nN=$___rv___($b,$p);$natTbl=[];for($i=0;$i<$nN;$i++){$natTbl[]=$___rval___($b,$p);}$mainET=$___xet___($b,$p);$nFE=$___rv___($b,$p);$funcET=[];for($i=0;$i<$nFE;$i++){$fn=$___val___($b,$p);$funcET[$fn]=$___xet___($b,$p);}$nCE=$___rv___($b,$p);$classET=[];for($i=0;$i<$nCE;$i++){$co=$___val___($b,$p);$nM=$___rv___($b,$p);$ms=[];for($j=0;$j<$nM;$j++){$mn=$___val___($b,$p);$ms[$mn]=$___xet___($b,$p);}$classET[$co]=$ms;}$nEE=$___rv___($b,$p);$embedET=[];for($i=0;$i<$nEE;$i++){$embedET[]=$___xet___($b,$p);}$nCS=$___rv___($b,$p);$classStatic=[];for($i=0;$i<$nCS;$i++){$cname=$___val___($b,$p);$nM=$___rv___($b,$p);$sm=[];for($j=0;$j<$nM;$j++){$sm[$___val___($b,$p)]=true;}$classStatic[$cname]=$sm;}return ['main'=>$main,'funcs'=>$funcs,'classes'=>$classes,'globals'=>$globals,'funcParams'=>$funcParams,'classParams'=>$classParams,'classParents'=>$classParents,'classImpl'=>$classImpl,'embeds'=>$embeds,'srcBase'=>$srcBase,'natTbl'=>$natTbl,'mainET'=>$mainET,'funcET'=>$funcET,'classET'=>$classET,'embedET'=>$embedET,'classStatic'=>$classStatic];};
 TPL;
     }
 }

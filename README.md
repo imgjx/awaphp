@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.7-blue)
+![Version](https://img.shields.io/badge/version-1.1.8-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,6 +40,16 @@
 
 ## 特性
 
+> **v1.1.8 更新要点**：① VM 字节码容器内的**符号名全面密文化**——类名 / 方法名 / 函数名 /
+> 变量名 / 属性名 / 常量名等全部以**按源文件内容派生**的密钥加密落盘，运行期解包时还原。
+> 此前容器虽被分片加密，但容器内符号名是明文：攻击者提取产物里的分片密钥即可解开容器，
+> `strings` 直接读出完整符号表。现在即便密钥被提取，也只剩一坨密文；且密钥**不跨文件复用**，
+> 拿 A 产物的密钥解不开 B 产物。开关：`--no-vm-symbols`。
+> ② **容器格式随机化**：类型标记字节逐构建不同，通用解容器脚本无法按固定常量套用。
+> ③ **修两个「产物完全跑不起来」的隐蔽 bug**：状态机把尾随行注释搬进 case 体导致行注释吞代码
+> （`Unclosed '{'`）；注入层变量名撞名覆盖状态机初值（产物零输出且无任何报错）。
+> ④ 无 salt 时改用随机盐兜底，消除长期缺乏测试的随机分支。
+>
 > **v1.1.7 更新要点**：① 类文件里的**闭包 / 箭头函数 / `match` / `yield`** 真正编译进 VM 字节码
 > （修复 `parseNew()` 的 FQCN 支持与 VM 内私有/受保护方法调用）；② 反 LLM 互斥注释
 > **更近、更多、更矛盾**（22 组主题、3/6/12 簇、同簇 1~3 个 token 边界内并排），
@@ -104,6 +114,8 @@
 - **VM 高级环境自检（脱壳独立执行检测，默认开，v1.1.5）**：解释器初始化 + dispatch 循环内**双点**校验「外壳绑定标记」——混淆器在最外层 `define()` 一个盐派生常量，内层只持其 **sha256 摘要**（`hash_equals` 比摘要，**拿不到原文就无法伪造**）。把 runtime 闭包 + 字节码整段抠出独立运行、或删掉外层 define，自检即失败并把污染因子写进 opcode 解码 → **零输出、零报错**，无可下断点、无可 patch 的 exit。`--no-vm-selfcheck` 关闭。
 
 - **类文件语法兼容加强（v1.1.7）**：闭包 / 箭头函数 / `match` / `yield` 在**含类声明的文件**中同样编译进 VM 字节码——此前这类文件因 `parseNew()` 不支持 `new \app\controller\Shop()` 的 `T_NS_SEPARATOR` 而整体降级为 `gz+base64` 不透明载荷（方法体只是 `_PHPRUN` 原生执行，并非 VM 字节码保护）。现循环收集完整 FQCN 并经 `resolveClassRef()` 展开 `use` 别名 / 当前命名空间；同时 VM 运行期 `$___CALLMETHOD___` 与 `SCALL` / `SCALL_VAR` 改用 `ReflectionMethod::setAccessible(true)`，修复 `$this->privateMethod()` 抛 `cannot access private method` 的问题。综合类夹具在 `high` / `max` / `ultra` 逐字节一致，源码明文 marker 计数为 0。
+
+- **符号名密文 + 容器格式随机化（默认开，v1.1.8）**：字节码容器内的**全部字符串**——类名 / 方法名 / 函数名 / 变量名 / 属性名 / 常量名 / 异常表三字段 / 指令操作数里的符号串——都以**按源文件内容派生**的盐密钥加密落盘，运行期解包时还原。此前容器虽整体被分片加密，但容器内符号名是**明文**：攻击者提取产物里的分片密钥即可解开容器，`strings` 直接读出完整符号表（业务结构、命名风格、类与方法关系一览无余）。现在即便密钥被提取也只剩一坨密文；密钥**不跨文件复用**，拿 A 产物的密钥解不开 B 产物。同时**容器的类型标记字节也逐构建随机化**（原本是固定序列 `NULL=0/INT=1/STR=2/BOOL=3/FLT=4/SEG=5`，是容器格式的固定指纹，通用解容器脚本按这组常量即可套用）——现在每次构建的容器结构都不同，且同 salt 仍可复现。开关：`--no-vm-symbols`（仅关闭符号密文）。配套新增 `tests/vm_symbols.php`（28 项）专项回归。
 
 ### 反 LLM 静态分析（Confrontation-LLM）
 现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：

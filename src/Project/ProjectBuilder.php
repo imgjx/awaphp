@@ -29,6 +29,10 @@ final class ProjectBuilder
         private string $toolName,
         private string $toolVersion
     ) {
+        // v1.1.8：与 Obfuscator 一致——未指定盐时用随机盐兜底，走确定性派生主路径
+        if ($this->salt->isEmpty()) {
+            $this->salt = Salt::random();
+        }
     }
 
     /**

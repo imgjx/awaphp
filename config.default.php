@@ -63,6 +63,7 @@ return [
     'vm_selfcheck' => true,    // VM 高级环境自检（脱壳独立执行检测）：解释器初始化校验外壳绑定标记，缺失则污染 opcode 解码（静默错乱）
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
+    'vm_symbols'   => true,    // VM 符号名密文（默认开）：程序容器内的类名/方法名/函数名/变量名/属性名/常量名全部加密落盘、运行期解包还原（--no-vm-symbols 关）
     'eval'         => false,   // EVAL 多层加壳
     'eval_layers'  => 3,       // EVAL 加壳层数
     'anti_debug'   => false,   // 反调试探针

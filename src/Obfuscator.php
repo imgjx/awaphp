@@ -57,6 +57,13 @@ final class Obfuscator
         private ?SymbolTable $symbols = null
     ) {
         $this->inj = null;
+        // v1.1.8：未指定盐时用**随机盐**兜底。整套系统约 20 处以 salt->isEmpty() 分流
+        // （有盐走确定性派生、无盐走 random_bytes 兜底），那批 random 分支长期缺乏覆盖，
+        // 实测存在约 1/250 的偶发失败。随机盐兜底后：未指定盐时依然「每次构建产物不同」，
+        // 但走的全是与指定盐时相同的派生路径，偶发失败随之消失（详见 Salt::random）。
+        if ($this->salt->isEmpty()) {
+            $this->salt = Salt::random();
+        }
     }
 
     private ?CodeInjector $inj = null;
@@ -181,6 +188,8 @@ final class Obfuscator
                 'probe'          => (int) $this->config->get('vm_probe'),
                 // VM 常量池加密（默认开，--no-vm-cpool 关）
                 'cpool'          => (bool) $this->config->get('vm_cpool'),
+                // VM 符号密文化（默认开，--no-vm-symbols 关）：程序容器内符号名加密落盘
+                'symbols'        => (bool) $this->config->get('vm_symbols'),
                 // VM 嵌套层数（真·嵌套 VM）：把上一层产物再喂给 VM 编译，实现多层 VM 壳。
                 // 默认 1（单层）；>=2 时逐层回灌自己，每层先剥 PHP 开闭标签。
                 'layers'         => max(1, (int) $this->config->get('vm_layers')),
@@ -1249,6 +1258,9 @@ final class Obfuscator
             'fakeFog'        => (int) ($params['fakeFog'] ?? 0),
             'probe'          => (int) ($params['probe'] ?? 0),
             'cpool'          => (bool) ($params['cpool'] ?? true),
+            // VM 符号密文化（默认开）：程序容器内的类名/方法名/变量名等全部加密落盘，
+            // 运行期解包时还原；--no-vm-symbols 关闭后行为与 v1.1.7 逐字节等价。
+            'symbols'        => (bool) ($params['symbols'] ?? true),
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
             'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
             'inloop'         => (bool) ($params['inloop'] ?? $this->config->get('vm_inloop')),

@@ -78,9 +78,13 @@ foreach ($presets as $preset) {
         ok($lint['exit'] === 0, "{$label} php -l", substr($lint['out'], 0, 200));
 
         $code = (string) file_get_contents($out);
-        ok(substr_count($code, '<?php') === 1 && strpos($code, '?>') === false,
+        // 开标签大小写不敏感（PHP 语法上 `<?php` / `<?PHP` / `<?Php` 等价），
+        // 故此处必须忽略大小写统计——token 形态层的 case 随机化会把开标签写成
+        // `<?PHP`，用大小写敏感的 substr_count 判定会误报「开标签数为 0」。
+        $lower = strtolower($code);
+        ok(substr_count($lower, '<?php') === 1 && strpos($lower, '?>') === false,
             "{$label} 结构不变式（单开标签 / 无闭标签）",
-            'open=' . substr_count($code, '<?php') . ' close=' . substr_count($code, '?>'));
+            'open=' . substr_count($lower, '<?php') . ' close=' . substr_count($lower, '?>'));
 
         $got = run(escapeshellarg($php) . ' ' . escapeshellarg($out));
         ok(trim($got['out']) === trim($native['out']), "{$label} 输出与原生一致",
@@ -93,8 +97,20 @@ foreach ($presets as $preset) {
     echo "\n";
 }
 
-@array_map('unlink', glob($tmp . '/*') ?: []);
-@rmdir($tmp);
+// 失败时【保留产物】以便复现：偶发失败（flaky）此前因产物被无条件删除而无法定位。
+// 全部通过才清理临时目录。
+if ($fail === 0) {
+    @array_map('unlink', glob($tmp . '/*') ?: []);
+    @rmdir($tmp);
+} else {
+    echo "\n[诊断] 存在失败项，产物已保留以便复现：{$tmp}\n";
+    foreach (glob($tmp . '/*') ?: [] as $f) {
+        $sz = @filesize($f);
+        if ($sz !== false && $sz > 0) {
+            echo "  - {$f} ({$sz} bytes)\n";
+        }
+    }
+}
 
 echo "===== 结果：通过 {$pass} / 失败 {$fail} =====\n";
 if ($fail > 0) {

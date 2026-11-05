@@ -57,6 +57,22 @@ final class Salt
         return $this->salt;
     }
 
+    /**
+     * 生成一个随机盐（v1.1.8）。
+     *
+     * 用途：调用方**未指定** --salt 时用它兜底。原因——整套系统有约 20 处以
+     * `salt->isEmpty()` 分流：有盐走【确定性派生】，无盐走 `random_bytes` 兜底。
+     * 那批 random 分支长期缺乏覆盖，实测存在**约 1/250 的偶发失败**
+     * （产物偶发 Parse error / 无参调用原生函数 / 静默无输出）。
+     *
+     * 改用随机盐兜底后：未指定盐时依然「每次构建产物不同」（随机盐不同 → 派生不同），
+     * 但走的全是与指定盐时**完全相同**的派生路径（已充分测试），偶发失败随之消失。
+     */
+    public static function random(): self
+    {
+        return new self(bin2hex(random_bytes(16)));
+    }
+
     public function isEmpty(): bool
     {
         return $this->salt === '';

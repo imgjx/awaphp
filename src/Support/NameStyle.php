@@ -71,8 +71,46 @@ final class NameStyle
         }
     }
 
+    /**
+     * 已登记的保留名（含 `$` 前缀的变量名）。
+     *
+     * v1.1.8 新增：拟真变量名来自固定词池（HEADS × TAILS），而**多个注入层共用同一
+     * 词池**——状态机层的状态变量（如 `$connCursor`）与运行时垃圾层的垃圾变量
+     * （如 `$connCursor`）可能取到**同名**，后者一旦赋值就会覆盖前者：
+     * 状态机的状态变量初值被垃圾语句改写 → 分派器 switch 到初始值以外的分支 →
+     * 直接落到 default 退出 → **产物零输出且无任何报错**（实测约 1/120 的 salt 必现）。
+     *
+     * 登记后 `varName()` 会自动避开这些名字（换确定性变体重试），彻底消除跨层撞名。
+     * 采用**实例级**而非静态表：多文件工程构建时，保留名不跨文件累积，
+     * 「同 salt + 同文件集合 → 同产物」的可复现性不受影响。
+     * @var array<string,true>
+     */
+    private array $reserved = [];
+
+    /** 登记一个不可再被 varName() 生成的变量名（如 `$connCursor`）。 */
+    public function reserve(string $name): void
+    {
+        $n = ltrim(trim($name), '$');
+        if ($n !== '') {
+            $this->reserved['$' . $n] = true;
+        }
+    }
+
     /** 拟真变量名：$cache_handler / $reqState / $userbuffer */
     public function varName(string $label): string
+    {
+        for ($i = 0; $i < 32; $i++) {
+            $name = $this->makeVarName($i === 0 ? $label : $label . '|v' . $i);
+            if (!isset($this->reserved[$name])) {
+                return $name;
+            }
+        }
+        // 极端情况下（词池组合恰好全被占用）：追加确定性数字后缀兜底
+        $base = ltrim($this->makeVarName($label), '$');
+        return '$' . $base . '_' . $this->salt->deriveInt($label . '|sfx', 100, 999);
+    }
+
+    private function makeVarName(string $label): string
     {
         $h = $this->pick(self::HEADS, $label . '|h');
         $t = $this->pick(self::TAILS, $label . '|t');

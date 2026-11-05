@@ -61,8 +61,44 @@ final class StateMachineObfuscator
         }
 
         $this->collectUsedVars($tokens);
+        // v1.1.8：行注释块化必须【先于】语句切分——见 blockifyLineComments() 的说明。
+        $tokens = self::blockifyLineComments($tokens);
         $tokens = $this->processFunctionBodies($tokens);
         $tokens = $this->processTopLevel($tokens);
+        return $tokens;
+    }
+
+    /**
+     * v1.1.8 修复：把行注释（`//` / `#`）转成块注释形式（斜杠星 … 星斜杠）。
+     *
+     * 背景：状态机会把顶层 / 函数体的语句**切分并重组**进分发器，而
+     * `StatementSplitter::splitRanges()` 会把尾随注释切成**独立区间**——注释因此
+     * 可能落到某个 case 体的**开头**，而其后紧跟的是状态机生成的转移代码（**同一行**）。
+     * 行注释会一路吞掉后续代码 → 花括号不配对 → `PHP Parse error: Unclosed '{'`，
+     * 产物完全不可运行（实测：strings.php 夹具在约 1/120 的 salt 下必现，且与
+     * `junk_runtime` 等层无关——后者只是改变 token 流从而偶然掩盖问题）。
+     *
+     * 块注释不会吞掉后续代码，故在切分前统一块化。与
+     * `Optimize\Whitespace::normalizeLineComments()` 同一思路（项目既有行为）。
+     * 注释体内的闭合序列转义为「星 斜杠」，避免提前闭合。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    private static function blockifyLineComments(array $tokens): array
+    {
+        foreach ($tokens as $i => $t) {
+            if (!is_array($t) || ($t[0] ?? null) !== T_COMMENT) {
+                continue;
+            }
+            $body = (string) ($t[1] ?? '');
+            if (!str_starts_with($body, '//') && !str_starts_with($body, '#')) {
+                continue;
+            }
+            $inner = str_replace('*/', '* /', rtrim(substr($body, 2)));
+            // 保持 T_COMMENT 类型（PHP 词法上块注释同样是 T_COMMENT）
+            $tokens[$i][1] = '/*' . $inner . '*/';
+        }
         return $tokens;
     }
 
