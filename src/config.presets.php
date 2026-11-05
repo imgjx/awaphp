@@ -93,7 +93,6 @@ return [
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 8, 'split' => 2]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 6]],
-            ['name' => 'statemachine', 'params' => ['complexity' => 6, 'passes' => 1, 'traps' => 1, 'opaque' => true]],
             ['name' => 'semantic',     'params' => ['strength' => 1]],
             ['name' => 'anti_ast',     'params' => []],
             ['name' => 'junk_runtime', 'params' => ['intensity' => 2, 'fake_b64' => true, 'fake_echo' => true]],

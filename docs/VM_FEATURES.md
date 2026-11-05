@@ -791,3 +791,98 @@ v1.1.6 把这套机制抽成 `src/ControlFlow/StateMachine.php`（`StateMachineO
   隔离构建（仅 token 层、无 eval/gz 壳）下的明文结构断言——分发循环头
   （`for(;;)` / `while(1)` / `while(true)`）、不透明谓词（`($x^$x)===0`）、诱饵死状态（`*3` 自锁）。
 - `tests/antidebug_probe_check.php`（39 项）：探针组语法自检回归。
+
+---
+
+## 11.21 v1.1.7：类文件语法兼容加强 / 反 LLM 互斥注释 / 状态机 `use` 屏障
+
+### 11.21.1 「4 类构造不进 VMP」的真实含义
+
+顶层脚本里的闭包、箭头函数、`match`、`yield` 早就可编译进 VM；缺口在**含类声明的文件**。
+这类文件走 `ClassPreservingVm`：保留真实 PHP 类桩（兼容反射 / DI / 框架自动加载），
+方法体委托到 `__awa_vmmethod_<uid>()` 执行 VM 字节码。只要编译期任一点抛错，
+`wrap()` 返回 `null`，调用方降级为 `vmPayloadNest`——整段源码 `gz+base64` 包成不透明载荷，
+由 `_PHPRUN` **原生执行**。密文里看不到明文，但方法体并没有被 VM 字节码保护，
+这正是「不进 VMP」的表现。
+
+两处导致降级的根因：
+
+1. `parseNew()` 只接受单个 `T_STRING` / `static`，遇到 `new \app\controller\Shop()` 的
+   `T_NS_SEPARATOR` 抛「new 仅支持类名 / 类名变量」。真实 TP8 风格命名空间类文件几乎必含
+   这类写法，于是整份降级。
+2. `ClassPreservingVm` 生成的真实桩对象成为 VM 帧里的 `$___THIS___`，
+   `$this->privateMethod()` 走 `MECALL` → `$___CALLMETHOD___`。该真实对象分支原先用
+   `call_user_func_array([$obj,$m],$args)`，在外部作用域**无法访问 private / protected 方法**，
+   运行期抛 `TypeError: cannot access private method ...::gen()`。
+
+修复：
+
+- `src/Vm/Parts/VmExprTrait.php`：循环消费 `T_STRING` / `T_STATIC` / `T_NS_SEPARATOR`
+  收集完整类名，按 `static` / `self` / `parent` / 普通类名分别处理，末尾统一
+  `resolveClassRef()` 展开 `use` 别名与当前命名空间，再发射 `NEW [cls, argc]`。
+- `src/Vm/RuntimeGenerator.php`：`$___CALLMETHOD___` 真实方法分支改
+  `ReflectionMethod` + `setAccessible(true)`（区分静态 / 实例）；`SCALL` / `SCALL_VAR`
+  的真实方法 fallback 同步改为反射调用。
+
+验证：综合类夹具（闭包 + 箭头函数 + `match` + `yield` 生成器 + private 实例/静态 +
+protected 方法）在 `high` / `max` / `ultra` 均输出 `ok:75`；`OBF_CPV_OUT` dump 的中间产物中
+`yield 1`、`fn(int`、`private function gen`、`match (`、`function (int` 等源码明文 marker 全为 0。
+
+### 11.21.2 反 LLM 互斥注释的密度与安全边界
+
+`MutualComments` 在各层壳内部投放互相矛盾的注释簇。v1.1.7 三项增强：
+主题库 **12 → 22 组**（新增多条 3 向 / 4 向成簇断言）；同簇伙伴间隔 **1~40 → 1~3** 个
+token 边界；`Obfuscator::mutualTick()` 每层壳 **1/2/4 对 → 3/6/12 簇**，
+投放上限 `bn/12 → sn/4`。
+
+密度提升带来新的语法风险：注释会被多层壳反复转写——
+`\n// ...\n` → `Whitespace::normalizeLineComments()` 转 `/* ... */` →
+压缩去空白 → 字符串装配时剥离注释。若注入点落在 `use X AS` 与 `Boom` 之间，
+注释成为二者唯一分隔，剥离后即 `ASBoom`；`namespace app\demo` 同理退化为 `namespaceapp`。
+
+`isFusionRisk()` 因此采用**保守白名单**：注入点之前最近的有效 token 若以词素
+（字母 / 数字 / `_` / `$` / 高位字节）结尾，判为风险边界并拒绝投放；
+只保留「前一个有效 token 以结构性标点结尾」的边界（`;` `{` `}` `)` 等），
+保证注释剥离后仍是合法形态。`inject()` 先把 `bounds` 过滤成 `safe`，
+簇内所有断言都从 `safe[$j]` 取边界。代价是可用边界变少，收益是彻底消除粘连——
+**宁可少插，不可插错**。
+
+专项复测：9 个 salt × 2 种密度（`--anti-debug` 与 `--mutual-intensity=3`）共 18 组，
+`php -l` 全通过、输出全为 `sum=3;boom`，`fails=0`。
+
+### 11.21.3 `use` 屏障：一个根因、三个失败
+
+`hardening_v109` 中长期存在 3 项失败：`level=mid` 的
+`unexpected token "use", expecting "case" or "default" or "}"`，以及 `level=max` / `ultra` 的
+`ReflectionException: Class "app\demo\Boom" does not exist`。三者同源：
+
+`StateMachine::isTopLevelSafe()` 的屏障 token 列表含 `T_CLASS` / `T_FUNCTION` /
+`T_DECLARE` / `T_NAMESPACE` / `T_GOTO` / `T_CONST`，**唯独漏了 `T_USE`**。
+顶层 `use RuntimeException as Boom;` 因而被当成普通语句搬进 `switch` case：
+
+- PHP 不允许 `use` 出现在 switch 内 → `mid` Parse error；
+- 更关键的是它不再是顶层语句，VM 编译期 `prescanNamespaceContext()` 扫描不到别名，
+  `new Boom()` 被 `resolveClassRef()` 按当前命名空间补成 `app\demo\Boom`，
+  运行期 `ReflectionClass` 找不到该类 → `max` / `ultra` 反射异常。
+
+修复：`T_USE` 列入屏障，import 语句原样保留在 `namespace` 之后。该判断对**所有**
+`T_USE` 生效（含 trait use、闭包 `use ($x)`），是保守但安全的做法——含 `use` 的顶层语句
+不纳入分发器而已，不改变语义。
+
+### 11.21.4 档位分布与回归
+
+> §11.20.4 记录的是 v1.1.6 当时的接入情况；下表为 **v1.1.7 实际状态**。
+
+| 档位 | statemachine | 说明 |
+|---|---|---|
+| `min` | 无 | 极简档 |
+| `low` | **无（v1.1.7 移除）** | 入门档保持「加载时一次解码、跑起来与原生同速」定位 |
+| `mid` | 8/2/2 | 有 |
+| `high` | 无 | 本就未接入 |
+| `max` | 10/2/3 | 有 |
+| `ultra` | 12/3/4 | 有 |
+
+回归：10 套全绿（`run_tests` 32 · `preset_e2e` 72 · `vm_selfcheck` 12 ·
+`statemachine_native` 60 · `antidebug_probe_check` 39 · `hardening_v105` 14 ·
+`hardening_v106` 29 · `hardening_v107` 23 · `hardening_v108` 37 · `hardening_v109` **59**），
+`hardening_v109` 由 56/3 → **59/0**。

@@ -128,7 +128,7 @@ final class StateMachineObfuscator
      * 安全边界（不包裹的顶层语句）：
      *  - 含开标签 / 闭标签 / 内联 HTML（会截断或污染输出）
      *  - class/interface/trait/enum/function 声明（条件声明语义变化，且会破坏前置提升）
-     *  - declare/namespace（必须位于文件最前）
+     *  - declare/namespace/use（必须位于文件最前；use 为编译期别名导入，进 switch 会 Parse error）
      *  - goto（跨分发器跳转非法）
      *  - 其它结构性 token（cURLY_OPEN 等插值上下文）
      */
@@ -223,7 +223,10 @@ final class StateMachineObfuscator
      * 不可纳入的（作为屏障原样保留）：
      *  - 开标签 / 闭标签 / 内联 HTML（截断或污染输出）
      *  - class/interface/trait/enum/function 声明（条件声明语义变化）
-     *  - declare/namespace（必须位于文件最前）
+     *  - declare/namespace/use（必须位于文件最前，且 use 是编译期别名导入，
+     *    嵌进 switch case 会 Parse error；一旦被搬离顶层，下游 VM 编译期的
+     *    prescanNamespaceContext() 也扫不到别名，会把 `new Boom()` 误补成
+     *    `app\demo\Boom` 并在运行期 ReflectionClass 抛 "Class does not exist"）
      *  - goto（跨分发器跳转非法）
      *  - 插值上下文（"{$x}" / "${x}"）
      *
@@ -242,6 +245,9 @@ final class StateMachineObfuscator
                 T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES,
                 // const 声明只允许出现在文件/命名空间顶层，嵌进 switch case 会 Parse error
                 T_CONST,
+                // use 导入（含 trait use / 闭包 use）一律作屏障原样保留：import 必须留在
+                // namespace 之后的顶层，且不能被状态机分派器包裹（PHP 不允许 switch 内 use）。
+                T_USE,
             ], true)) {
                 return false;
             }

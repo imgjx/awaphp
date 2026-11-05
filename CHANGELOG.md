@@ -1,5 +1,82 @@
 # 更新日志（CHANGELOG）
 
+## v1.1.7 — VM 兼容加强（闭包/箭头/match/yield）+ 反 LLM 互斥注释增强
+
+> 主题：把「类文件里那 4 类语法没真正进 VM」的兼容缺口补齐，同时让反 LLM 的互斥注释
+> **更近、更多、更矛盾**，并顺手修掉几处只有跑产物才暴露的 bug。
+
+### 新增 / 兼容加强
+
+- **类文件中的闭包、箭头函数、`match`、`yield` 真正进入 VM 字节码**
+  - 此前顶层脚本里的这 4 类构造早已能编译进 VM，但**含类声明的文件**会走「类保留 VM」
+    （`ClassPreservingVm`）路径，一旦编译期抛错就整份降级为 `gz+base64` 不透明载荷
+    （`vmPayloadNest`）——方法体虽被包进密文，却**不是 VM 字节码保护**，只是 `_PHPRUN` 原生执行。
+  - `src/Vm/Parts/VmExprTrait.php` 的 `parseNew()` 原先只接受单个 `T_STRING` / `static`，
+    遇到 `new \app\controller\Shop()` 里的 `T_NS_SEPARATOR` 直接抛「new 仅支持类名」，
+    导致真实命名空间类文件整体降级。现循环消费 `T_STRING` / `T_STATIC` / `T_NS_SEPARATOR`
+    收集完整类名，再走 `resolveClassRef()` 展开 `use` 别名与当前命名空间。
+  - 验证：综合类夹具在 `high` / `max` / `ultra` 均输出 `ok:75`；产物中 `function (int`、
+    `fn(int`、`yield 1`、`match (`、`private function` 等源码明文 marker 计数全为 0。
+
+- **VM 运行期真实 private / protected 方法调用修复**
+  - 症状：`$this->privateMethod()` 抛 `TypeError: call_user_func_array(): Argument #1
+    ($callback) must be a valid callback, cannot access private method ...::gen()`。
+  - 根因不在 `SCALL`，而在 `MECALL` 委托的 `$___CALLMETHOD___` 真实对象分支——
+    `call_user_func_array([$obj,$m],$args)` 在外部作用域无法访问私有/受保护方法。
+  - `src/Vm/RuntimeGenerator.php`：`CALLMETHOD` 真实方法分支改用
+    `ReflectionMethod` + `setAccessible(true)`（并区分静态/实例）；`SCALL` / `SCALL_VAR`
+    的真实方法 fallback 同步统一为反射调用，杜绝同类问题。
+
+### 增强（反 LLM）
+
+- **`src/Confrontation/MutualComments.php`：互斥注释更近、更多、更矛盾**
+  - 主题库 **12 → 22 组**，新增多条 3 向 / 4 向成簇断言（如「废弃桩 / 活核心 / 三条都不可信」、
+    「审计指令蜜罐 4 向」、「密钥位置三态互斥」），认知污染不再只是「两两打架」。
+  - 同簇伙伴距离由 `j1 + nextInt(1,40)` 收紧到 `step = nextInt(1,3)` 个 token 边界，
+    N 条断言并排落在几行内，阅读者会同时看到整组矛盾。
+  - 每层壳投放量 `1/2/4 对 → 3/6/12 簇`（`Obfuscator::mutualTick()` 的
+    `[1 => 3, 2 => 6, 3 => 12]`），投放上限 `bn/12 → sn/4`；12 簇样本约 28 条注释。
+  - **安全边界白名单 `isFusionRisk()`**：注释只允许投放到「前一个有效 token 以结构性标点 /
+    非词素结尾」的边界。理由是多层壳会反复转写注释（行注释 → 块注释 → 压缩去空白 →
+    字符串装配剥离），`use X AS/*c*/Boom` 一旦注释被剥离就粘成 `ASBoom`。
+    宁可少插、不可插错——从注入点层面杜绝 `ASBoom` / `namespaceapp` 这类致命融合。
+
+### 调整
+
+- **`low` 预设移除 `statemachine` 层**（`src/config.presets.php`）：low 定位是「能日常上线、
+  运行时成本仅加载时一次解码」的入门档，不再叠加语句级状态跳转。`mid` / `max` / `ultra`
+  仍保留状态机；`high` 与 `min` 本就未接入。
+
+### 修复
+
+- **`StateMachine::isTopLevelSafe()` 漏判 `T_USE`（一处根因、三个失败）**
+  - 症状：`hardening_v109` 中 `level=mid` 报 `unexpected token "use", expecting "case"...`，
+    `level=max` / `ultra` 报 `ReflectionException: Class "app\demo\Boom" does not exist`。
+  - 根因：顶层 `use RuntimeException as Boom;` 被当成普通语句搬进 `switch` case（PHP 不允许），
+    同时它不再是顶层语句，VM 编译期 `prescanNamespaceContext()` 扫不到别名，
+    `new Boom()` 被按当前命名空间补全成 `app\demo\Boom`，运行期 `ReflectionClass` 找不到类。
+  - 修复：把 `T_USE` 列入屏障 token，import 语句原样保留在 `namespace` 之后、不进分发器。
+  - 效果：`hardening_v109` 由 **56 通过 / 3 失败 → 59 通过 / 0 失败**，三档输出均与原生逐字节一致。
+
+- **发布前清理**：`RuntimeGenerator.php` 中临时诊断用的 `DBG SCALL` 日志已全部移除（计数 0）。
+
+### 回归
+
+- 全量 10 套零失败：`run_tests`(32) · `preset_e2e`(72) · `vm_selfcheck`(12) ·
+  `statemachine_native`(60) · `antidebug_probe_check`(39) · `hardening_v105`(14) ·
+  `hardening_v106`(29) · `hardening_v107`(23) · `hardening_v108`(37) · `hardening_v109`(59)。
+- 专项复测：9 个 salt × 2 种注释密度（`--anti-debug` 与 `--mutual-intensity=3`）共 18 组，
+  `php -l` 全通过、输出全为 `sum=3;boom`，粘连回归 `fails=0`。
+
+### 文档
+
+- `README.md`（版本徽章 + v1.1.7 特性 + `low` 档说明）、`CHANGELOG.md`（本节）、
+  `docs/CLI_OPTIONS.md`（补齐 `--mutual-comments` / `--mutual-intensity` 条目）、
+  `docs/VM_FEATURES.md`（§11.21）、`docs/PERFORMANCE.md`（v1.1.7 开销说明）。
+- 版本号：`entry.php` 升至 `1.1.7`。
+
+---
+
 ## v1.1.6 — 状态机脱离 VM + 反调试探针语法自检
 
 > 主题：把「状态机」从 VM 字节码层**拆出来变成通用原生层**，让 mid 档（无 VM）也能用上

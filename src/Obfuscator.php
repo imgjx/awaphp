@@ -704,7 +704,7 @@ final class Obfuscator
         }
         $sealing = ($key === 'structpoison' || $key === 'anti_tamper' || $key === 'license');
         $intensity = max(1, min(3, (int) $this->config->get('mutual_intensity')));
-        $pairs = [1 => 1, 2 => 2, 3 => 4][$intensity];
+        $pairs = [1 => 3, 2 => 6, 3 => 12][$intensity];
         if (!class_exists(MutualComments::class, false)) {
             require_once __DIR__ . '/Confrontation/MutualComments.php';
         }

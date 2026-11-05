@@ -2568,25 +2568,35 @@ trait VmExprTrait
         if ($t === null) {
             throw new VmUnsupported('new 语法异常');
         }
-        // PHP 8.1+ 的 static 关键字：new static → LSB 标记（运行期按 called
-        // class 实例化；new self / new parent 则编译期解析——PHP 语义：
-        // self/parent 取定义类，static 取运行期实际类）。
-        $isStaticKw = is_array($t) && $t[0] === T_STATIC;
-        if (is_array($t) && ($t[0] === T_STRING || $isStaticKw)) {
-            $cls = $isStaticKw ? 'static' : $t[1];
-            $c->next();
-            if (strtolower($cls) === 'static') {
+        // 收集完整类名：可带命名空间分隔符与前导反斜杠（完全限定名）：
+        //   new \app\controller\Shop()  /  new Shop()  /  new Sub\Cls()  /  new static()
+        // 命名空间类在 VM 里以「短名」登记（见 VmDeclTrait::compileClass），运行期由 $___RCLS___
+        // 折回短名匹配 program['classes']；真实类（类保留模式）则走 $GLOBALS 真实类清单 +
+        // ReflectionClass 实例化。故此处收集到的 FQN 原样交下去即可，无需在编译期改写。
+        if (is_array($t) && in_array($t[0], [T_STRING, T_NS_SEPARATOR, T_STATIC], true)) {
+            $cls = '';
+            while (!$c->eof()) {
+                $tk = $c->peek();
+                if (is_array($tk) && $tk[0] === T_STRING) { $cls .= $tk[1]; $c->next(); continue; }
+                if (is_array($tk) && $tk[0] === T_STATIC) { $cls .= 'static'; $c->next(); continue; }
+                if (is_array($tk) && $tk[0] === T_NS_SEPARATOR) { $cls .= '\\'; $c->next(); continue; }
+                break;
+            }
+            $low = strtolower($cls);
+            if ($low === 'static') {
+                // PHP 8.1+ 的 static 关键字：运行期按 called class 实例化（LSB）。
                 if ($this->curClass === '') {
                     throw new VmUnsupported('VM 无法解析 new static（不在类上下文中，已回退）');
                 }
                 $cls = VmOp::LSB_MARK . $this->curClass;
-            } else {
-                // self/static/parent 由 resolveStaticClassName 折值（null=无法解析）；
-                // 其余类名一律按 namespace + use 别名补全为 FQN。
+            } elseif ($low === 'self' || $low === 'parent') {
+                // self/parent 取定义类 / 父类（编译期已知）。
                 $cls = $this->resolveStaticClassName($cls);
                 if ($cls === null) {
                     throw new VmUnsupported('VM 无法解析 new 的类上下文（已回退）');
                 }
+            } else {
+                // 其余类名一律按 namespace + use 别名补全为 FQN（前导反斜杠 ltrim 后即为 FQN）。
                 $cls = $this->resolveClassRef($cls);
             }
             $argc = $this->compileArgs($c, $code);

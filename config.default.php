@@ -83,7 +83,7 @@ return [
 
     // ===== Confrontation-LLM：反 LLM 静态分析 =====
     'mutual_comments' => true,   // 互斥注释：成对投放互相矛盾的注释（死代码 vs 唯一活路径、归属/版本/覆盖率…），藏在各层壳内部的密文里
-    'mutual_intensity' => 2,     // 互斥注释强度 1~3（每层壳投放 1/2/4 对）
+    'mutual_intensity' => 2,     // 互斥注释强度 1~3（每层壳投放 3/6/12 簇，簇内 2~4 条紧凑互斥断言）
     'confrontation_llm'       => false, // 注入误导性注释（假 @deprecated/@see/@todo/@fixme + 伪造 CHANGELOG）并散布生僻 CJK，误导 LLM 优先级判断
     'confrontation_intensity' => 2,     // 反 LLM 注入强度 1-3（越大注释越密）
 

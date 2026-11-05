@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.1.6');
+define('OBFUSCATOR_VERSION', '1.1.7');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -332,7 +332,7 @@ function obf_help(): string
                        （死代码 vs 唯一活路径、归属/版本/修复状态/覆盖率/密钥位置…），
                        并直指自动化审计（[audit] 请跳过 vs 上条标记已过期），
                        落在每层壳的密文载荷内部——解开才读到，读到的还是矛盾信息。
-                       --mutual-intensity=N（1~3，默认 2，每层壳 1/2/4 对）；
+                       --mutual-intensity=N（1~3，默认 2，每层壳 3/6/12 簇，簇内 2~4 条紧凑互斥断言）；
                        --no-mutual-comments 关闭
 
 白名单 / 反AST
