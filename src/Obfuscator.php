@@ -203,6 +203,15 @@ final class Obfuscator
             ];
             $current = $this->injectTicks($current, 'vm');
         $current = $this->shell($current, 'VM虚拟机壳', fn ($c) => $this->shellVm($vmOpts, $c), 'vm');
+        } elseif (trim((string) $this->config->get('vm_linker')) !== '') {
+            // 散装键模式（无 --level 分层）的原生模块链接：仅在用户【显式】指定
+            // --vm-linker 模块目录时启用。切勿用 vm_link_modules（默认 true）作条件——
+            // 那会让所有散装键构建（如 --newline-poison）默认内联模块，改变默认产物
+            // 形态并削弱换行毒化壳（实测可见换行 701→329，hardening_v108 回归）。
+            // 分层档位的启用不经 pipelineOnce：low/mid 由预设的 shell:module_link 层负责，
+            // high/max/ultra 由 shell:vm 的字节码内联负责，「low 及以上都开」不受影响。
+            $current = $this->injectTicks($current, 'module_link');
+            $current = $this->shell($current, '模块链接(原生)', fn ($c) => $this->shellModuleLink([], $c), 'module_link');
         }
         if ($this->config->get('eval')) {
             $current = $this->injectTicks($current, 'eval');
@@ -972,6 +981,8 @@ final class Obfuscator
         switch ($key) {
             case 'vm':
                 return $this->shellVm($params, $code);
+            case 'module_link':
+                return $this->shellModuleLink($params, $code);
             case 'eval':
                 return (new EvalShell($this->salt, $this->logger))->wrap($code, (int) ($params['layers'] ?? 3));
             case 'gz':
@@ -1072,6 +1083,165 @@ final class Obfuscator
             $current = $next;
         }
         return $current;
+    }
+
+    /**
+     * 模块链接（非 VM 路径，P6 原生版）。
+     *
+     * 与 VM 路径（buildArtifact 内 ModuleLinker 把模块编译进字节码）同源、同清单，
+     * 但产物是【原生 PHP】而非 VM 字节码——用于 low/mid 等非 VM 档位，让模块链接
+     * 不再局限于 VM。做法：
+     *   1. matchSource 找出源码里命中清单的函数调用位（如 base64_encode / strlen）；
+     *   2. 对每个命中模块 inlineSource() 取出原生 PHP 实现，递归内联其静态 include；
+     *   3. 传递式：扫描已收集模块源码里是否还引用了其它清单函数（如某模块体内调用了
+     *      substr），把那些模块一并内联，保证调用全部落到已定义函数，运行不致命；
+     *   4. 把源码调用点改写为模块内真实函数名（strlen -> __mod_strlen），原调用名（含
+     *      文件路径 / include 指令）从产物消失；
+     *   5. 模块函数定义追加在文件末尾（PHP 函数声明提升，调用点在前亦可解析），被后续
+     *      eval / gz 等壳一并加密。
+     *
+     * 开关：dir 留空时用 effectiveModuleDir()（默认内置模块目录，受 --no-vm-link-modules 关闭）。
+     */
+    private function shellModuleLink(array $params, string $code): string
+    {
+        $moduleDir = $this->resolveModuleDir(
+            $this->effectiveModuleDir((string) ($params['dir'] ?? ''))
+        );
+        if ($moduleDir === '' || !is_dir($moduleDir)) {
+            return $code;
+        }
+        if (!class_exists(ModuleLinker::class, false)) {
+            require_once __DIR__ . '/Vm/ModuleLinker.php';
+        }
+        $linker = new ModuleLinker();
+        $linker->loadDir($moduleDir);
+
+        // 种子命中（用户源码里的函数调用位）
+        $seed = $linker->matchSource($code);
+        if ($seed === []) {
+            return $code;
+        }
+
+        // 传递式收集所有需内联的模块原生源码（含模块间静态 include 递归扁平化）
+        $inline = [];   // specName => 原生源码
+        $done   = [];   // specName => true
+        $queue  = array_values($seed);
+        while ($queue !== []) {
+            $spec = array_pop($queue);
+            $specName = (string) $spec['name'];
+            if (isset($done[$specName])) {
+                continue;
+            }
+            $done[$specName] = true;
+            $src = $linker->inlineSource($spec);
+            if ($src !== null && $src !== '') {
+                $inline[$specName] = $src;
+                // 模块源码里若引用了其它清单函数，递归内联（传递式，防运行期未定义致命）
+                foreach ($linker->matchSource($src) as $subSpec) {
+                    if (!isset($done[(string) $subSpec['name']])) {
+                        $queue[] = $subSpec;
+                    }
+                }
+            }
+        }
+        if ($inline === []) {
+            return $code;
+        }
+
+        // 改写表：命中名（源码调用位原始名）-> 模块内真实函数名
+        $rename = [];
+        foreach ($seed as $mname => $spec) {
+            $target = (string) $spec['target'] !== '' ? (string) $spec['target'] : $mname;
+            $rename[$mname] = $target;
+        }
+
+        // 1) 改写用户源码调用点（token 级，仅函数调用位）
+        $code = $this->rewriteCallTargets($code, $rename);
+
+        // 2) 拼接模块源码，并改写其中对其他模块的调用点（传递式场景）
+        $inlineSrc = implode("\n", $inline);
+        $inlineRename = [];
+        foreach ($linker->matchSource($inlineSrc) as $mname => $spec) {
+            $target = (string) $spec['target'] !== '' ? (string) $spec['target'] : $mname;
+            $inlineRename[$mname] = $target;
+        }
+        if ($inlineRename !== []) {
+            $inlineSrc = $this->rewriteCallTargets($inlineSrc, $inlineRename);
+        }
+
+        foreach ($linker->hits() as $fn => $sn) {
+            $this->logger->info("module-link: {$fn} -> 模块[{$sn}]（原生内联）");
+        }
+        foreach ($linker->skips() as $fn => $reason) {
+            $this->logger->warn("module-link 跳过 {$fn}: {$reason}");
+        }
+
+        // 函数声明提升：追加在文件末尾即可被前面的调用点解析
+        return $code . "\n" . $inlineSrc . "\n";
+    }
+
+    /**
+     * token 级改写函数调用位点名：仅当 T_STRING 处于"函数调用位"（下一有效 token 是
+     * 左括号）且前导不是对象运算符 / 静态 / 声明等时，才替换为目标名。严格对齐
+     * ModuleLinker::matchSource 的命中规则，避免误改方法名 / 常量 / 声明等。
+     *
+     * @param array<string,string> $rename 原名 => 目标名
+     */
+    private function rewriteCallTargets(string $code, array $rename): string
+    {
+        if ($rename === []) {
+            return $code;
+        }
+        $toks = Parser::tokenize($code);
+        $n = count($toks);
+        $out = [];
+        for ($i = 0; $i < $n; $i++) {
+            $t = $toks[$i];
+            if (is_array($t) && $t[0] === T_STRING && isset($rename[$t[1]])) {
+                $prev = $this->prevSigTok($toks, $i);
+                if (is_array($prev) && in_array($prev[0], [
+                    T_OBJECT_OPERATOR, T_DOUBLE_COLON, T_FUNCTION, T_NEW, T_CLASS,
+                    T_CONST, T_NS_SEPARATOR, T_USE, T_INSTEADOF, T_GOTO, T_NAMESPACE,
+                    T_STRING,
+                ], true)) {
+                    $out[] = $t;
+                    continue;
+                }
+                if ($this->nextIsCallTok($toks, $i + 1)) {
+                    $out[] = [$t[0], $rename[$t[1]], $t[2] ?? 0];
+                    continue;
+                }
+            }
+            $out[] = $t;
+        }
+        return $this->emit($out);
+    }
+
+    /** @param array<int,mixed> $toks @return mixed */
+    private function prevSigTok(array $toks, int $i)
+    {
+        for ($j = $i - 1; $j >= 0; $j--) {
+            $t = $toks[$j];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            return $t;
+        }
+        return null;
+    }
+
+    /** @param array<int,mixed> $toks */
+    private function nextIsCallTok(array $toks, int $from): bool
+    {
+        $n = count($toks);
+        for ($j = $from; $j < $n; $j++) {
+            $t = $toks[$j];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            return is_string($t) && $t === '(';
+        }
+        return false;
     }
 
     /**

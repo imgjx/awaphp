@@ -122,15 +122,29 @@ foreach (token_get_all($srcCase) as $tk) {
 }
 ok($kwNonCanon >= 3, '规范全小写关键字已被打散（非规范关键字 token ≥3）', "nonCanon=$kwNonCanon");
 
-// 2b. true/false -> !0/!1（逐字面量概率 1/2：单盐可能只翻一种，多盐并集）
-$litHas0 = strpos($srcLit, '!0') !== false;
-$litHas1 = strpos($srcLit, '!1') !== false;
+// 2b. true/false -> (!0)/(!1)（逐字面量概率 1/2：单盐可能只翻一种，多盐并集）
+// v1.1.9：布尔字面量改写必须【带括号】——裸 !0/!1 是表达式而非原子字面量，
+// 壳层自保护反复 token 化 + 压缩去空白时会与相邻运算符重新结合（v1.1.9 前的
+// [zz] 坏 salt 根因）。此处同时断言"带括号"与"不存在裸 !0/!1"，锁死修复。
+$litHas0 = strpos($srcLit, '(!0)') !== false;
+$litHas1 = strpos($srcLit, '(!1)') !== false;
+$srcs = [$srcLit];
 for ($s = 0; $s < 4 && !($litHas0 && $litHas1); $s++) {
     [, $srcMore] = obfuscate($php, $entry, $fixture, $tmp, "struct_lit_m$s", '--token-obf --token-no-case --token-no-quote --token-decoy=0 --salt=lit' . $s);
-    $litHas0 = $litHas0 || strpos($srcMore, '!0') !== false;
-    $litHas1 = $litHas1 || strpos($srcMore, '!1') !== false;
+    $srcs[] = $srcMore;
+    $litHas0 = $litHas0 || strpos($srcMore, '(!0)') !== false;
+    $litHas1 = $litHas1 || strpos($srcMore, '(!1)') !== false;
 }
-ok($litHas0 && $litHas1, 'true→!0 / false→!1 生效');
+ok($litHas0 && $litHas1, 'true→(!0) / false→(!1) 生效');
+$bareBang = false;
+foreach ($srcs as $srcX) {
+    // 裸 !0 / !1：前面不是 '(' 的即视为裸表达式（排除 (!0) / (!1) 形态）
+    if (preg_match('/(?<!\()!0\b|(?<!\()!1\b/', $srcX) === 1) {
+        $bareBang = true;
+        break;
+    }
+}
+ok(!$bareBang, '布尔改写无裸 !0/!1（括号边界回归）');
 
 // 2c. cast 别名：(integer)/(boolean)/(double) 出现
 $castAlias = (bool) preg_match('/\(\s*integer\s*\)/i', $srcCast) || (bool) preg_match('/\(\s*boolean\s*\)/i', $srcCast) || (bool) preg_match('/\(\s*double\s*\)/i', $srcCast);

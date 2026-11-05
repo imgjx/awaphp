@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.1.8-blue)
+![Version](https://img.shields.io/badge/version-1.1.9-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,6 +40,15 @@
 
 ## 特性
 
+> **v1.1.9 更新要点**：① **模块链接不再专属 VM**——新增原生路径 `shell:module_link`，
+> `low` / `mid` 等非 VM 档位也能把内置模块内联进产物（调用点改写 + 模块原生定义追加），
+> 至此 `low` 及以上所有档位全覆盖；② **修掉第三类「坏 salt」**——壳层自保护把
+> `true` / `false` 改写成**裸 `!0` / `!1`**，二次 token 化 + 压缩去空白后与相邻运算符
+> 重新结合，特定 salt（如 `zz`）下 `high` 档产物丢失数据；改为带括号 `(!0)` / `(!1)`
+> 固定表达式边界，100% 等价；③ 修掉内置模块 `strlen.php` 在非 VM 路径下的死循环
+> （VM 越界返回 `null` vs 原生返回 `''`）。新增 `tests/vm_module_link_native.php`（35 项）、
+> `tests/salt_regression.php`（22 项）专项回归。
+>
 > **v1.1.8 更新要点**：① VM 字节码容器内的**符号名全面密文化**——类名 / 方法名 / 函数名 /
 > 变量名 / 属性名 / 常量名等全部以**按源文件内容派生**的密钥加密落盘，运行期解包时还原。
 > 此前容器虽被分片加密，但容器内符号名是明文：攻击者提取产物里的分片密钥即可解开容器，
@@ -99,6 +108,7 @@
 ### 虚拟机保护（VM）
 把整段程序编译为**自定义字节码**，由内置解释器逐条解密执行（`--vm`）：
 - **模块链接**（`--vm-linker`）：命中清单的函数调用内联进同一 Program，产物无 `include`、无模块路径、调用关系无法静态还原。默认启用**内置模块**（`--vm-link-modules`，默认开）：自动加载包内 `src/Module/builtin/`，将 `base64_encode` / `base64_decode` 等 **70+ 个**原生函数替换为内置自定义实现并内联进字节码，调用点不再暴露原生函数名（含 `md5` / `sha1` / `crc32` —— 纯 PHP 重写，与原生逐字节一致，纯属"把函数名从产物里抹掉"的那一类）。可通过 `--vm-linker=<dir>` 指定自定义模块目录覆盖。
+  - **v1.1.9 起不再仅 VM**：新增原生路径层 `shell:module_link`——`low` / `mid` 预设默认开启，把命中调用点改写为模块内真实函数名（`strlen` → `__mod_strlen` 等）并把模块**原生 PHP 定义**追加进产物（利用函数声明提升），无需 VM 即可内联；支持**传递式**内联（模块体内又引用其它清单函数时一并内联）。`high` / `max` / `ultra` 继续走 VM 字节码内联。至此 `low` 及以上档位全覆盖。散装键构建需显式 `--vm-linker=<dir>` 才启用原生路径，以免改变默认产物形态。
 - **字节码垃圾指令**（`--vm-junk=N`）：注入「真实执行但栈平衡、无副作用」的废 opcode，淹没真实逻辑。
 - **诱饵函数 / fake-fog**（`--vm-fake-fog=N`）：永不调用的栈平衡假函数，膨胀函数表。
 - **分片密钥链**（`--vm-keychain`）：`kᵢ = sha256(kᵢ₋₁ ‖ i)`，单点密钥无法还原其它分片。

@@ -97,7 +97,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--no-sm-opaque` | 关闭状态机转移上的不透明谓词（默认开：`if(($o^$o)===0)` 恒真谓词，else 为指向诱饵的死路） |
 | `--vm` | VM 虚拟机壳（自定义指令集 + 解释器） |
 | `--vm-layers=` | VM 嵌套层数（真·嵌套 VM）：`>=2` 时把上一层 VM 产物再喂给 VM 编译，逐层叠加多层 VM 壳；默认 `1`（单层） |
-| `--vm-linker=` | ModuleLinker 模块目录（JSON 清单）：命中清单的函数调用内联进同一 Program，产物中无模块路径、无 include 指令 |
+| `--vm-linker=` | ModuleLinker 模块目录（JSON 清单）：命中清单的函数调用内联进同一 Program，产物中无模块路径、无 include 指令。**v1.1.9 起**散装键构建显式指定该目录时，同时启用 `shell:module_link` **原生路径**（非 VM 档位内联：调用点改写 + 模块原生定义追加）；分层预设 `low` / `mid` 无需指定，已默认启用该层 |
+| `--vm-link-modules` / `--no-vm-link-modules` | 内置模块目录（`src/Module/builtin/`，70+ 个函数）**默认开**；关闭后不自动加载内置模块，调用点保留原生函数分发。**v1.1.9 起 low 及以上档位全覆盖**：VM 档位（`high`/`max`/`ultra`）走字节码内联，非 VM 档位（`low`/`mid`）走原生内联 |
 | `--vm-junk=` | VM 字节码级真实垃圾指令：注入 N 段「真实执行但无副作用」的废 opcode（栈平衡、无输出、无变量写入），抗静态分析 |
 | `--vm-keychain` | VM 分片密钥哈希链：`k0=master`，`ki=sha256(k[i-1]‖i)`，运行期顺序派生，静态提取单点密钥无法还原其它分片 |
 | `--vm-builtin-replace` | natTbl 内置函数名盐化编码进二进制包，运行期解码；包内无 `strlen`/`array_map` 等明文调用名 |

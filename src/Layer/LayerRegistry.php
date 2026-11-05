@@ -22,6 +22,7 @@ final class LayerRegistry
     /** 源码头/尾包裹层（shell）：按序包裹源码字符串；数组越靠后 = 越外层 */
     private const SHELL = [
         'shell:anti_debug', 'shell:anti_hook',   // 最内层：被后续编码壳裹入密文藏匿
+        'shell:module_link',                      // 最内层：原生模块链接（非 VM 档位亦可用），内联定义与改写调用点一并被外套加密
         'shell:vm', 'shell:eval', 'shell:gz',
         'shell:honeypot',                         // 次外层：钓鱼区，须在毒化壳之前注入（落在受护区内）
         'shell:newline_poison',                   // 次外层：换行缠绕，须在毒化壳之前注入（换行随内层一同加密进密文）

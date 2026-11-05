@@ -231,8 +231,15 @@ final class TokenObfuscator
             if ($type === T_STRING) {
                 $low = strtolower($tok[1]);
                 if (($low === 'true' || $low === 'false') && $this->isBoolLiteral($tokens, $i) && $rand->int(2)) {
+                    // 必须整体加括号：裸 !0 / !1 是【表达式】而非原子字面量，壳层自保护
+                    // 会对整段产物反复 token 化 + 压缩去空白，裸 ! 会与相邻运算符重新结合
+                    // （! 优先级低于 ** / instanceof，压缩粘连后优先级歧义更大），
+                    // 特定 salt 下实测会破坏产物语义（如 v1.1.9 前的 [zz] 坏 salt）。
+                    // 括号固定表达式边界，与 true/false 100% 等价，且仍保留形态多样性。
+                    $out[] = '(';
                     $out[] = '!';
                     $out[] = [T_LNUMBER, $low === 'true' ? '0' : '1', $tok[2] ?? 0];
+                    $out[] = ')';
                     $st['literal']++;
                     continue;
                 }

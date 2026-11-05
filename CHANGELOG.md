@@ -1,5 +1,86 @@
 # 更新日志（CHANGELOG）
 
+## v1.1.9 — 模块链接下沉到 low+ 档；坏 salt 根因（裸 `!0`/`!1`）修复
+
+> 主题：两件事。① **模块链接不再专属 VM**——新增原生路径，`low` / `mid` 等非 VM 档位
+> 也能把内置模块内联进产物（调用点改写 + 模块原生定义追加），`low` 及以上档位全覆盖；
+> ② 系统性排查「坏 salt」成因，定位并修掉**第三类**（前两类在 v1.1.8 已修）：壳层自保护
+> 把 `true` / `false` 改写成**裸 `!0` / `!1` 表达式**，二次 token 化 + 压缩去空白后与相邻
+> 运算符重新结合，特定 salt 下破坏产物语义。
+
+### 新增 / 增强
+
+- **模块链接原生路径（`shell:module_link`，非 VM 档位可用）**
+  - 此前模块链接（ModuleLinker，P6）只服务于 VM 字节码：`RuntimeGenerator::buildArtifact()`
+    内 `linkModules()` 把命中模块编译进 Program + `inlineSource()` 原生兜底；非 VM 档位
+    完全没有这条能力。
+  - v1.1.9 新增 `Obfuscator::shellModuleLink()`：`effectiveModuleDir()` 解析目录 →
+    `ModuleLinker::loadDir()` → `matchSource()` 取种子 → **传递式** `inlineSource()` 收集
+    （递归内联模块间的引用）→ 生成 rename 表（命中名 → 清单 `target`）→
+    `rewriteCallTargets()` **仅函数调用位**改写调用点（严格对齐 `matchSource` 的
+    prevSig 排除规则：`->` / `::` / `new` / `function` / `use` 等位置不改写）→
+    拼接模块源码追加到文件末尾（利用 PHP 函数声明提升，调用点在前也能正确解析）。
+  - 登记为 SHELL 最内层（`LayerRegistry::SHELL` 中位于 `shell:anti_debug` / `shell:anti_hook`
+    之后、`shell:vm` 之前），让内联定义与改写后的调用点被后续 eval/gz 壳一并加密；
+    `LayerDescriptor` 补充该层 schema（`dir` 默认 `''` → 内置模块目录）。
+  - **`low` / `mid` 预设在 `ws` 之后、`shell:eval` 之前新增 `shell:module_link` 层**；
+    `high` / `max` / `ultra` 继续走 `shell:vm` 的字节码内联。至此 **low 及以上所有档位
+    均启用模块链接**。
+  - 分层模式（预设档位）与散装键模式分离：散装键构建仅在显式指定 `--vm-linker=<dir>`
+    时启用原生链接，避免改变 `--newline-poison` 等独立构建的默认产物形态。
+  - `tests/vm_module_link_native.php`（35 项）：low/mid 运行等价、明文分层检视调用点改写
+    + 内联定义、传递式内联（`substr_replace` → `__mod_substr`）、`vm_link_modules=false`
+    关闭行为、max/ultra（VM 路径）不受影响，全绿。
+
+### 修复
+
+- **坏 salt `[zz]`：`high` 档 `complex_app` 丢失首条记录（User Scores 只剩 Bob）**
+  - 现象：诊断扫描（6 夹具 × 5 档 × 60 salt）捕获 `salt=[zz]` + `high` 档：
+    原生输出 `1. Alice (#1) avg=84 / 2. Bob (#2) avg=66`，产物只输出 `1. Bob (#2) avg=66`
+    —— Alice 整条消失、顺序错乱，其余段落（fib / isPrime / factorial / primes / bitmask）
+    全部正确。且**只有精确字符串 `zz` 触发**（`Zz` / `a` / `42` 均正常）。
+  - 排查路径（逐层二分）：`mid` 正常 → 根因不在 token 级状态机；移除 `shell:vm` 恢复正常
+    → 锁定 VM 相关；但关闭全部 VM 子特性（stateMachine / morph / junk / fakeFog / probe /
+    keychain / builtinReplace / cpool / symbols / jit / combo / inloop / chunks）仍复现；
+    **裸 VM 产物（不经 token 层）正常** → 定位到「VM 产物 + 后置壳」的组合；
+    逐个剥离后置壳无效，仅**关闭 `shell_shield`** 修复 →
+    `ShellProtector::protect()` → 四步变换里只有 `TokenObfuscator` 破坏语义 →
+    `token_literal` → `true/false → !0/!1`（`array()→[]` 无害）→
+    **渐进二分（只改写前 K 条）定位到第 2 条 `ReTuRn true;` → `ReTuRn !0;`**。
+  - 根因：`!0` / `!1` 是**表达式而非原子字面量**；壳层自保护会对整段 VM 产物反复
+    token 化并压缩去空白，裸 `!` 会与相邻运算符重新结合（`!` 优先级低于 `**` /
+    `instanceof`，压缩粘连后结合歧义更大），特定 salt 下改变表达式结构 → 语义被破坏。
+    这是继 v1.1.8「状态机行注释吞代码」「注入层变量名撞名」之后的**第三类坏 salt**。
+  - 修复：`TokenObfuscator::literalPass()` 把改写结果整体**加括号** → `(!0)` / `(!1)`，
+    固定表达式边界，与 `true` / `false` **100% 等价**，仍保留形态多样性。
+  - 回归：`tests/salt_regression.php`（22 项，历史坏 salt `zz` / `bs47` × 全档位、
+    8 种形态 salt × high、坏 salt × 4 夹具）全绿；`tests/token_obf.php` 2b 段升级为
+    同时断言「带括号」与「无裸 `!0`/`!1`」；`tests/run_tests.php` 固定加入
+    `S4 坏 salt [zz] / high 档运行等价` 用例。全套 12 个测试文件 0 失败。
+
+- **内置模块 `strlen.php` 在非 VM 路径下死循环**
+  - 现象：原生路径启用后，`low` 档产物运行时刷几十万行 `Uninitialized string offset` 警告并挂死。
+  - 根因：模块用 `while ($__s[$__i] !== null)` 判字符串边界，依赖 VM「越界返回 `null`」
+    语义；原生 PHP 越界返回 `''`，`'' !== null` 恒真 → 死循环。
+  - 修复：改为 `while (isset($__s[$__i]))`（与 `substr.php` 一致），VM / 原生双安全且不产生告警。
+    精确核查 8 个含 `!== null` 的模块，仅此一处是真「字符串下标越界判定」，其余 7 个
+    都是参数判空（原生安全）。
+  - 验证：`vm_module_link.php` + `vm_builtin_modules.php`（205 用例）VM 路径不受影响，
+    明文 / low 档运行与原生一致。
+
+- **散装键模式默认行为回退（回归预防）**
+  - 新增原生链接分支时曾以 `vm_link_modules`（默认 `true`）作散装键路径的触发条件，
+    导致 `--newline-poison` 等独立构建默认内联模块，产物可见换行 701 → 329、
+    `hardening_v108` 换行配额断言失败。现改为**仅在显式 `--vm-linker=<dir>` 时启用**，
+    默认产物形态与 v1.1.8 一致（`hardening_v108` 37/37 恢复全绿）。
+
+### 回归
+
+全套 12 个测试文件 0 失败：`run_tests` 33、`token_obf` 33、`salt_regression` 22、
+`vm_module_link_native` 35、`vm_module_link`、`vm_builtin_modules` 205、`vm_smoke`、
+`vm_comprehensive`、`statemachine_native` 60、`hardening_v108` 37、`preset_e2e` 72、
+`syntax_compat` 7。
+
 ## v1.1.8 — VM 符号名密文：静态提取密钥也读不到符号表
 
 > 主题：堵上 VM 内混淆的最后一块明显短板——**符号表明文**。此前字节码容器虽被分片

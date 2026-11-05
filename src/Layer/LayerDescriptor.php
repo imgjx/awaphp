@@ -179,6 +179,17 @@ final class LayerDescriptor
                 'tags' => ['反分析'],
             ],
 
+            // ===================== 模块链接（原生路径，非 VM 档位可用）=====================
+            'shell:module_link' => [
+                'kind'  => 'shell',
+                'label' => '模块链接（原生）',
+                'desc'  => '把命中 ModuleLinker 清单的函数调用（如 base64_encode/strlen）内联为自包含的原生 PHP 实现，调用点改写、文件路径/include 指令从产物消失；无需 VM 即可启用（low 及以上档位默认开）',
+                'params' => [
+                    'dir' => ['label' => '模块目录', 'type' => self::T_TEXT, 'default' => '', 'hint' => 'ModuleLinker JSON 清单目录（留空用默认内置模块目录 / --vm-linker 覆盖）'],
+                ],
+                'tags' => ['模块'],
+            ],
+
             // ===================== 原生状态机（从 VM 字节码层拆出的通用控制流层）=====================
             'statemachine' => [
                 'kind'  => 'token',

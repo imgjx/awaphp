@@ -68,6 +68,10 @@ $cases = [
     ['S3 目标 PHP 版本',                   'demo.php',     '--php-version=8.0 --salt=s3i', true],
     ['S3 组合(cfg+goto+vm+anti-debug+str-xor)', 'demo.php', '--cfg=high --goto=3 --goto-cpx=2 --vm --anti-debug --str-xor --salt=s3j', true],
     ['S3 全量组合(repeat=1)',              'demo.php',     '--var-length=6 --var-split=3 --func-length=6 --func-call --func-call-enc --class-obf --str-length=8 --str-xor --html --num-enc --gz --insert-dead --no-comments --compress --cfg=high --goto=3 --goto-cpx=2 --vm --eval --eval-layers=3 --anti-debug --anti-tamper --php-version=8.1 --junk-funcs=5 --salt=full3', true],
+
+    // ===== v1.1.9 坏 salt 回归（裸 !0/!1 表达式边界修复）=====
+    // [zz] 曾导致 complex_app 的 User Scores 段丢失首条记录；根因见 tests/salt_regression.php
+    ['S4 坏 salt [zz] / high 档运行等价',   'complex_app.php', '--level=high --salt=zz', true],
 ];
 
 echo "===== PHP 混淆器 测试套件 =====\n";

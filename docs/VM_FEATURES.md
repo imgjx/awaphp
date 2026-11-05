@@ -262,6 +262,41 @@ php entry.php --input=app.php --output=app_obf.php --vm --vm-junk=12 --vm-flatte
 
 ---
 
+### 6.11 原生路径：非 VM 档位也能内联（v1.1.9）
+
+此前 §6 全部能力只服务于 VM 字节码：`RuntimeGenerator::buildArtifact()` 内
+`linkModules()` 把命中模块编译进同一 `Program`（另有 `inlineSource()` 原生兜底）。
+非 VM 档位（`low` / `mid`）完全没有模块链接能力。v1.1.9 补上**原生路径**。
+
+**新层 `shell:module_link`**（`Obfuscator::shellModuleLink()`）：
+
+1. `effectiveModuleDir()` 解析目录（分层参数 `dir` > 散装键 `vm_linker` > 内置模块目录）；
+2. `ModuleLinker::loadDir()` 载入清单 → `matchSource()` 取主源码命中种子；
+3. **传递式** `inlineSource()` 收集：递归内联模块体内又引用到的其它清单模块
+   （如 `substr_replace` → `__mod_substr`），与 VM 路径的 `linkRecursive` 等价；
+4. 生成 rename 表（命中名 → 清单 `target`，如 `strlen` → `__mod_strlen`）；
+5. `rewriteCallTargets()` **仅函数调用位**改写调用点——严格对齐 `matchSource()`
+   的 prevSig 排除规则，`->` / `::` / `new` / `function` / `use` 等位置不改写；
+6. 模块原生 PHP 源码**追加到文件末尾**，利用 PHP 函数声明提升（`function` 在
+   文件加载期即注册），调用点在前也能正确解析；
+7. 记为 SHELL **最内层**（`shell:vm` 之前、`shell:eval` 之后的位置由预设决定），
+   内联定义与改写后的调用点被后续 eval / gz 壳一并加密，不落明文。
+
+**档位覆盖**：`low` / `mid` 预设在 `ws` 之后、`shell:eval` 之前新增
+`shell:module_link` 层；`high` / `max` / `ultra` 继续走 `shell:vm` 字节码内联。
+至此 **low 及以上所有档位均启用模块链接**。散装键构建（无 `--level`）仅在显式
+`--vm-linker=<dir>` 时启用原生路径，避免改变默认产物形态（详见 §11.23）。
+
+**与 VM 路径的语义差异（重要）**：模块 PHP 实现直接以原生 PHP 执行，不再受
+「VM 可编译子集」约束。这暴露出一个历史隐含依赖（见 §11.23）——
+`strlen.php` 原用 `while ($__s[$__i] !== null)` 判边界，依赖 VM「字符串越界
+返回 `null`」；原生 PHP 越界返回 `''` 且不致命，`'' !== null` 恒真 → 死循环。
+v1.1.9 改为 `while (isset($__s[$__i]))`，VM / 原生双安全。
+
+**测试** `tests/vm_module_link_native.php`（35 项）：low / mid 运行等价、明文最小
+分层检视「调用点改写 + 内联定义」、传递式内联、关闭开关（调用点不被改写）、
+max / ultra（VM 路径）不受影响，全绿。
+
 ## 7. 动态运行时生成器：反分析能力
 
 `VmRuntimeGenerator` 在每次构建时产出**每文件专属**的 VM 解释器，叠加多层互不影响的能力：
@@ -1037,3 +1072,87 @@ while(1){switch($connCursor){...}}       ← switch(0) 无匹配 → default →
   等路径要求真名，须编译期判定后按文件决定是否启用——留待后续版本。
 - **类保留 VM 场景下真实类名与方法签名必然明文**（PHP 语法硬约束，真实类桩须存在
   以兼容反射 / DI / 框架自动加载），这是语言层面的固有暴露面。
+
+---
+
+## 11.23 v1.1.9：第三类「坏 salt」——裸 `!0` / `!1` 表达式边界
+
+### 11.23.1 现象
+
+诊断扫描（6 夹具 × 5 档 × 60 salt）捕获 `salt=[zz]` + `high` 档 `complex_app`：
+
+```
+native : === User Scores ===
+         1. Alice (#1) avg=84
+         2. Bob (#2) avg=66
+obfusc : === User Scores ===
+         1. Bob (#2) avg=66
+```
+
+Alice 整条消失、顺序错乱，而**其余段落（fib / isPrime / factorial / primes /
+bitmask）全部正确**；且只有精确字符串 `zz` 触发，`Zz` / `a` / `42` 均正常。
+这是继 v1.1.8「状态机行注释吞代码」「注入层变量名撞名」之后的**第三类坏 salt**。
+
+### 11.23.2 逐层二分路径
+
+| 步骤 | 实验 | 结论 |
+| --- | --- | --- |
+| 1 | `mid + [zz]` 正常 | 根因不在 token 级状态机（mid 有状态机、无 VM） |
+| 2 | 移除 `shell:vm` 恢复正常 | 锁定 VM 相关 |
+| 3 | 关闭全部 VM 子特性（stateMachine / morph / junk / fakeFog / probe / keychain / builtinReplace / cpool / symbols / jit / combo / inloop / chunks） | 仍复现 → 不在 VM 内部变换 |
+| 4 | 直接编译原始 fixture 的**裸 VM 产物** | 正常 → 根因是「VM 产物 + 后置壳」组合，而非 VM 编译器 |
+| 5 | 逐个剥离后置壳（eval / anti_debug / gz / anti_hook / anti_tamper / honeypot / structpoison） | 逐个移除都仍坏；仅**关闭 `shell_shield`** 修复 |
+| 6 | `ShellProtector::protect()` 四步（变量重命名 / 语义变换 / token 形态 / 压缩）逐个跳过 | 只有 `TokenObfuscator` 破坏语义 |
+| 7 | 细分 `token_case` / `token_literal` | `token_literal` 是元凶（大小写随机无害） |
+| 8 | 细分 `literalPass` 的 `true/false → !0/!1` 与 `array()→[]` | 禁用 bool 改写即修复，`array()→[]` 无害 |
+| 9 | **渐进二分**（只改写前 K 条，`rand` 序列保持不变） | K=1 正常、K=2 坏 → 第 2 条 `ReTuRn true;` → `ReTuRn !0;` 触发 |
+
+### 11.23.3 根因
+
+`shell_shield`（逐层壳自保护）会在**每层壳之后**对整段产物调用
+`ShellProtector::protect()`，其中 `TokenObfuscator::literalPass()` 把布尔字面量
+`true` / `false` 改写为 `!0` / `!1`。裸 `!0` / `!1` 是**表达式而非原子字面量**：
+
+- `!` 的优先级低于 `**`、`instanceof`，高于 `===`、`&&`、`||`、`=`，
+  替换后相邻表达式的**结合方式可能改变**；
+- 壳层自保护会对整段 VM 产物**反复 token 化并压缩去空白**（`Whitespace`），
+  裸 `!` 与前后 token 粘连后优先级歧义更大；
+- 逐层叠加（high 档有 6 层 eval + 多个壳）让某一层的改写落到关键表达式上，
+  特定 salt 的随机序列恰好命中 → 语义被破坏，但 `php -l` 仍通过（语法合法、
+  语义错），因此构建期的语法校验拦不住。
+
+这也解释了为什么症状是「局部数据损坏」而非整体崩坏，以及为什么只有少数
+精确 salt 触发（改写位置由 salt 派生）。
+
+### 11.23.4 修复
+
+`TokenObfuscator::literalPass()` 把改写结果**整体加括号**：
+
+```php
+$out[] = '(';
+$out[] = '!';
+$out[] = [T_LNUMBER, $low === 'true' ? '0' : '1', $tok[2] ?? 0];
+$out[] = ')';
+```
+
+即 `true → (!0)`、`false → (!1)`。括号固定表达式边界，无论后续如何二次
+token 化 / 压缩 / 与相邻运算符结合，都与 `true` / `false` **100% 等价**，
+同时保留形态多样性（不再出现布尔字面量关键字）。
+
+### 11.23.5 回归与防线
+
+- `tests/salt_regression.php`（22 项）：历史坏 salt `zz` / `bs47` × 全 5 档、
+  8 种形态 salt × `high`、坏 salt × 4 个夹具，全部 `php -l` + 输出逐字节一致；
+- `tests/token_obf.php` 2b 段升级为同时断言「产出 `(!0)` / `(!1)`」与
+  「**不存在裸 `!0` / `!1`**」，从形态上锁死修复；
+- `tests/run_tests.php` 固定加入 `S4 坏 salt [zz] / high 档运行等价` 用例；
+- 全套 12 个测试文件 0 失败（`hardening_v108` 37/37 恢复全绿）。
+
+### 11.23.6 附带修复与回归预防
+
+- **内置模块 `strlen.php` 原生路径死循环**：见 §6.11，越界判定改为 `isset()`。
+- **散装键默认行为回退**：新增原生链接分支时曾以 `vm_link_modules`（默认 `true`）
+  作散装键路径触发条件，导致 `--newline-poison` 等独立构建默认内联模块，产物
+  可见换行 701 → 329、`hardening_v108` 换行配额断言失败。现改为**仅在显式
+  `--vm-linker=<dir>` 时启用**，默认产物形态与 v1.1.8 一致。分层预设
+  （low / mid）的启用不经 `pipelineOnce`，不受影响。
