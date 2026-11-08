@@ -557,6 +557,14 @@ final class SemanticRewriter
         if ($digits === '' || !ctype_digit($digits)) {
             return null;   // 十六/二进制等已由 Number 层处理，这里只认十进制
         }
+        // 0 前缀整数字面量是【八进制】（如 0174 = 十进制 124）。ctype_digit 对
+        // 全数字串恒为 true，无法区分八进制与十进制；若继续走 (int)"0174" 会得到
+        // 174，再按十进制展开等价表达式就静默改值（实测 `echo 255` 输出 305：
+        // 0174(124)+131=255 → (175-1)=174 +131=305，v1.1.9 末发现的 low 档坏 salt）。
+        // 八进制一律不改写、保持原样；Number 层已负责它们的编码形态。
+        if (strlen($digits) > 1 && $digits[0] === '0') {
+            return null;
+        }
         $v = (int) $digits;
         $ln = static fn (int $x): array => [T_LNUMBER, (string) $x];
 

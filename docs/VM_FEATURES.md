@@ -1156,3 +1156,59 @@ token 化 / 压缩 / 与相邻运算符结合，都与 `true` / `false` **100% �
   可见换行 701 → 329、`hardening_v108` 换行配额断言失败。现改为**仅在显式
   `--vm-linker=<dir>` 时启用**，默认产物形态与 v1.1.8 一致。分层预设
   （low / mid）的启用不经 `pipelineOnce`，不受影响。
+
+
+## 11.24 v1.2.0-dev：动态 ISA 逐构建生成 + 找漏洞专项
+
+### 11.24.1 ISA 不再是一张静态表
+
+v1.1.x 的 ISA 精简把 46 条同构 opcode 收口为 6 个参数化 opcode，但那份计划是
+**编译期常量**：`VmOp::BINOP = 200` … `ARRAY_BUILD = 205`、sub-id 是族列表里的
+固定下标（ADD 恒为 0、SUB 恒为 1）、`FAMILY_OF` 与 case 顺序全部固定。逆向者
+只要识别出某个 handler 属于「BINOP 族」，就能按固定下标还原全部 24 条二元语义
+——ISA 结构本身成了跨产物的固定指纹。
+
+v1.2.0 改为**按 salt 逐构建动态生成计划**（`VmIsa` 实例）：
+
+| 维度 | 静态版 | 动态版 |
+| --- | --- | --- |
+| 参数化 opcode 逻辑编号 | 固定 `200–205` | `[300,399]` 洗牌取 6 个唯一值 |
+| 族内 sub-id | 族内固定下标 `0..N` | `[1,4095]` 洗牌池，全族 46 个**全局唯一、非连续** |
+| 族成员 / case 排列 | 定义顺序 | 按 salt 洗牌 |
+
+编号区间避开全部 `VmOp` 常量（≤205），因此 `collectUsed` / `assignCodes` /
+`caseBody` 三方不会把「真实 opcode」与「参数化码」混淆；而**落盘的是 remap 后
+的物理码 1..250**（varint 编码），逻辑编号只存在于构建期 mapping 键与运行期
+case 标签，容器格式无需改动。
+
+编译端 `VmIsa::rewriteProgram()` 与运行期 `RuntimeGenerator::paramFamilyBody()`
+共用**同一个计划实例**（`VmRuntimeGenerator` 构造时按 salt 建立），不依赖任何
+跨产物共享的静态表；同 salt 完全可复现。`caseBody()` 里 6 个固定 case 常量
+改为计划反查，`INC_OP` / `VAROP` / `ARRAY_BUILD` 三族原先硬编码的
+`case 0..7` / `case 0..2` / `case 0..1` 改为按计划的 sub-id 生成（`strtr`
+一次性重写，不做连锁替换）。`VmIsa::defaultPlan()` 保留静态计划供文档对照。
+
+**段覆盖补全**：静态版 `rewriteProgram()` 只覆盖 main / funcs / classes.methods /
+embeds，遗漏 `funcParams` / `classParams` / `classes.props` / `classes.consts`。
+这些段里的常量表达式（`function f($a = 1 + 2)`、`const K = 5 + 6`）以旧 opcode
+明文落盘，绕过 ISA 收口。现与 `collectUsed()` / `remap()` 覆盖完全相同的段集合。
+
+### 11.24.2 找漏洞专项：4 个产物正确性缺陷
+
+基线压测（12 夹具 × 6 档 × 13 salt）暴露的问题与修复：
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | 内建函数命名参数在 `high`/`max`/`ultra` 抛 `Unknown named parameter $search` | `BINDNATIVE` 硬编码 `REORDER($args, null)`，`spec=null` 时无法匹配形参名直接抛错 | `spec=null` 时把命名实参还原为关联数组键，交给 PHP 8 `call_user_func_array` 原生命名参数语义；`runtime.php` 同步 |
+| 2 | `low`+`dev` 下 `echo 255` 输出 `305` | `SemanticRewriter::numberReplacement()` 用 `(int)"0174"` 把八进制 124 读成 174 | 0 前缀字面量一律不改写 |
+| 3 | `array_slice(array: ...)` 变 `ARRAY:` → `Unknown named parameter $ARRAY` | `token_case` 大小写随机化改了命名参数名（大小写敏感） | `casePass` 增加「后跟单个冒号」上下文排除 |
+| 4 | `str_pad(string: ...)` 被模块链接改写后抛 `Unknown named parameter $string` | 模块函数形参是 `$__s`/`$__len`，与原生形参名不匹配 | `ModuleLinker::matchSource()` 跳过含命名参数调用点的函数名（两条路径共用扫描器） |
+
+其中 #4 是 v1.1.9 把模块链接铺到 `low+` 档后引入的回归；#1 则是「找漏洞」前
+一直存在、但缺少覆盖内建函数命名参数的夹具所以从未被发现的既有缺陷。
+四类问题都不是构建期 `php -l` 能拦住的（语法合法、语义错），只能靠
+**运行输出与原生逐字节比对**发现。
+
+修复后压测（12 夹具 × 6 档 × 6 salt = 432 组合）0 异常；全套 14 个测试文件
+0 失败。专项回归见 `tests/vm_isa_dynamic.php`（35 项）与
+`tests/vm_native_named_args.php`（19 项）。

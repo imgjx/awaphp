@@ -108,6 +108,7 @@ final class ModuleLinker
         }
         $toks = Parser::tokenize('<?php ' . $source);
         $n = count($toks);
+        $namedCall = [];   // 存在「命名参数调用点」的函数名：整体跳过模块链接
         for ($i = 0; $i < $n; $i++) {
             $t = $toks[$i];
             if (!is_array($t) || $t[0] !== T_STRING) {
@@ -127,12 +128,93 @@ final class ModuleLinker
                 continue;
             }
             $name = (string) $t[1];
+            // 命名参数（str_pad(string: ...) / array_slice(array: ...)）的形参名由
+            // PHP 原生函数固定，而内置模块实现的形参名是 $__s/$__len/... 之类。
+            // 一旦把调用点改写到模块函数，运行期必然抛
+            // "Unknown named parameter $string"（v1.1.9 模块链接下沉到 low+ 档后暴露）。
+            // matchSource 按【函数名】聚合命中，无法逐调用点改写，故凡该函数名存在
+            // 任一命名参数调用点，就整体不链接（保持原生调用），两条路径一并安全。
+            if ($this->callHasNamedArgs($toks, $i + 1)) {
+                $namedCall[$name] = true;
+                continue;
+            }
             $spec = $this->matchName($name);
             if ($spec !== null) {
                 $out[$name] = $spec;
             }
         }
+        foreach ($namedCall as $name => $_) {
+            unset($out[$name]);
+        }
         return $out;
+    }
+
+    /**
+     * 判断函数调用的实参区是否含【命名参数】（`name:` / `array:` 等）。
+     * 只在最外层实参层判定，跳过空白/注释与嵌套括号（避免把三元 `?:`、
+     * 闭包返回类型、数组内的冒误判）。保守返回 true 只会少链接一个模块，
+     * 不影响产物正确性。
+     *
+     * @param array<int,mixed> $toks
+     * @param int $from 函数名之后的下标（nextIsCall 已确认紧跟左括号）
+     */
+    private function callHasNamedArgs(array $toks, int $from): bool
+    {
+        $n = count($toks);
+        $p = $from;
+        while ($p < $n && is_array($toks[$p])
+            && in_array($toks[$p][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+            $p++;
+        }
+        if ($p >= $n || $toks[$p] !== '(') {
+            return false;
+        }
+        $depth = 0;
+        $prev = null;
+        for ($k = $p; $k < $n; $k++) {
+            $t = $toks[$k];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            if ($t === '(' || $t === '[' || $t === '{') {
+                $depth++;
+                $prev = $t;
+                continue;
+            }
+            if ($t === ')') {
+                $depth--;
+                if ($depth <= 0) {
+                    return false;
+                }
+                $prev = $t;
+                continue;
+            }
+            if ($t === ']' || $t === '}') {
+                $depth--;
+                $prev = $t;
+                continue;
+            }
+            if ($t === ':' && $depth === 1 && $this->isNameToken($prev)) {
+                return true;
+            }
+            $prev = $t;
+        }
+        return false;
+    }
+
+    /** @param mixed $t */
+    private function isNameToken($t): bool
+    {
+        if (!is_array($t)) {
+            return false;
+        }
+        $types = [T_STRING, T_ARRAY];
+        foreach (['T_NAME_QUALIFIED', 'T_NAME_FULLY_QUALIFIED', 'T_NAME_RELATIVE', 'T_CALLABLE', 'T_STATIC'] as $c) {
+            if (defined($c)) {
+                $types[] = constant($c);
+            }
+        }
+        return in_array($t[0], $types, true);
     }
 
     /**

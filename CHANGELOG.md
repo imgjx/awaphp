@@ -1,5 +1,100 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.0-dev — 动态 ISA 逐构建生成；找漏洞专项（4 个产物正确性缺陷）
+
+> 主题：两件事。① **ISA 不再是一张静态表**——参数化 opcode 的逻辑编号、族内
+> sub-id、case 排列全部按本次构建的 salt 动态派生，编译端与运行期分发表共用
+> 同一个计划实例；② 一次系统性「找漏洞」：基线压测（12 夹具 × 6 档 × 13 salt）
+> 暴露出 4 个会让产物**运行致命或输出错误**的真实缺陷，逐一复现定位并修复。
+> 同时给 README 的「反 LLM」模块加上「仅供娱乐」标签。
+
+### 新增 / 增强
+
+- **动态 ISA 计划（`VmIsa`，逐构建生成）**
+  - v1.1.x 的 ISA 精简把 46 条同构 opcode 收口为 6 个参数化 opcode，但计划是
+    **静态**的：编号写死 `200–205`、sub-id 是族内固定下标（ADD 恒为 0）、族成员
+    与 case 顺序固定。识别出「这是 BINOP 族」即可查表还原全部语义——ISA 结构
+    本身成了跨产物的固定指纹。
+  - 三个维度随机化：① 参数化 opcode 逻辑编号从 `[300,399]` 洗牌取 6 个唯一值
+    （避开全部 `VmOp` 常量 ≤205；落盘的是 remap 后的物理码 1..250，逻辑编号只
+    存在于构建期 mapping 键与运行期 case 标签）；② 族内 sub-id 从 `[1,4095]`
+    洗牌池分配**全局唯一、非连续**的随机值；③ 每族成员顺序按 salt 洗牌，
+    运行期 switch 的 case 排列同步打散。
+  - `VmIsa` 由纯静态类改为持有 per-build 计划；`VmRuntimeGenerator` 构造时按
+    salt 建立计划，`rewriteProgram()`（编译端）与 `paramFamilyBody()`（运行期
+    handler 生成）共用同一实例，不依赖任何跨产物共享的静态表，同 salt 完全
+    可复现。`VmIsa::defaultPlan()` 保留静态计划供文档对照。
+  - `caseBody()` 里 6 个固定 case 常量改为计划反查；`INC_OP` / `VAROP` /
+    `ARRAY_BUILD` 三族原先硬编码的 `case 0..7` / `case 0..2` / `case 0..1`
+    改为按计划的 sub-id 生成（`strtr` 一次性重写，不做连锁替换）。
+  - **段覆盖补全**：静态版 `rewriteProgram()` 只覆盖 main / funcs /
+    classes.methods / embeds，遗漏 `funcParams` / `classParams` /
+    `classes.props` / `classes.consts`——参数默认值 / 类属性 / 类常量里的常量
+    表达式（如 `const K = 5 + 6`）以**旧 opcode 明文**落盘，绕过 ISA 收口，
+    给静态分析留了语义明确的入口。现与 `collectUsed()` / `remap()` 覆盖完全
+    相同的段集合。
+  - 回归：`tests/vm_isa_dynamic.php`（35 项）——计划确定性 / 跨 salt 差异、
+    编号不冲突、sub-id 全局唯一非连续、段覆盖与 `(码, sub)` 逐条对齐、
+    rewriteProgram 幂等与指令条数不变、含参数默认值 + 类常量 + 命名参数夹具的
+    low/mid/high/max × 2 salt 端到端等价。
+
+- **README「反 LLM」模块标注「仅供娱乐」**
+  - `### 反 LLM 静态分析（Confrontation-LLM）` 章节标题与开头新增
+    `仅供娱乐 / Just for fun` 标签及免责说明：该模块是戏谑性质的认知污染实验，
+    **不保证对任何真实 LLM / 逆向工具有实际干扰效果**，不构成安全防护能力。
+
+### 修复（找漏洞专项：4 个产物正确性缺陷）
+
+1. **内建函数命名参数在 VM 档 100% 运行致命**（`Unknown named parameter $search`）
+   - 基线扫描发现 `named_args.php` 在 `high` / `max` / `ultra` 全部 fatal、与 salt
+     无关；`min` / `low` / `mid` 正常。根因：`CALL_NATIVE` 的 `$___BINDNATIVE___`
+     硬编码 `$___REORDER___($args, null)`，而 `$___REORDER___` 在 `$spec === null`
+     时无法把 `['__vmnamed__', 形参名, 值]` 匹配到任何形参，直接抛错。用户函数
+     走 `BINDARGS`（编译器记录了形参规格）故一直正常，只有拿不到编译期形参表
+     的内建函数中招。
+   - 修复：`$spec === null` 时不再抛错，把命名实参还原为**关联数组键**，交给
+     PHP 8 `call_user_func_array` 的原生命名参数语义；有 spec 的路径完全不变。
+     `BINDNATIVE` 的 refMask 位运算补 `is_int($i)` 守卫。生成器运行期模板与
+     静态参考运行时 `runtime.php` 两处同步。
+2. **`low` 档数字输出偏差（`echo 255` → `305`）**
+   - `strings.php` / `v108_syntax.php` 在 `low` + `salt=dev` 下分别输出 `305` /
+     `39`（期望 `255` / `37`）。trace 出 `ShellProtector` 前后：
+     `ECHO((0174)+(0b10000011))`（`0174` 八进制 = 124，124+131 = 255）被改成
+     `ECHO(((175-1))+(0b10000011))`（174+131 = 305）。
+   - 根因：`SemanticRewriter::numberReplacement()` 用
+     `ctype_digit($digits) && (int)$digits` 解析数字字面量，**0 前缀八进制全是
+     数字字符、能通过检查却被当成十进制**（`(int)"0174"` = 174）；`0x` / `0b`
+     因含字母被跳过，故只有八进制中招。修复：0 前缀字面量一律不改写、保持原样。
+3. **关键字大小写随机化破坏命名参数名**
+   - `array_slice(array: ...)` 被 `token_case` 改成 `ARRAY:`，PHP 8 报
+     `Unknown named parameter $ARRAY`（命名参数名大小写敏感）。`array` 是
+     `T_ARRAY`，`string` / `int` 等也在 `KEYWORDS` 表里（因转型语法），同样中招。
+   - 修复：`TokenObfuscator::casePass()` 新增「后跟单个冒号」上下文排除
+     （命名参数 / goto 标签 / case 标签等大小写敏感位置保持原样），
+     `T_DOUBLE_COLON`（`::`）不误判。
+4. **模块链接下沉后，命名参数调用点被改写导致形参名不匹配**
+   - v1.1.9 把模块链接铺到 `low+` 档后，`str_pad(string: ...)` 被改写成
+     `__mod_str_pad(...)`，而模块函数形参是 `$__s` / `$__len` / ...，运行期抛
+     `Unknown named parameter $string`；VM 字节码内联路径同理。
+   - 修复：`ModuleLinker::matchSource()`（VM 路径与原生路径共用的种子扫描器）
+     新增 `callHasNamedArgs()`：凡某函数名存在任一命名参数调用点，就**整体不
+     链接**该模块、保持原生调用（按函数名聚合命中，无法逐点改写）。仅牺牲该
+     函数的内联混淆，换取产物正确性。
+   - 回归：`tests/vm_native_named_args.php`（19 项）——用户 / 内建函数命名参数、
+     11 组内建函数命名参数、位置 + 命名混排、高阶回调，全 6 档位逐字节等价；
+     `tests/run_tests.php` 新增 3 条用例。
+
+### 验证
+
+- 改造前基线压测（12 夹具 × 6 档 × 13 salt）：捕获 `named_args` 系列 39 个
+  fatal + 3 个零散输出偏差；定位并修复后，改造后压测（12 夹具 × 6 档 × 6 salt
+  = 432 组合）**0 异常**。
+- 全套 **14 个测试文件 0 失败**（`run_tests` 36、`preset_e2e` 72、
+  `statemachine_native` 60、`hardening_v108` 37、`vm_isa_dynamic` 35、
+  `salt_regression` 22、`vm_native_named_args` 19 等）。
+
+---
+
 ## v1.1.9 — 模块链接下沉到 low+ 档；坏 salt 根因（裸 `!0`/`!1`）修复
 
 > 主题：两件事。① **模块链接不再专属 VM**——新增原生路径，`low` / `mid` 等非 VM 档位

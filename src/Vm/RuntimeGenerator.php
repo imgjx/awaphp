@@ -63,11 +63,22 @@ final class VmRuntimeGenerator
     // 运行」——把盐派生污染因子混入 opcode 解码，指令流静默错乱、提前结束，无可见 exit。
     // 仅由 Obfuscator 在 vm 开启且 vm_selfcheck 开启时显式传 selfcheck=1，避免裸产物测试误伤。
     private bool $vmSelfCheck = false;
+    // v1.2.0 动态 ISA 计划：按本次构建的 salt 派生「参数化 opcode 编号 / 族内 sub-id /
+    // case 排列」。编译端 rewriteProgram 与运行期 paramFamilyBody 共用同一个实例。
+    private VmIsa $isa;
 
     public function __construct(?Salt $salt = null)
     {
         $this->salt = $salt ?? new Salt(bin2hex(random_bytes(8)));
         $this->style = new NameStyle($this->salt);
+        // VmIsa 的类常量依赖 VmOp，且加载顺序不能假定（本文件常先于 Vm/ 下其它文件被 require）
+        if (!class_exists(VmOp::class, false)) {
+            require_once __DIR__ . '/Op.php';
+        }
+        if (!class_exists(VmIsa::class, false)) {
+            require_once __DIR__ . '/VmIsa.php';
+        }
+        $this->isa = new VmIsa($this->salt);
     }
 
     /** 仅用于调试：查看当前 salt 派生出的映射，不影响产物 */
@@ -353,13 +364,11 @@ final class VmRuntimeGenerator
             (new VmFakeFog($this->salt))->inject($program, $fakeFog);
         }
 
-        // —— ISA 精简（见 src/Vm/VmIsa.php）：把族内旧 opcode 升级为参数化 opcode + sub-id。
-        // 指令条数不变（[ADD] -> [BINOP, subId]），故放在 flatten + fakeFog 之后也绝不破坏
-        // 相对跳转偏移。真实码 + VmBytecodeJunk + VmFakeFog 三类来源一并收口。
-        if (!class_exists(VmIsa::class, false)) {
-            require_once __DIR__ . '/VmIsa.php';
-        }
-        VmIsa::rewriteProgram($program);
+        // —— ISA 动态收口（v1.2.0，见 src/Vm/VmIsa.php）：本次构建的计划由 salt 派生，
+        // 参数化 opcode 编号 / 族内 sub-id / case 排列逐构建不同，且覆盖全部可执行段。
+        // 指令条数不变（[ADD] -> [参数化码, subId]），故放在 flatten + fakeFog 之后
+        // 也绝不破坏相对跳转偏移。真实码 + VmBytecodeJunk + VmFakeFog 三类来源一并收口。
+        $this->isa->rewriteProgram($program);
 
         $used = $this->collectUsed($program);
         $mapping = $this->assignCodes($used);
@@ -1070,9 +1079,9 @@ $___PROPSET___=function($obj,$p,$v)use($___META___){if(is_object($obj)){if(isset
 $___PATHGET___=function(&$vars,$name,$keys,&$found){if($name==='$GLOBALS'){$v=$GLOBALS;}elseif(!array_key_exists($name,$vars)){$found=false;return null;}else{$v=$vars[$name];}foreach($keys as $k){if(is_array($v)){if(!array_key_exists($k,$v)){$found=false;return null;}$v=$v[$k];}elseif(is_object($v)){if(!isset($v->$k)){$found=false;return null;}$v=$v->$k;}elseif(is_string($v)){if(!is_int($k)&&!(is_string($k)&&preg_match('/^-?\d+$/',$k))){$found=false;return null;}$k=(int)$k;$___PL___=strlen($v);if($k<0){$k+=$___PL___;}if($k<0||$k>=$___PL___){$found=false;return null;}$v=$v[$k];}else{$found=false;return null;}}$found=true;return $v;};
 $___PAD___=function($spec,$args)use(&$___RUN___){$n=count($spec);if($n>0&&(($spec[$n-1][2]??0)&2)){$f=$n-1;$fl=false;for($i=0;$i<$f;$i++){if(array_key_exists($i,$args)){continue;}$d=$spec[$i][1];$___EMPTYV___=[];$args[$i]=($d===null)?null:$___RUN___($d,$___EMPTYV___,null,[]);$fl=true;}if($fl){ksort($args);}$rest=array_slice($args,$f);$args=array_slice($args,0,$f);$args[]=array_values($rest);return $args;}$fl=false;for($i=0;$i<$n;$i++){if(array_key_exists($i,$args)){continue;}$d=$spec[$i][1];$___EMPTYV___=[];$args[$i]=($d===null)?null:$___RUN___($d,$___EMPTYV___,null,[]);$fl=true;}if($fl){ksort($args);}return $args;};
 $___FLAT___=function($args){foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmspread__'){$f=[];foreach($args as $y){if(is_array($y)&&($y[0]??'')==='__vmspread__'){foreach((array)($y[1]??[]) as $k=>$e){$f[]=is_int($k)?$e:['__vmnamed__',$k,$e];}}else{$f[]=$y;}}return $f;}}return $args;};
-$___REORDER___=function($args,$spec){$has=false;foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$has=true;break;}}if(!$has){return $args;}$out=[];$named=[];foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$named[(string)$x[1]]=$x[2];}else{$out[]=$x;}}if($spec!==null){foreach($spec as $i=>$sp){$pn=ltrim((string)$sp[0],'$');if(array_key_exists($pn,$named)){$out[$i]=$named[$pn];unset($named[$pn]);}}}if($named!==[]){throw new \Error('Unknown named parameter $'.array_key_first($named));}return $out;};
+$___REORDER___=function($args,$spec){$has=false;foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$has=true;break;}}if(!$has){return $args;}$out=[];$named=[];foreach($args as $x){if(is_array($x)&&($x[0]??'')==='__vmnamed__'){$named[(string)$x[1]]=$x[2];}else{$out[]=$x;}}if($spec!==null){foreach($spec as $i=>$sp){$pn=ltrim((string)$sp[0],'$');if(array_key_exists($pn,$named)){$out[$i]=$named[$pn];unset($named[$pn]);}}if($named!==[]){throw new \Error('Unknown named parameter $'.array_key_first($named));}}else{foreach($named as $k=>$v){$out[$k]=$v;}}return $out;};
 $___BINDARGS___=function($args,$spec,&$cv=null)use($___FLAT___,$___REORDER___){$args=$___FLAT___($args);$args=$___REORDER___($args,$spec);$refs=[];if($spec!==null){foreach($args as $i=>$a){if(!is_array($a)||($a[0]??'')!=='__vmref__'){continue;}$cvar=(string)$a[1];if(((int)($spec[$i][2]??0))&1){$refs[$i]=[$cvar,(string)$spec[$i][0]];$args[$i]=($cv!==null&&array_key_exists($cvar,$cv))?$cv[$cvar]:null;}else{$args[$i]=$a[2]??null;}}}else{foreach($args as $i=>$a){if(is_array($a)&&($a[0]??'')==='__vmref__'){$args[$i]=$a[2]??null;}}}return [$args,$refs];};
-$___BINDNATIVE___=function($args,$rm,&$cv=null)use($___FLAT___,$___REORDER___){$args=$___FLAT___($args);$args=$___REORDER___($args,null);foreach($args as $i=>$a){if(!is_array($a)||($a[0]??'')!=='__vmref__'){continue;}if((($rm>>$i)&1)&&$cv!==null){$n=(string)$a[1];if(!array_key_exists($n,$cv)){$cv[$n]=null;}$args[$i]=&$cv[$n];}else{$args[$i]=$a[2]??null;}}return $args;};
+$___BINDNATIVE___=function($args,$rm,&$cv=null)use($___FLAT___,$___REORDER___){$args=$___FLAT___($args);$args=$___REORDER___($args,null);foreach($args as $i=>$a){if(!is_array($a)||($a[0]??'')!=='__vmref__'){continue;}if(is_int($i)&&(($rm>>$i)&1)&&$cv!==null){$n=(string)$a[1];if(!array_key_exists($n,$cv)){$cv[$n]=null;}$args[$i]=&$cv[$n];}else{$args[$i]=$a[2]??null;}}return $args;};
 $___MO___=function($cls,$m)use($___P___){$c=$cls;$guard=0;while(is_string($c)&&$c!==''&&$guard++<64&&isset($___P___['classes'][$c])){if(isset($___P___['classes'][$c]['methods'][$m])){return $c;}$c=$___P___['classParents'][$c]??null;}return null;};
 // 类名解析：编译期已按 namespace + use 别名补全为首选 FQN；此处再按 PHP 的
 // 「命名空间内找不到就去全局找」回退语义补一次，避免 `new Exception()` 这类
@@ -1306,6 +1315,12 @@ TPL;
     /** 各逻辑操作码对应的 case 体（占位符需带 $ 前缀，最终被替换为随机名） */
     private function caseBody(int $logical): string
     {
+        // v1.2.0：参数化 opcode 的逻辑编号按 salt 动态生成，无法用固定 case 常量匹配，
+        // 故先查本次构建的 ISA 计划；命中则按计划里的 sub-id 生成族内 switch。
+        $fam = $this->isa->familyOf($logical);
+        if ($fam !== null) {
+            return $this->paramFamilyBody($fam);
+        }
         $bin = [
             VmOp::ADD => '($___TA___+$___TB___)', VmOp::SUB => '($___TA___-$___TB___)', VmOp::MUL => '($___TA___*$___TB___)',
             VmOp::DIV => '($___DIV___($___TA___,$___TB___))', VmOp::MOD => '($___MOD___($___TA___,$___TB___))', VmOp::POW => '($___TA___**$___TB___)',
@@ -1494,33 +1509,71 @@ TPL;
                     . 'if($___XT___===1){$___RET___=$___VARS___["\x01retv"]??null;$___RETSET___=true;break 2;}'
                     . 'elseif($___XT___===2){$___RET___=null;$___RETSET___=true;break 2;}';
 
-            // —— ISA 精简：参数化 opcode 的表驱动 handler（sub-id 在 $___INS___[1]）——
-            // 顶层仅 6 个 case，族内子操作经 switch 分发；旧 41 条同构 opcode 的语义指纹被收口。
-            case VmOp::BINOP:
+            // v1.2.0：6 个参数化 opcode 的 handler 已迁移到 paramFamilyBody($fam)，
+            // 由动态 ISA 计划生成 case 标签与排列；此处不再保留静态分派
+            // （参数化 opcode 的逻辑编号按 salt 变化，无法用固定 case 常量匹配）。
+        }
+        if (isset($bin[$logical])) {
+            $expr = $bin[$logical];
+            return '$___TB___=$___MCPOP___();$___TA___=$___MCPOP___();$___MCPUSH___(' . $expr . ');';
+        }
+        return '';
+    }
+
+    /**
+     * v1.2.0 动态 ISA：为某个「参数化 opcode 族」生成运行期 handler。
+     *
+     * case 标签取自本次构建 ISA 计划给旧 opcode 分配的 sub-id（全局唯一、
+     * 非连续、按 salt 洗牌），case 排列同样按计划洗牌；编译端 VmIsa::rewriteInstr
+     * 用同一个计划写入指令操作数，两端天然对齐，不依赖任何跨产物静态表。
+     *
+     * bin/un/cast 三族用「弹栈前缀 + 表达式表」直接按计划生成；inc/var/arr
+     * 三族保留原有子操作代码块，仅在拼接后用 strtr 一次性重写 case 标签
+     * （strtr 最长键优先且不做连锁替换，动态 sub-id 不会二次命中）。
+     */
+    private function paramFamilyBody(string $fam): string
+    {
+        $bin = [
+            VmOp::ADD => '($___TA___+$___TB___)', VmOp::SUB => '($___TA___-$___TB___)', VmOp::MUL => '($___TA___*$___TB___)',
+            VmOp::DIV => '($___DIV___($___TA___,$___TB___))', VmOp::MOD => '($___MOD___($___TA___,$___TB___))', VmOp::POW => '($___TA___**$___TB___)',
+            VmOp::CONCAT => '($___TOSTR___($___TA___).$___TOSTR___($___TB___))', VmOp::BW_AND => '($___TA___&$___TB___)', VmOp::BW_OR => '($___TA___|$___TB___)', VmOp::BW_XOR => '($___TA___^$___TB___)',
+            VmOp::BW_SHL => '($___TA___<<$___TB___)', VmOp::BW_SHR => '($___TA___>>$___TB___)', VmOp::EQ => '($___TA___==$___TB___)', VmOp::NE => '($___TA___!=$___TB___)',
+            VmOp::LT => '($___TA___<$___TB___)', VmOp::GT => '($___TA___>$___TB___)', VmOp::LE => '($___TA___<=$___TB___)', VmOp::GE => '($___TA___>=$___TB___)',
+            VmOp::IDENT => '($___TA___===$___TB___)', VmOp::NIDENT => '($___TA___!==$___TB___)', VmOp::SPACESHIP => '($___TA___<=>$___TB___)', VmOp::BOOL_AND => '($___TA___&&$___TB___)', VmOp::BOOL_OR => '($___TA___||$___TB___)', VmOp::BOOL_XOR => '(((bool)$___TA___)!==((bool)$___TB___))',
+        ];
+        // 旧 case 下标 -> 本次构建的 sub-id（仅 inc/var/arr 需要）
+        $labelMap = [];
+        $refs = ['inc' => VmIsa::INC, 'var' => VmIsa::VAR, 'arr' => VmIsa::ARR];
+        if (isset($refs[$fam])) {
+            foreach ($refs[$fam] as $i => $op) {
+                $labelMap['case ' . $i . ':'] = 'case ' . $this->isa->subId($op) . ':';
+            }
+        }
+        if ($fam === 'bin') {
                 $arms = [];
-                foreach (VmIsa::BIN as $i => $op) {
+                foreach ($this->isa->members('bin') as $op) {
                     if (!isset($bin[$op])) { continue; }
-                    $arms[] = "case $i:\$___MCPUSH___({$bin[$op]});break;";
+                    $arms[] = 'case ' . $this->isa->subId($op) . ':$___MCPUSH___(' . $bin[$op] . ');break;';
                 }
                 return '$___TB___=$___MCPOP___();$___TA___=$___MCPOP___();switch($___INS___[1]){' . implode('', $arms) . '}';
-            case VmOp::UNOP:
+                    } elseif ($fam === 'un') {
                 $un = [VmOp::NEG => '-', VmOp::BW_NOT => '~', VmOp::BOOL_NOT => '!'];
                 $arms = [];
-                foreach (VmIsa::UN as $i => $op) {
-                    $arms[] = "case $i:\$___MCPUSH___({$un[$op]}\$___TV___);break;";
+                foreach ($this->isa->members('un') as $op) {
+                    $arms[] = 'case ' . $this->isa->subId($op) . ':$___MCPUSH___(' . $un[$op] . '$___TV___);break;';
                 }
                 return '$___TV___=$___MCPOP___();switch($___INS___[1]){' . implode('', $arms) . '}';
-            case VmOp::CAST_OP:
+                    } elseif ($fam === 'cast') {
                 $cast = [VmOp::CAST_INT => '(int)', VmOp::CAST_FLOAT => '(float)', VmOp::CAST_STRING => '(string)', VmOp::CAST_BOOL => '(bool)', VmOp::CAST_ARRAY => '(array)', VmOp::CAST_OBJECT => '(object)'];
                 $arms = [];
-                foreach (VmIsa::CAST as $i => $op) {
-                    $arms[] = "case $i:\$___MCPUSH___({$cast[$op]}\$___TV___);break;";
+                foreach ($this->isa->members('cast') as $op) {
+                    $arms[] = 'case ' . $this->isa->subId($op) . ':$___MCPUSH___(' . $cast[$op] . '$___TV___);break;';
                 }
                 return '$___TV___=$___MCPOP___();switch($___INS___[1]){' . implode('', $arms) . '}';
-            case VmOp::INC_OP:
+                    } elseif ($fam === 'inc') {
                 // sub-id 0–7 对应 VmIsa::INC 族（属性 / 下标 8 条；变量自增码已精简移除）。
                 // 0–3：属性；4–7：下标。
-                return 'switch($___INS___[1]){'
+                return strtr('switch($___INS___[1]){'
                     . 'case 0:$___TOLD___=$___MCPOP___();$___TO___=$___MCPOP___();$___PROPSET___($___TO___,$___INS___[2],$___INC___($___TOLD___,1));$___MCPUSH___($___TOLD___);break;'
                     . 'case 1:$___TOLD___=$___MCPOP___();$___TO___=$___MCPOP___();$___PROPSET___($___TO___,$___INS___[2],$___INC___($___TOLD___,-1));$___MCPUSH___($___TOLD___);break;'
                     . 'case 2:$___TOLD___=$___MCPOP___();$___TO___=$___MCPOP___();$___TC___=$___INC___($___TOLD___,1);$___PROPSET___($___TO___,$___INS___[2],$___TC___);$___MCPUSH___($___TC___);break;'
@@ -1529,22 +1582,18 @@ TPL;
                     . 'case 5:$___TK___=$___MCPOP___();$___TA___=$___MCPOP___();if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___MCPUSH___($___TOLD___);break;'
                     . 'case 6:$___TK___=$___MCPOP___();$___TA___=$___MCPOP___();if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___MCPUSH___($___TC___);break;'
                     . 'case 7:$___TK___=$___MCPOP___();$___TA___=$___MCPOP___();if(is_array($___TA___)){$___TOLD___=$___IDXGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___TA___[$___TK___]=$___TC___;}elseif(is_object($___TA___)){$___TOLD___=$___PROPGET___($___TA___,$___TK___);$___TC___=$___INC___($___TOLD___,-1);$___PROPSET___($___TA___,$___TK___,$___TC___);}else{$___TOLD___=null;$___TC___=$___INC___(null,-1);}if($___INS___[2]!==\'\'){$___VARS___[$___INS___[2]]=$___TA___;}$___MCPUSH___($___TC___);break;'
-                    . '}';
-            case VmOp::VAROP:
-                return 'switch($___INS___[1]){'
+                    . '}', $labelMap);
+                    } elseif ($fam === 'var') {
+                return strtr('switch($___INS___[1]){'
                     . 'case 0:$___TNK___=$___INS___[3];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[2],$___TKEYS___,$___TFOUND___);$___MCPUSH___($___TFOUND___&&$___TV___!==null);break;'
                     . 'case 1:$___TNK___=$___INS___[3];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);$___TFOUND___=false;$___TV___=$___PATHGET___($___VARS___,$___INS___[2],$___TKEYS___,$___TFOUND___);$___MCPUSH___((!$___TFOUND___)||$___TV___==false);break;'
                     . "case 2:\$___TNK___=\$___INS___[3];\$___TKEYS___=[];for(\$___TI___=0;\$___TI___<\$___TNK___;\$___TI___++){\$___TKEYS___[]=\$___MCPOP___();}\$___TKEYS___=array_reverse(\$___TKEYS___);if(\$___INS___[2]==='\$GLOBALS'){if(\$___TNK___===1){unset(\$GLOBALS[\$___TKEYS___[0]]);}}elseif(\$___TNK___===0){unset(\$___VARS___[\$___INS___[2]]);}else{\$___TREF___=&\$___VARS___[\$___INS___[2]];\$___TOK___=true;for(\$___TI___=0;\$___TI___<\$___TNK___-1;\$___TI___++){\$___TK___=\$___TKEYS___[\$___TI___];if(is_array(\$___TREF___)&&isset(\$___TREF___[\$___TK___])){\$___TREF___=&\$___TREF___[\$___TK___];}elseif(is_object(\$___TREF___)){\$___TREF___=&\$___TREF___->\$___TK___;}else{\$___TOK___=false;break;}}if(\$___TOK___){\$___TLK___=\$___TKEYS___[\$___TNK___-1];if(is_array(\$___TREF___)){unset(\$___TREF___[\$___TLK___]);}elseif(is_object(\$___TREF___)){unset(\$___TREF___->\$___TLK___);}}}break;"
-                    . '}';
-            case VmOp::ARRAY_BUILD:
-                return 'switch($___INS___[1]){'
+                    . '}', $labelMap);
+                    } elseif ($fam === 'arr') {
+                return strtr('switch($___INS___[1]){'
                     . 'case 0:$___TC___=$___INS___[2];$___TARR___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TARR___[]=$___MCPOP___();}$___TARR___=array_reverse($___TARR___);foreach($___TARR___ as $___TI___=>$___TV___){if(is_array($___TV___)&&($___TV___[0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TV___[1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TI___]=&$___VARS___[$___TRN___];}}$___MCPUSH___($___TARR___);break;'
                     . 'case 1:$___TC___=$___INS___[2];$___TARR___=[];$___TPAIRS___=[];for($___TI___=0;$___TI___<$___TC___;$___TI___++){$___TK___=$___MCPOP___();$___TV___=$___MCPOP___();$___TPAIRS___[]=[$___TK___,$___TV___];}$___TPAIRS___=array_reverse($___TPAIRS___);foreach($___TPAIRS___ as $___TP___){if(is_array($___TP___[1])&&($___TP___[1][0]??\'\')===\'__vmrefel__\'){$___TRN___=(string)$___TP___[1][1];if(!array_key_exists($___TRN___,$___VARS___)){$___VARS___[$___TRN___]=null;}$___TARR___[$___TP___[0]]=&$___VARS___[$___TRN___];}else{$___TARR___[$___TP___[0]]=$___TP___[1];}}$___MCPUSH___($___TARR___);break;'
-                    . '}';
-        }
-        if (isset($bin[$logical])) {
-            $expr = $bin[$logical];
-            return '$___TB___=$___MCPOP___();$___TA___=$___MCPOP___();$___MCPUSH___(' . $expr . ');';
+                    . '}', $labelMap);
         }
         return '';
     }

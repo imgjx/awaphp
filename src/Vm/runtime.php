@@ -305,9 +305,13 @@ function __VMRUN__($__P)
                     unset($__named[$__pn]);
                 }
             }
-        }
-        if ($__named !== []) {
-            throw new \Error('Unknown named parameter $' . array_key_first($__named));
+            if ($__named !== []) {
+                throw new \Error('Unknown named parameter $' . array_key_first($__named));
+            }
+        } else {
+            // 原生/内建函数没有编译期形参规格：把命名实参还原成关联数组键，
+            // 交给 PHP 8 call_user_func_array 的原生命名参数语义处理。
+            foreach ($__named as $__k => $__v) { $__out[$__k] = $__v; }
         }
         return $__out;
     };
@@ -348,7 +352,7 @@ function __VMRUN__($__P)
         $args = $__reorder($args,null);
         foreach ($args as $i => $a) {
             if (!is_array($a) || ($a[0] ?? '') !== '__vmref__') { continue; }
-            if ((($rm >> $i) & 1) && $__cv !== null) {
+            if (is_int($i) && (($rm >> $i) & 1) && $__cv !== null) {
                 $n = (string) $a[1];
                 if (!array_key_exists($n, $__cv)) { $__cv[$n] = null; }
                 $args[$i] = &$__cv[$n];

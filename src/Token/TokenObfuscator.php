@@ -177,6 +177,14 @@ final class TokenObfuscator
             if (!isset(self::KEYWORDS[$low])) {
                 continue;
             }
+            // 命名参数名（`array_slice(array: ...)` / `str_pad(string: ...)`）大小写敏感：
+            // PHP 8 关键字恰好作形参名时 tokenizer 仍给出 T_ARRAY，且 KEYWORDS 也含
+            // string/int 等转型名，随机化大小写会变成 ARRAY:/STRING:，运行期直接抛
+            // "Unknown named parameter"。goto 标签 / case 标签名同样大小写敏感，
+            // 这些「后跟单个冒号」的位置一律保持原样（跳过不影响整体混淆强度）。
+            if ($this->nextIsColon($tokens, $i)) {
+                continue;
+            }
             $new = $this->randomCase($text, $rand);
             if ($new !== $text) {
                 $tokens[$i][1] = $new;
@@ -184,6 +192,24 @@ final class TokenObfuscator
             }
         }
         return $tokens;
+    }
+
+    /**
+     * 该 token 之后（忽略空白 / 注释）是否紧跟单个冒号 ':'。
+     * 用于识别命名参数名、goto 标签等大小写敏感位置；'::' 是 T_DOUBLE_COLON
+     * （文本为 '::'），不会误判。
+     */
+    private function nextIsColon(array $tokens, int $i): bool
+    {
+        $n = count($tokens);
+        for ($k = $i + 1; $k < $n; $k++) {
+            $t = $tokens[$k];
+            if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            return $t === ':';
+        }
+        return false;
     }
 
     /** 全大写 / 全小写 / 逐字符随机混合 */

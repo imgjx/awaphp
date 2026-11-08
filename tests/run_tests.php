@@ -72,6 +72,13 @@ $cases = [
     // ===== v1.1.9 坏 salt 回归（裸 !0/!1 表达式边界修复）=====
     // [zz] 曾导致 complex_app 的 User Scores 段丢失首条记录；根因见 tests/salt_regression.php
     ['S4 坏 salt [zz] / high 档运行等价',   'complex_app.php', '--level=high --salt=zz', true],
+
+    // ===== v1.2.0 内建函数命名参数修复 + 动态 ISA =====
+    // 内建函数命名参数在 VM 档曾 100% 抛 Unknown named parameter；
+    // 专项回归见 tests/vm_native_named_args.php、tests/vm_isa_dynamic.php
+    ['S5 内建函数命名参数 / high 档',   'named_args.php', '--level=high --salt=na1', true],
+    ['S5 内建函数命名参数 / ultra 档',  'named_args.php', '--level=ultra --salt=na2', true],
+    ['S5 动态 ISA 跨 salt / max 档',    'complex_app.php', '--level=max --salt=isaDyn', true],
 ];
 
 echo "===== PHP 混淆器 测试套件 =====\n";
