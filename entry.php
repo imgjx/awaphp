@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.0-dev');
+define('OBFUSCATOR_VERSION', '1.2.0');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -71,6 +71,7 @@ foreach ([
     'src/ControlFlow/AntiHookEval.php',
     'src/ControlFlow/LicenseGuard.php',
     'src/ControlFlow/AntiTamper.php',
+    'src/ControlFlow/AntiStrip.php',
     'src/ControlFlow/JunkFunctions.php',
     'src/AntiDetect/StringRuntimeAssembler.php',
     'src/AntiAst/IdentityExpr.php',
@@ -112,6 +113,14 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-shell-shield') {
             $out['shell_shield'] = false;
+            continue;
+        }
+        if ($a === '--inline-each-layer') {
+            $out['inline_each_layer'] = true;
+            continue;
+        }
+        if ($a === '--no-inline-each-layer') {
+            $out['inline_each_layer'] = false;
             continue;
         }
         if ($a === '--no-vm-combo') {
@@ -319,6 +328,10 @@ function obf_help(): string
       --shell-shield-intensity= 逐层壳自保护强度 1-3（默认随等级：low=1/mid,high=2/max,ultra=3；
                        仅控制语义变换激进度，变量重命名始终开启）
       --no-shell-shield  关闭逐层壳自保护（每层壳解码逻辑不再被外层混淆护住，破解更易）
+      --inline-each-layer  逐层内联：每个 shell 壳包裹后，把该层新生成的解码逻辑里的
+                       函数调用也内联为内置模块函数（每层独立前缀，不会重复定义）。
+                       默认只有最内层做一次模块链接；开启后每层壳都有内联，
+                       外层壳的解码调用同样从产物里消失。--no-inline-each-layer 关闭
       --php-version=   目标 PHP 版本（通用）：7.4|8.0|8.1|8.2|8.3|8.4|8.5（默认 8.1）
       --opcache       OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如
                        EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过）

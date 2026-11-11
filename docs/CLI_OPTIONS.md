@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v1.0.6（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v1.2.0（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
 **用法**
@@ -126,6 +126,15 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--php-version=` | 目标 PHP 版本（通用）：`7.4\|8.0\|8.1\|8.2\|8.3`（默认 `8.1`） |
 | `--opcache` | OPcache 辅助编译：产物写出后编译为 Zend 字节码（部分虚拟主机如 EP 虚拟主机默认启用 OPcache，可直接以字节码形态运行；环境不支持时自动跳过） |
 | `--junk-funcs=` | 诱饵函数数量（>0 生效，拟真命名，干扰逆向） |
+| `--inline-each-layer` / `--no-inline-each-layer` | **v1.2.0**：逐层内联。每个 shell 壳（含多层 EVAL 的**每个子层**）包裹后各做一次模块链接，每层分配独立的 `__ml<层序号><salt>_` 前缀，避免跨层函数重定义；指纹 / 明文锚点敏感层（VM、反调试、反篡改等）自动跳过。分层 JSON 顶层可写 `"inline_each_layer": true`。默认关 |
+| 分层层 `shell:anti_strip` | **v1.2.0 反剥离互锁壳**：参数 `depth`（2–6，默认 3）、`response`（`silent` 静默拒绝 / `exit` 终止）。K 层 EVAL 每层 `define` 一个 salt 派生锚点常量，最内层 eval 前校验完整锚点网格；抠出任意内层单独运行即拒绝执行真实源码。`mid` / `high` / `max` / `ultra` 预设已内置 |
+| 分层层 `shell:anti_tamper` 新参数 | **v1.2.0 v3**：`chain`（分段链式哈希 `X[i]=sha1(seg[i]‖prev‖i)`）、`multipoint`（P1 启动 + P2/P3 shutdown 多点复检）、`segments`、`shutdown`；守卫行新增**明文 blob 完整性闸**，堵住「改坏密文 → `gzinflate` 静默失败 → eval 内自校验不执行」的绕过 |
+| 分层层 `shell:anti_debug` 新参数 | **v1.2.0**：探针组新增 `func2`（`xdebug_call_*` / `phpdbg_*` 全家族）、`ini2`（`xdebug.*` / `opcache.jit_debug` 等 ini 全家族）；新增 `response`（`exit` 直接终止 / `silent` 判定与反制分离、shutdown 擦除输出缓冲）、`multipoint`（关机二次判定，覆盖运行中 attach）、`intensity` |
+
+> **高级 PHP/HTML 混写（v1.2.0）**：含 `<?=` 短标签、替代语法（`if(): endif;` 等）、
+> heredoc 内 HTML、`?><?php` 边界、PHP 嵌属性 / `<script>` / `<style>` 的模板页，
+> 会在管线入口由 `InlineHtml::normalize()` 等价改写为纯 PHP 后再进入各壳，
+> 六档预设输出逐字节一致。无需额外开关；纯 PHP 源码零改动。
 
 ## 授权绑定
 

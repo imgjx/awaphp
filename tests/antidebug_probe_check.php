@@ -52,7 +52,7 @@ echo "===== 反调试探针语法自检回归 =====\n\n";
 
 // ---------- A. 现有全部探针组语法有效 ----------
 echo "-- A. 全部探针组语法自检 --\n";
-$groups = ['ext', 'func', 'ini', 'env', 'sapi', 'proc', 'trace'];
+$groups = ['ext', 'func', 'ini', 'env', 'sapi', 'proc', 'trace', 'func2', 'ini2'];
 foreach ($groups as $g) {
     $out = $tmp . '/probe_' . $g . '.php';
     $built = run(sprintf(
@@ -161,8 +161,9 @@ $optEnd  = $optPos === false ? false : strpos($descSrc, ']', $optPos);
 $optsRaw = ($optPos !== false && $optEnd !== false) ? substr($descSrc, $optPos, $optEnd - $optPos) : '';
 
 $valid = array_map(fn($s) => trim($s, " \t'"), explode(',', $m1[1] ?? ''));
-// options 形如 ['ext' => '扩展加载', 'func' => '函数存在', ...]，取每项的 key
-preg_match_all("/'([a-z_]+)'\s*=>/", $optsRaw, $m3);
+// options 形如 ['ext' => '扩展加载', 'func2' => '...', ...]，取每项的 key。
+// v1.2.0 新增 func2/ini2 含数字，字符类必须含 0-9，否则会被误判为「未登记」。
+preg_match_all("/'([a-z0-9_]+)'\s*=>/", $optsRaw, $m3);
 $opts = $m3[1] ?? [];
 foreach ($valid as $g) {
     if ($g === '') {

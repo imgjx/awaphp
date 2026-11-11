@@ -30,7 +30,11 @@ final class EvalShell
     ) {
     }
 
-    public function wrap(string $code, int $layers): string
+    /**
+     * @param int $idxOffset 层方案序号偏移：外部逐层包裹（每层间插入内联）时用，
+     *        保证第 i 层拿到与一次性 wrap($code, $layers) 相同的派生方案。
+     */
+    public function wrap(string $code, int $layers, int $idxOffset = 0): string
     {
         $layers = max(1, $layers);
         $style = new NameStyle($this->salt);
@@ -52,7 +56,7 @@ final class EvalShell
             if ($inner === '') {
                 $inner = ' ';
             }
-            $cur = "<?php " . $this->buildLayer($inner, $i, $style, $propagate);
+            $cur = "<?php " . $this->buildLayer($inner, $i + $idxOffset, $style, $propagate);
         }
         $this->logger->debug("已应用 EVAL 加壳 v2（{$layers} 层" . ($propagate ? '，返回值透传' : '') . '）');
         return $cur;

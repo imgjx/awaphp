@@ -46,7 +46,32 @@ final class SymbolTable
 
     public function addFunction(string $name): void
     {
+        // PHP 内建 / 扩展函数没有「声明体」可重命名：一旦把它们登记进符号表，
+        // FunctionObfuscator 会把源码里 is_array(...) 之类的调用点改成派生的混淆名，
+        // FunctionCallEncoder 再间接化为 call_user_func('_x…', …)，但全项目根本不存在
+        // 该定义 → 运行期 TypeError。工程模式（跨文件符号表）首次混淆含内建函数调用的
+        // 原生 PHP 混写模板时会暴露。此处统一拦截，内建函数名永远保持原样。
+        if (self::isInternalFunction($name)) {
+            return;
+        }
         $this->funcs[$name] = true;
+    }
+
+    /** 是否为 PHP 内建 / 扩展函数（构建期判定；用户函数尚未加载，function_exists 为 false） */
+    private static function isInternalFunction(string $name): bool
+    {
+        $n = ltrim($name, '\\');
+        if ($n === '' || str_contains($n, '\\')) {
+            return false;
+        }
+        if (!function_exists($n)) {
+            return false;
+        }
+        try {
+            return (new \ReflectionFunction($n))->isInternal();
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     public function addClass(string $name): void

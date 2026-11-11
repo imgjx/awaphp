@@ -1,5 +1,103 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.0 — 正式版：逐层内联 / 反剥离互锁 / 反篡改 v3 / 反调试加强 / 高级 PHP 混写
+
+> 主题：把「只保护最内层」的短板补成**每层都保护**，并让高强度档位能吃下真实框架的
+> 复杂 PHP/HTML 模板页。四条主线：① 逐层内联；② 反剥离 / 篡改 / 调试三线加强；
+> ③ 高级 PHP 混写规范化；④ TP8 极复杂混写页面端到端验证。同时修掉一个
+> 「ultra 档 + 特定 salt 直接 fatal」的既有缺陷。本版为**正式 release**（非预发布）。
+
+### 新增 / 增强
+
+- **逐层内联（`inline_each_layer` / `--inline-each-layer`）**
+  - 旧行为：`shell:module_link` 只在最内层源码阶段执行一次，多层 EVAL / GZ 壳的
+    每一层解码逻辑仍以 `base64_decode()` / `gzinflate()` / `str_repeat()` 明文落地；
+    VM 档则依赖 VM 内部的字节码级 module-link。脱掉最内层即可拿到干净解码器。
+  - 新行为：每个 shell 层（含多层 EVAL 的**每个子层**）包裹后各做一次模块链接，
+    为每层分配 salt 派生的唯一 `__ml<seq><hex>_` 前缀，按实际模块 `target` 精确改名、
+    模块辅助函数声明统一加前缀，避免跨层 `Cannot redeclare function`。
+  - `INLINE_SKIP_LAYERS` 跳过指纹/明文锚点敏感层（VM、anti_debug/anti_hook/
+    anti_strip/structpoison/anti_tamper/license/honeypot/newline_poison），
+    防止内联改写破坏构建期哈希与 VM 编译器解析。
+  - 分层 JSON 顶层 `inline_each_layer:true`、`--inline-each-layer` /
+    `--no-inline-each-layer` CLI 开关、legacy 与分层两条管线均已接通。
+
+- **反剥离互锁壳（`shell:anti_strip`）**
+  - K 层（2–6，默认 3）互锁 EVAL 链：每层解码前 `define` 一个 salt 派生锚点常量，
+    最内层 eval 之前校验**全部**锚点「已定义且值逐一匹配」；抠出任意内层单独运行
+    则缺外层锚点 → 静默拒绝（`response=silent`，默认）或直接终止（`exit`）。
+  - 预置同名假值也无法绕过（值比对，而非仅 `defined()`）。
+  - 载荷 `gzdeflate + 8 字节 salt 派生密钥 XOR + base64`，每层密钥独立；
+    用户源码含顶层 `return` 时所有层统一 `return @eval($d);`，`include` 返回值语义不变。
+  - 已接入 `LayerRegistry` / `LayerDescriptor` / 预设（mid=2 层、high/max=3、ultra=4）。
+
+- **反篡改 v3（分段哈希链 + 多点触发 + 明文完整性闸）**
+  - salt 派生不等长分段边界；链式哈希 `X[i] = sha1(seg[i] ‖ (i? X[i-1] : IV) ‖ i)`；
+    链整体指纹 `CH = sha1(拼接所有 X)`；P1 启动守卫 / P2 shutdown 主体链复检 /
+    P3 shutdown 守卫行与尾区复检。新增 `chain`、`multipoint` 参数并登记到
+    `LayerDescriptor`，预设全部显式开启。
+  - 修复 v2 盲区：改坏密文 blob 后 `gzinflate` 静默失败、`@eval` 内的自校验根本
+    不执行。守卫行新增**明文 blob 完整性闸** `sha1($gb) !== '<gzHash>'`，
+    在 eval 之外立即反制。
+  - 守卫整体 `php -l` 语法自检；头部版权注释区（含生成时间）按设计排除哈希。
+
+- **反调试加强**
+  - 新增探针组 `func2`（xdebug_call_* / phpdbg_* 全家族）、`ini2`（xdebug.* /
+    opcache.jit_debug 等 ini 全家族），并登记进 `LayerDescriptor` options。
+  - 新增 `response=silent`：判定与反制分离——`@ob_start()` + `$GLOBALS` 命中标记，
+    shutdown 阶段清空全部输出缓冲，避免守卫点单点 `exit` 被下断定位。
+  - 新增 `multipoint`：shutdown 二次判定，覆盖「运行中才 attach」的调试器。
+  - guard 整体 `isSyntaxValid()` 构建期自检；预设中高档位探针面与强度同步拉满。
+
+- **高级 PHP/HTML 混写支持（`src/Support/InlineHtml.php`）**
+  - 管线入口把 `T_INLINE_HTML` / `?>` / `<?=` / 替代语法**等价改写为纯 PHP**，
+    使 eval / gz / VM 壳、module_link、壳层自保护、控制流混淆只面对可安全处理的
+    token 流。覆盖文件开头 HTML、`<?=` 短标签、PHP 嵌属性 / `<script>` / `<style>`、
+    heredoc 内 HTML、`?><?php` 相邻边界、HTML 注释内嵌 PHP、`__halt_compiler()`
+    数据区、shebang、`declare/namespace` 序言提升。
+  - 替代语法 `if/elseif/else/endif`、`foreach/endforeach`、`for/endfor`、
+    `while/endwhile`、`switch/endswitch` 统一归一为花括号语法，避免
+    `ControlFlowObfuscator::transformIf()` 把 `:` 误当单语句主体。
+  - 保持 `?>` 吞换行语义与文件末尾逐字节输出一致；纯 PHP 源码零改动。
+
+- **TP8 极复杂混写页面与一键构建补齐**
+  - `tests/tptest.zip` 新增 `tp8/view/shop_dashboard.php`（约 200 行，覆盖上述
+    全部混写形态）、`app/controller/Dashboard.php`（经 `$GLOBALS['__awa_dashboard']`
+    注入业务数据）、`route/app.php` 的 `/shop/dashboard` 路由与基线端点。
+  - `other/thinkphp8-build.php` 构建成功后自动补齐所有缺失的**非 `.php` 资源**
+    （`.env`、`.tpl`、静态资源、runtime DB 等），修复此前混淆版缺资源导致 500。
+
+### 修复
+
+1. **拟真函数名撞 PHP 内建函数（ultra 档 + 特定 salt 直接 fatal）**
+   - `NameStyle::funcName()` 的词池能拼出 `openLog` / `readFile` / `readDir` /
+     `hash_file` / `parse_str` / `filter_list` / `parse_url` / `closeLog` / `closeDir`，
+     而 **PHP 函数名大小写不敏感**，这些名字与内建函数同名。实测 salt=`ihilultra`
+     的 `ultra` 档产物抛 `ArgumentCountError: openlog() expects exactly 3 arguments`。
+   - 修复：`funcName()` 生成后避开所有当前已注册函数名，命中则换确定性变体重试，
+     兜底加前缀 + 数字后缀；同 salt 仍完全可复现。修复后 4 组 salt × 8000 标签
+     扫描撞名数 0。
+2. **工程模式误把 PHP 内建函数登记进跨文件符号表**（`SymbolTable::addFunction()`），
+   导致调用点被改成 `call_user_func('_xxx')` 却无定义 —— 增加 `isInternalFunction()`
+   过滤，manifest 用户函数数 44 → 14，TP8 混淆版恢复正常。
+3. `tests/antidebug_probe_check.php` 的 options 正则 `[a-z_]+` 不匹配含数字的新组名
+   `func2` / `ini2`，改为 `[a-z0-9_]+`，并把两个新组纳入语法自检覆盖。
+4. 修掉 `//` 行注释里含 `?>` 导致规范化器 / 主管线自身被词法器切成
+   `T_INLINE_HTML` 的源码级语法坑。
+
+### 验证
+
+- 新增 6 个专项回归：`tests/v120_inline_each_layer.php`（39 项）、
+  `v120_anti_strip.php`（33 项）、`v120_anti_tamper_v3.php`（48 项）、
+  `v120_anti_debug.php`（70 项）、`v120_inline_html.php`（67 项）、
+  `v120_tp8_dashboard.php`（34 项），合计 **291 项全通过**。
+- `tests/run_tests.php` 新增 S6 段 10 个端到端用例；全套 `tests/*.php` 共 57 个文件
+  0 失败。
+- 压测：主矩阵 6 夹具 × 6 档 × 3 salt = **108/108**，逐层内联矩阵
+  3 夹具 × 3 档 × 2 salt = **18/18**，合计 126 组合逐字节 MATCH / 0 警告。
+- TP8 端到端（PHP 8.3，原版 8090 / 混淆版 8091，隔离 DB）：**9/9 端点 MATCH**，
+  含 `/shop/dashboard` 复杂混写页 4087 B 逐字节一致，两端 DB 最终 md5 一致。
+
 ## v1.2.0-dev — 动态 ISA 逐构建生成；找漏洞专项（4 个产物正确性缺陷）
 
 > 主题：两件事。① **ISA 不再是一张静态表**——参数化 opcode 的逻辑编号、族内

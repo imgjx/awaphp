@@ -155,6 +155,9 @@ final class Config
         // 逐层壳自保护：每层壳解码逻辑再被外层混淆护住；强度 1-3 控制语义变换激进度
         $this->data['shell_shield']          = $b($this->data['shell_shield'] ?? true) ?? true;
         $this->data['shell_shield_intensity'] = max(1, min(3, $i($this->data['shell_shield_intensity'] ?? 2)));
+        // 逐层内联：每个 shell 壳包裹后都对新增的解码逻辑做一次模块链接（每层独立
+        // 前缀避免函数重定义）。默认关，--inline-each-layer 开启；高强度预设默认开。
+        $this->data['inline_each_layer']     = $b($this->data['inline_each_layer'] ?? false) ?? false;
         // Confrontation-LLM：反 LLM 静态分析（误导性注释 + 生僻 CJK 散布）。默认关。
         // 互斥注释：成对投放互相矛盾的注释（死在 vs 活路径/归属/版本/修复状态/覆盖率…），
         // 落在每层壳的内部（密文载荷里），迫使静态分析逐条验证、显著抬高成本。默认开。

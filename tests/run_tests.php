@@ -79,6 +79,19 @@ $cases = [
     ['S5 内建函数命名参数 / high 档',   'named_args.php', '--level=high --salt=na1', true],
     ['S5 内建函数命名参数 / ultra 档',  'named_args.php', '--level=ultra --salt=na2', true],
     ['S5 动态 ISA 跨 salt / max 档',    'complex_app.php', '--level=max --salt=isaDyn', true],
+
+    // ===== v1.2.0 正式版：逐层内联 / 高级混写 / 反剥离 / 反篡改 / 反调试 =====
+    // 专项断言见 tests/v120_*.php；此处是主套件的端到端冒烟兜底。
+    ['S6 逐层内联 / legacy EVAL 多层',  'demo.php',           '--inline-each-layer --eval --eval-layers=3 --salt=il1', true],
+    ['S6 逐层内联 / high 预设',         'demo.php',           '--level=high --inline-each-layer --salt=il2', true],
+    ['S6 逐层内联 / ultra 预设',        'demo.php',           '--level=ultra --inline-each-layer --salt=il3', true],
+    ['S6 高级混写 / min',               'mixed_advanced.php', '--level=min --salt=mx1', true],
+    ['S6 高级混写 / high',              'mixed_advanced.php', '--level=high --salt=mx2', true],
+    ['S6 高级混写 / ultra',             'mixed_advanced.php', '--level=ultra --salt=mx3', true],
+    ['S6 混写边界 / mid',               'mixed_edge.php',     '--level=mid --salt=mx4', true],
+    ['S6 混写边界 / ultra+逐层内联',    'mixed_edge.php',     '--level=ultra --inline-each-layer --salt=mx5', true],
+    ['S6 反剥离互锁 / high 预设',       'demo.php',           '--level=high --salt=as1', true],
+    ['S6 反篡改v3+反调试 / max 预设',   'demo.php',           '--level=max --salt=at1', true],
 ];
 
 echo "===== PHP 混淆器 测试套件 =====\n";

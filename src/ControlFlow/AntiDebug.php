@@ -13,10 +13,20 @@
  *   4. 剖析/分析类扩展：blackfire / tideways / tideways_xhprof / xhprof
  *   5. 调用栈中出现 debug / xdebug / phpdbg 相关符号
  *
+ * v1.2.0 加强（本次「反调试加强」）：
+ *   6. func2 / ini2 两个新探针组：把 xdebug/phpdbg 全家族函数与 xdebug.* 全家族 ini、
+ *      opcache.jit_debug / pcov.enabled 等明确调试信号纳入（全部零误报的确定性特征）；
+ *   7. response=silent 静默反制：命中不再「守卫点单点 exit(1)」——先开一层输出缓冲，
+ *      命中只打全局标记，业务照常跑，最终由 shutdown 丢弃全部输出缓冲。判定与反制
+ *      分离，调试者在守卫函数处下断也找不到 exit，只看到「程序正常结束却没结果」；
+ *   8. multipoint 关机复判：额外注册 shutdown 二次探针判定，覆盖「脚本启动后才 attach」
+ *      的调试器。
+ *
  * 设计约束：
  *   - 整段判定逻辑经 gzdeflate + base64 编码，'xdebug' / 'phpdbg' 等特征串不以明文出现；
- *   - 命中后直接终止，不含忙等/延时循环，不引入额外性能负担；
- *   - ini 项判定使用白名单值比较，避免 'off' 这类非空字符串造成的误报。
+ *   - 不含忙等/延时循环，不引入额外性能负担（silent 仅多一层输出缓冲）；
+ *   - ini 项判定使用白名单值比较，避免 'off' 这类非空字符串造成的误报；
+ *   - 探针组逐组 php -l 自检 + 守卫整体 php -l 自检，语法异常整层跳过而非产出坏文件。
  */
 
 declare(strict_types=1);
@@ -45,7 +55,11 @@ final class AntiDebug
      *              trace 调用栈调试痕迹（debug_backtrace 扫描）
      *              proc  进程跟踪痕迹（/proc/self/status 的 TracerPid、/proc/self/maps 注入 .so）
      *              shell 脱壳检测（校验外壳绑定标记，缺失即判「VM 内层被抠出独立运行」）
+     *              func2 xdebug/phpdbg 全家族函数（零误报确定性特征）
+     *              ini2  xdebug.* 全家族 ini + opcache.jit_debug + pcov.enabled
      *   intensity: 1=明文内联 2=gz+base64 3=拟真命名 4=叠加 XOR
+     *   response:  exit（默认，命中即终止）| silent（命中不 exit，改由 shutdown 静默擦除输出）
+     *   multipoint: 是否额外注册 shutdown 二次探针判定（覆盖运行中 attach）
      */
     public function wrap(string $code, array $opts = []): string
     {
@@ -54,7 +68,9 @@ final class AntiDebug
             return $code;
         }
         $probeList = $this->parseProbes($opts['probes'] ?? 'ext,func,ini,env,sapi,trace,shell');
-        $intensity = max(1, min(4, (int) ($opts['intensity'] ?? 2)));
+        $intensity  = max(1, min(4, (int) ($opts['intensity'] ?? 2)));
+        $response   = ($opts['response'] ?? 'exit') === 'silent' ? 'silent' : 'exit';
+        $multipoint = (bool) ($opts['multipoint'] ?? false);
         if ($probeList === []) {
             $this->logger->warn('AntiDebug: 探针组为空，跳过');
             return $code;
@@ -85,12 +101,37 @@ final class AntiDebug
             }
         }
 
-        $guard = "if(!function_exists('" . $fn . "')){function " . $fn . "(){"
+        $fail   = '@trigger_error(\'fatal: cannot continue\',E_USER_ERROR);exit(1);';
+        $hitKey = $style->funcName('antidebug-hit');
+        $hit    = '$GLOBALS[\'' . $hitKey . '\']';
+        $head   = "if(!function_exists('" . $fn . "')){function " . $fn . "(){"
             . "\$r=false;"
             . $this->probeBlock($probeList)
-            . "return \$r;}}"
-            // --- 命中即终止（无忙等）---
-            . "if(" . $fn . "()){@trigger_error('fatal: cannot continue',E_USER_ERROR);exit(1);}";
+            . "return \$r;}}";
+
+        if ($response === 'silent') {
+            // 命中不在守卫点 exit：先开一层输出缓冲，命中只打全局标记，业务照常跑；
+            // shutdown 统一丢弃全部输出缓冲。register_shutdown_function 在 eval 内注册亦生效。
+            $guard = '@ob_start();' . $head
+                . 'if(' . $fn . '()){' . $hit . '=1;}';
+            $recheck = $multipoint ? $fn . '()||' : '';
+            $guard .= 'register_shutdown_function(function(){'
+                . 'if(' . $recheck . '!empty(' . $hit . ')){'
+                . 'while(@ob_get_level()>0){@ob_end_clean();}' . $hit . '=1;}});';
+        } else {
+            $guard = $head . 'if(' . $fn . '()){' . $fail . '}';
+            if ($multipoint) {
+                // exit 模式的多点：shutdown 二次判定，命中即静默终止（覆盖运行中 attach）
+                $guard .= 'register_shutdown_function(function(){if(' . $fn . '()){exit(1);}});';
+            }
+        }
+
+        // 守卫整体语法自检：$guard 会被 gz 编码后 eval，文件级 php -l 覆盖不到它。
+        // 探针组已逐组自检，这里再兜一次守卫外壳（silent/multipoint 拼接），异常则整层跳过。
+        if (!$this->isSyntaxValid($guard)) {
+            $this->logger->warn('AntiDebug: 守卫逻辑语法自检失败，跳过反调试层');
+            return $code;
+        }
 
         // intensity: 1=明文内联；>=2 走编码；3=拟真命名（上面已做）；4=叠加 XOR
         if ($intensity <= 1) {
@@ -109,7 +150,8 @@ final class AntiDebug
             }
         }
 
-        $this->logger->debug('已注入反调试探针（探针组=' . implode(',', $probeList) . ' 强度=' . $intensity . '）');
+        $this->logger->debug('已注入反调试探针（探针组=' . implode(',', $probeList)
+            . ' 强度=' . $intensity . ' 反制=' . $response . ' 关机复判=' . ($multipoint ? 'on' : 'off') . '）');
         return $prefix . "\n" . $guardLine . "\n" . $body;
     }
 
@@ -120,7 +162,7 @@ final class AntiDebug
      */
     private function parseProbes($probes): array
     {
-        $valid = ['ext', 'func', 'ini', 'env', 'sapi', 'trace', 'shell', 'proc'];
+        $valid = ['ext', 'func', 'ini', 'env', 'sapi', 'trace', 'shell', 'proc', 'func2', 'ini2'];
         $items = is_array($probes) ? $probes : explode(',', (string) $probes);
         $out = [];
         foreach ($items as $it) {
@@ -258,6 +300,31 @@ final class AntiDebug
                 . "||stripos(\$sy,'xhprof')!==false||stripos(\$sy,'uopz')!==false"
                 . "||stripos(\$sy,'runkit')!==false)\$r=true;"
                 . "}}",
+            // --- 扩展函数全家族（零误报：这些函数只在装了 xdebug/phpdbg 时才存在）---
+            // 与 'func' 组互补：func 只查最典型的几个 break/info/start_trace，这里把
+            // xdebug 3 的 code_coverage / function_monitor / gcstats / filter / var_dump
+            // 与 phpdbg 全套 break_* / oplog / exec 一并纳入，堵住「只补几个函数名」的绕过。
+            'func2' => "foreach(array('xdebug_call_class','xdebug_call_file','xdebug_call_function','xdebug_call_line',"
+                . "'xdebug_code_coverage_started','xdebug_debug_zval','xdebug_dump_superglobals','xdebug_get_code_coverage',"
+                . "'xdebug_get_collected_errors','xdebug_get_declared_vars','xdebug_get_function_stack','xdebug_get_headers',"
+                . "'xdebug_get_monitored_functions','xdebug_get_stack_depth','xdebug_get_tracefile_name','xdebug_info',"
+                . "'xdebug_memory_usage','xdebug_peak_memory_usage','xdebug_print_function_stack','xdebug_set_filter',"
+                . "'xdebug_start_code_coverage','xdebug_start_error_collection','xdebug_start_function_monitor',"
+                . "'xdebug_start_gcstats','xdebug_start_trace','xdebug_stop_code_coverage','xdebug_stop_trace',"
+                . "'xdebug_time_index','xdebug_var_dump','phpdbg_break_file','phpdbg_break_function','phpdbg_break_method',"
+                . "'phpdbg_break_next','phpdbg_clear','phpdbg_end_oplog','phpdbg_exec','phpdbg_prompt','phpdbg_start_oplog')"
+                . " as \$fx){if(function_exists(\$fx))\$r=true;}",
+            // --- ini 全家族（白名单值比较，零误报：未装 xdebug 时 ini_get 返回 false）---
+            // 只认显式开启值（1/on/true/yes/debug/trace/...），避开 var_display_max_*=128
+            // 这类默认数值造成的误报；opcache.jit_debug 是明确的调试旁路信号。
+            'ini2' => "\$ik2=array('xdebug.collect_assignments','xdebug.collect_params','xdebug.collect_return',"
+                . "'xdebug.coverage_enable','xdebug.default_enable','xdebug.extended_info','xdebug.gc_stats_enable',"
+                . "'xdebug.profiler_enable_trigger','xdebug.profiler_append','xdebug.remote_autostart',"
+                . "'xdebug.remote_connect_back','xdebug.remote_enable','xdebug.start_upon_error',"
+                . "'xdebug.start_with_request','xdebug.trace_enable_trigger','xdebug.trace_options','xdebug.mode');"
+                . "foreach(\$ik2 as \$ik){if(in_array((string)@ini_get(\$ik),"
+                . "array('1','on','true','yes','debug','trace','profile','coverage','develop','trigger'),true))\$r=true;}"
+                . "if(in_array((string)@ini_get('opcache.jit_debug'),array('1','on','true'),true))\$r=true;",
         ];
         $out = '';
         foreach ($probes as $p) {

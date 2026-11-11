@@ -34,6 +34,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/ShellBinding.php';
+require_once __DIR__ . '/Support/InlineHtml.php';
 
 final class Obfuscator
 {
@@ -47,6 +48,35 @@ final class Obfuscator
      * 标记本身不含工具指纹，删掉它也不会改变产物语义（只是退化为"重新编译"）。
      */
     private const VM_ARTIFACT_MARK = '/*@vmb:2f9c*/';
+
+    /**
+     * 逐层内联必须跳过的「指纹 / 明文锚点敏感层」。
+     *
+     * structpoison / anti_tamper 在应用时就把文件（或受护区段）的哈希写进自己的
+     * 守卫里；license 与 honeypot 依赖固定明文结构；newline_poison 的换行配额也
+     * 已按层算好。若在这些层之后再改写函数名，运行期自校验必然失配
+     * （AntiTamper 报 "fatal: cannot continue"、StructPoison 解出乱码）。
+     * 这些层都在编码壳之外/末尾，跳过内联不影响「每个编码壳都有内联」的目标。
+     *
+     * shell:vm 同样跳过：VM 产物是解释器代码，其内建调用（call_user_func 等）对
+     * 名称/回调语义敏感，改用模块函数会触发 TypeError；且 VM 内部已有自己的
+     * 字节码级模块链接（ModuleLinker 内联进 Program），不缺这层原生内联。
+     */
+    private const INLINE_SKIP_LAYERS = [
+        'shell:vm'             => true,
+        // VM 层之前的最内层守卫：这里内联出来的自定义函数名会被 VM 编译器当成
+        // CALL_NATIVE，运行期 call_user_func 找不到（low/mid 无 VM 故不暴露）。
+        'shell:anti_debug'     => true,
+        'shell:anti_hook'      => true,
+        // 反剥离互锁壳：define/constant/defined 的锚点名是字符串常量，内联会改写解码器里的
+        // base64_decode/gzinflate 调用并追加函数定义，干扰「锚点就位」的精确判定；跳过内联。
+        'shell:anti_strip'     => true,
+        'shell:structpoison'   => true,
+        'shell:anti_tamper'    => true,
+        'shell:license'        => true,
+        'shell:honeypot'       => true,
+        'shell:newline_poison' => true,
+    ];
 
     public function __construct(
         private Config $config,
@@ -67,6 +97,9 @@ final class Obfuscator
     }
 
     private ?CodeInjector $inj = null;
+
+    /** 逐层内联的层序号（同 salt 可复现的独立前缀来源） */
+    private int $layerLinkSeq = 0;
 
     /**
      * 登记当前被混淆的主文件路径（供 VM include 解析用）：
@@ -90,6 +123,12 @@ final class Obfuscator
      */
     public function run(string $code): string
     {
+        // 高级混写：PHP/HTML 交错段先规范化为等价纯 PHP（HTML 段 -> echo 字面量）。
+        // 否则 VM / EVAL 壳把整段载荷塞进 eval() 时 HTML 会被当 PHP 解析而 fatal，
+        // shell:module_link 追加的内联函数定义也会落进闭合标签之后的 HTML 里破坏语法；
+        // 末尾 HTML 的换行还会被 runLayered 的 rtrim 吃掉造成输出差一字节。
+        // 纯 PHP 源码（无 T_INLINE_HTML / T_CLOSE_TAG / T_OPEN_TAG_WITH_ECHO）原样返回。
+        $code = InlineHtml::normalize($code);
         if ($this->config->hasLayers()) {
             return $this->runLayered($code);
         }
@@ -808,6 +847,13 @@ final class Obfuscator
                 } else {
                     $code = $this->applyShellLayer($name, $params, $code);
                 }
+                // 逐层内联：把本层壳新生成的解码逻辑里的函数调用也内联成模块函数。
+                // shell:module_link 本身就是内联层，跳过避免同层做两遍。
+                if ($this->config->get('inline_each_layer')
+                    && $name !== 'shell:module_link'
+                    && !isset(self::INLINE_SKIP_LAYERS[$name])) {
+                    $code = $this->inlineLayer($code);
+                }
                 // 序言归一：前序壳层若把 declare(strict_types=1)/namespace 推离首位（守卫代码
                 // 插到声明之前），在此把序言语句提到 <?php 之后最前，避免
                 // "strict_types declaration must be the very first statement"。
@@ -984,7 +1030,18 @@ final class Obfuscator
             case 'module_link':
                 return $this->shellModuleLink($params, $code);
             case 'eval':
-                return (new EvalShell($this->salt, $this->logger))->wrap($code, (int) ($params['layers'] ?? 3));
+                $evalLayers = max(1, (int) ($params['layers'] ?? 3));
+                $es = new EvalShell($this->salt, $this->logger);
+                if (!$this->config->get('inline_each_layer')) {
+                    return $es->wrap($code, $evalLayers);
+                }
+                // 逐层内联：多层 EVAL 的【每一个子层】包裹后都单独做一次模块链接，
+                // 让每层壳的解码调用都被内联，而不是只有最内层有内联函数。
+                for ($ei = 0; $ei < $evalLayers; $ei++) {
+                    $code = $es->wrap($code, 1, $ei);
+                    $code = $this->inlineLayer($code);
+                }
+                return $code;
             case 'gz':
                 return (new GzEncoder($this->logger, $this->salt))->wrap($code, [
                     'decoy'  => (bool) ($params['decoy'] ?? true),
@@ -1012,17 +1069,29 @@ final class Obfuscator
                     $list = array_values(array_filter($list, fn ($p) => $p !== 'shell'));
                 }
                 return (new AntiDebug($this->salt, $this->logger))->wrap($code, [
-                    'probes'    => $list,
-                    'intensity' => (int) ($params['intensity'] ?? 2),
+                    'probes'     => $list,
+                    'intensity'  => (int) ($params['intensity'] ?? 2),
+                    'response'   => (string) ($params['response'] ?? 'exit'),
+                    'multipoint' => (bool) ($params['multipoint'] ?? false),
                 ]);
             case 'anti_hook':
                 return (new AntiHookEval($this->salt, $this->logger))->wrap($code, [
                     'strict' => (bool) ($params['strict'] ?? true),
                 ])['code'];
+            case 'anti_strip':
+                if (!class_exists(AntiStrip::class, false)) {
+                    require_once __DIR__ . '/ControlFlow/AntiStrip.php';
+                }
+                return (new AntiStrip($this->salt, $this->logger))->wrap($code, [
+                    'depth'    => (int) ($params['depth'] ?? 3),
+                    'response' => (string) ($params['response'] ?? 'silent'),
+                ]);
             case 'anti_tamper':
                 return (new AntiTamper($this->salt, $this->logger))->wrap($code, [
-                    'segments' => (int) ($params['segments'] ?? 4),
-                    'shutdown' => (bool) ($params['shutdown'] ?? true),
+                    'segments'   => (int) ($params['segments'] ?? 4),
+                    'shutdown'   => (bool) ($params['shutdown'] ?? true),
+                    'chain'      => (bool) ($params['chain'] ?? true),
+                    'multipoint' => (bool) ($params['multipoint'] ?? true),
                 ], $this->shieldOpts())['code'];
             case 'license':
                 $dom = (string) ($params['domain'] ?? '');
@@ -1102,7 +1171,7 @@ final class Obfuscator
      *
      * 开关：dir 留空时用 effectiveModuleDir()（默认内置模块目录，受 --no-vm-link-modules 关闭）。
      */
-    private function shellModuleLink(array $params, string $code): string
+    private function shellModuleLink(array $params, string $code, ?string $tag = null): string
     {
         $moduleDir = $this->resolveModuleDir(
             $this->effectiveModuleDir((string) ($params['dir'] ?? ''))
@@ -1122,8 +1191,14 @@ final class Obfuscator
             return $code;
         }
 
+        // 逐层内联（inline_each_layer）：每层壳新增的解码逻辑也要把函数调用内联成
+        // 模块函数。必须给每层分配独立前缀，否则同一个 __mod_xxx 被多层重复定义会
+        // 运行期 "Cannot redeclare function" 致命。前缀由层序号 + salt 派生，同 salt 可复现。
+        $prefix = $tag === null ? '' : '__ml' . $tag . '_';
+
         // 传递式收集所有需内联的模块原生源码（含模块间静态 include 递归扁平化）
         $inline = [];   // specName => 原生源码
+        $targets = [];  // 模块内真实函数名 => 带本层前缀的名字（含非 __mod_ 前缀的 target）
         $done   = [];   // specName => true
         $queue  = array_values($seed);
         while ($queue !== []) {
@@ -1133,6 +1208,10 @@ final class Obfuscator
                 continue;
             }
             $done[$specName] = true;
+            $tname = (string) ($spec['target'] ?? '');
+            if ($tname !== '' && $prefix !== '') {
+                $targets[$tname] = $prefix . $tname;
+            }
             $src = $linker->inlineSource($spec);
             if ($src !== null && $src !== '') {
                 $inline[$specName] = $src;
@@ -1152,22 +1231,35 @@ final class Obfuscator
         $rename = [];
         foreach ($seed as $mname => $spec) {
             $target = (string) $spec['target'] !== '' ? (string) $spec['target'] : $mname;
-            $rename[$mname] = $target;
+            $rename[$mname] = $prefix . $target;
         }
 
         // 1) 改写用户源码调用点（token 级，仅函数调用位）
         $code = $this->rewriteCallTargets($code, $rename);
 
         // 2) 拼接模块源码，并改写其中对其他模块的调用点（传递式场景）
+        // inlineSource() 返回的是【去掉 <?php 的纯片段】，直接 tokenize 会被整段当成
+        // T_INLINE_HTML、所有 token 级改写静默失效 → 先补开标签，处理完再剥掉。
         $inlineSrc = implode("\n", $inline);
+        $wrapped = '<?php ' . $inlineSrc;
         $inlineRename = [];
         foreach ($linker->matchSource($inlineSrc) as $mname => $spec) {
             $target = (string) $spec['target'] !== '' ? (string) $spec['target'] : $mname;
-            $inlineRename[$mname] = $target;
+            $inlineRename[$mname] = $prefix . $target;
+            if ($target !== '' && $prefix !== '') {
+                $targets[$target] = $prefix . $target;
+            }
         }
         if ($inlineRename !== []) {
-            $inlineSrc = $this->rewriteCallTargets($inlineSrc, $inlineRename);
+            $wrapped = $this->rewriteCallTargets($wrapped, $inlineRename);
         }
+        // 模块源码里的函数【声明名】与模块间互相调用名统一加本层前缀。
+        // rewriteCallTargets 会跳过 function 声明位，故这里按实际 target 映射精确改名；
+        // 已带前缀的调用点不在映射里，不会被二次加前缀。
+        if ($prefix !== '') {
+            $wrapped = $this->prefixModuleNames($wrapped, $targets, $prefix);
+        }
+        $inlineSrc = (string) preg_replace('/^<\?php[ \t\r\n]*/', '', $wrapped, 1);
 
         foreach ($linker->hits() as $fn => $sn) {
             $this->logger->info("module-link: {$fn} -> 模块[{$sn}]（原生内联）");
@@ -1215,6 +1307,50 @@ final class Obfuscator
             $out[] = $t;
         }
         return $this->emit($out);
+    }
+
+    /**
+     * 给一段模块源码里所有 `__mod_` 开头的 T_STRING（函数声明名 / 互相调用名）
+     * 加上本层前缀。只按 T_STRING 精确改写，不动字符串字面量与注释。
+     */
+    private function prefixModuleNames(string $code, array $targets, string $prefix): string
+    {
+        $toks = Parser::tokenize($code);
+        // 模块源码里除 target 主函数外还有辅助函数（如 base64_dec.php 的 __b64_i）。
+        // 它们不在 target 映射里，多层内联时会重复定义 → 把所有【函数声明名】一并纳入。
+        $n = count($toks);
+        for ($i = 0; $i < $n; $i++) {
+            $t = $toks[$i];
+            if (!is_array($t) || $t[0] !== T_FUNCTION) {
+                continue;
+            }
+            for ($j = $i + 1; $j < $n; $j++) {
+                $u = $toks[$j];
+                if (is_array($u) && in_array($u[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                if ($u === '&') {
+                    continue;   // 引用返回
+                }
+                if (is_array($u) && $u[0] === T_STRING) {
+                    $targets[$u[1]] = $prefix . $u[1];
+                }
+                break;
+            }
+        }
+        foreach ($toks as $i => $t) {
+            if (is_array($t) && $t[0] === T_STRING && isset($targets[$t[1]])) {
+                $toks[$i] = [T_STRING, $targets[$t[1]], $t[2] ?? 0];
+            }
+        }
+        return $this->emit($toks);
+    }
+
+    /** 逐层内联入口：为当前层生成唯一前缀并链接一次模块。 */
+    private function inlineLayer(string $code): string
+    {
+        $tag = dechex($this->layerLinkSeq++) . substr($this->salt->deriveHex('layer-link', 4), 0, 4);
+        return $this->shellModuleLink([], $code, $tag);
     }
 
     /** @param array<int,mixed> $toks @return mixed */
@@ -1494,6 +1630,11 @@ final class Obfuscator
     {
         try {
             $next = $fn($code);
+            // 旧管线同样支持逐层内联（每个壳包裹后链接一次）
+            if ($this->config->get('inline_each_layer') && $layerKey !== 'module_link'
+                && !isset(self::INLINE_SKIP_LAYERS['shell:' . $layerKey])) {
+                $next = $this->inlineLayer($next);
+            }
         } catch (Throwable $e) {
             $this->logger->warn("{$label}应用失败，回滚：" . $e->getMessage());
             return $code;

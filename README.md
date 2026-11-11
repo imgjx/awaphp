@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.2.0--dev-orange)
+![Version](https://img.shields.io/badge/version-1.2.0-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,7 +40,19 @@
 
 ## 特性
 
-> **v1.2.0-dev 更新要点**：① **ISA 逐构建动态生成**——参数化 opcode 编号、
+> **v1.2.0 正式版更新要点**：① **逐层内联**（`--inline-each-layer`）——每个编码壳的
+> 解码逻辑都做一次模块链接、每层独立前缀，不再只有最内层有内联函数；
+> ② **反剥离互锁壳** `shell:anti_strip`（K 层锚点网格，抠出任意内层单独运行即静默拒绝）、
+> **反篡改 v3**（分段链式哈希 + 明文 blob 完整性闸 + 多点触发）、**反调试加强**
+> （`func2` / `ini2` 探针组 + `silent` 静默擦除输出 + `multipoint` 关机复判）；
+> ③ **高级 PHP/HTML 混写**——`InlineHtml::normalize()` 把 `<?=` 短标签、替代语法
+> （`if: endif;` 等）、heredoc 内 HTML、`?><?php` 相邻边界等价改写为纯 PHP，
+> 六档对复杂模板页运行输出逐字节一致；④ TP8 测试项目新增极复杂混写页面
+> `/shop/dashboard`，端到端 9/9 端点 MATCH。另修掉 ultra 档特定 salt 下拟真函数名
+> 与 PHP 内建函数撞名导致的运行致命。新增 6 个专项回归（291 项）与 126 组合压测，
+> 详见 `CHANGELOG.md`。
+>
+> **v1.2.0-dev（预发布）更新要点**：① **ISA 逐构建动态生成**——参数化 opcode 编号、
 > 族内 sub-id、case 排列全部按 salt 派生，编译端与运行期共用同一计划，不再存在
 > 跨产物固定的 ISA 结构指纹；② **找漏洞专项**：基线压测揪出并修掉 4 个会让产物
 > 跑不起来 / 输出错误的真实缺陷（内建函数命名参数在 VM 档致命、八进制字面量被

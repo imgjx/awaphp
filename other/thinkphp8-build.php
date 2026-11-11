@@ -520,6 +520,47 @@ if ($code !== 0) {
 }
 
 // ============================================================
+// 5.5) 补齐非 PHP 资源（原样拷贝，不覆盖已有）
+// ============================================================
+// ProjectBuilder 只产出 .php 文件（白名单目录里的 .php 原样拷贝，其余混淆）。
+// 但真实应用还依赖一批非 PHP 资源：根目录 .env（数据库配置）、
+// vendor/**/*.tpl（ThinkPHP 异常页 / 调试页脚模板）、public 静态资源、runtime 数据库等。
+// 缺 .env → 连不上库整站 500；缺 think_exception.tpl → 异常渲染二次 fatal，
+// 把真正的错误掩盖成空响应。此处从源项目补齐，保证输出目录开箱即用。
+$extra = 0;
+$outReal = realpath($outDir) ?: $outDir;
+$srcIt  = new RecursiveIteratorIterator(
+    new RecursiveDirectoryIterator($project, FilesystemIterator::SKIP_DOTS)
+);
+foreach ($srcIt as $f) {
+    if (!$f->isFile() || str_ends_with($f->getFilename(), '.php')) {
+        continue;
+    }
+    $abs = $f->getPathname();
+    // 输出目录若恰好嵌在源项目内，跳过它自身，避免自我复制
+    if (str_starts_with(realpath(dirname($abs)) ?: '', $outReal)) {
+        continue;
+    }
+    $rel = substr($abs, strlen(rtrim($project, '/\\')) + 1);
+    if ($rel === '' || str_starts_with($rel, '.git' . DIRECTORY_SEPARATOR)) {
+        continue;
+    }
+    $dest = rtrim($outDir, '/\\') . DIRECTORY_SEPARATOR . $rel;
+    if (is_file($dest)) {
+        continue;
+    }
+    if (!is_dir(dirname($dest))) {
+        @mkdir(dirname($dest), 0755, true);
+    }
+    if (@copy($abs, $dest)) {
+        $extra++;
+    }
+}
+if ($extra > 0) {
+    echo "补齐非 PHP 资源: {$extra} 个（.env / .tpl / 静态资源等）\n";
+}
+
+// ============================================================
 // 6) 摘要
 // ============================================================
 $countFiles = 0;

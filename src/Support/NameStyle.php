@@ -136,8 +136,29 @@ final class NameStyle
         return '$' . $h . '_' . $m . '_' . $t;
     }
 
-    /** 拟真函数名：validate_handler / getCacheStore / build_query_table */
+    /**
+     * 拟真函数名：validate_handler / getCacheStore / build_query_table
+     *
+     * PHP 函数名【大小写不敏感】，而拟真词池能拼出 openLog / readFile / readDir /
+     * hash_file / parse_str / filter_list / parse_url / closeLog 等与内建函数同名的
+     * 标识符（v1.2.0 实测：ultra 档个别 salt 下生成 openLog 并被当作自定义函数调用，
+     * 声明未生效时调用落到内建 openlog()，直接抛 ArgumentCountError 终止）。
+     * 因此生成后必须避开所有当前已注册的函数名：命中则换确定性变体重试，同 salt
+     * 仍完全可复现；极端情况下用带前缀的兜底名彻底切断撞名可能。
+     */
     public function funcName(string $label): string
+    {
+        for ($i = 0; $i < 24; $i++) {
+            $name = $this->makeFuncName($i === 0 ? $label : $label . '|f' . $i);
+            if (!function_exists($name)) {
+                return $name;
+            }
+        }
+        return 'awa_' . $this->makeFuncName($label) . '_'
+            . $this->salt->deriveInt($label . '|fnsfx', 100, 999);
+    }
+
+    private function makeFuncName(string $label): string
     {
         $v = $this->pick(self::VERBS, $label . '|fv');
         $n = $this->pick(self::TAILS, $label . '|fn');

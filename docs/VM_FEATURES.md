@@ -1212,3 +1212,83 @@ embeds，遗漏 `funcParams` / `classParams` / `classes.props` / `classes.consts
 修复后压测（12 夹具 × 6 档 × 6 salt = 432 组合）0 异常；全套 14 个测试文件
 0 失败。专项回归见 `tests/vm_isa_dynamic.php`（35 项）与
 `tests/vm_native_named_args.php`（19 项）。
+
+
+## 11.25 v1.2.0 正式版：逐层内联、三线反制加强与高级混写
+
+### 11.25.1 逐层内联（补上「只有最内层被内联」的缺口）
+
+`shell:module_link` 原先只在最内层源码阶段执行一次：多层 EVAL / GZ 壳的每一层
+解码器仍以 `base64_decode()` / `gzinflate()` / `str_repeat()` 明文落地，脱掉最内层
+即可读到干净解码器；VM 档则靠 VM 内部的字节码级 module-link，表现同样是「最内层
+才有内联函数」。`inline_each_layer` 让每个 shell 层包裹后各链接一次：
+
+| 环节 | 做法 |
+| --- | --- |
+| 多层 EVAL | `applyShellLayer()` 在 `inline_each_layer` 下改为逐子层 `wrap($code, 1, $ei)` + `inlineLayer()`，而非一次性 `wrap($code, $layers)` |
+| 每层命名 | `inlineLayer()` 派生 `__ml<层序号><salt 4hex>_` 前缀；`prefixModuleNames()` 给模块源码内所有函数声明名加本层前缀，按实际 `target` 精确改名 |
+| 模块片段 | `inlineSource()` 返回无 `<?php` 的纯片段，先补开标签再 token 改写，避免整段被当成 `T_INLINE_HTML` |
+| 跳过规则 | `INLINE_SKIP_LAYERS` 排除 VM、anti_debug/anti_hook/anti_strip/structpoison/anti_tamper/license/honeypot/newline_poison——它们含指纹、明文锚点或内层守卫，改写会破坏构建期哈希与 VM 编译器解析 |
+
+因为每一层 wrap 都会把上一层产物整体编码进密文，产物明文里只见**最外层**那一次
+内联的前缀；梯度实验（EVAL 1/2/3/4/6 层）前缀序号 `0e212 / 1e212 / 2e212 /
+3e212 / 5e212` 严格递增，正是「每层都独立链接」的可观测证据。关闭开关时产物
+无任何内联函数（对照：开启后 6 个带前缀模块函数、19 KB vs 3 KB）。
+
+### 11.25.2 反剥离互锁：把「抠层」变成可判定的状态缺失
+
+`AntiStrip` 构造 K 层互锁 EVAL 链，每层解码前 `define` 一个 salt 派生锚点常量，
+最内层 eval 之前做「锚点网格」校验：全部 K 个常量必须已定义且值逐一匹配。
+正常层层解码时 K 层自外向内依次 define → 放行；抠出任意内层另存独立文件运行时，
+缺失的外层锚点永远不会被 define → `silent` 静默返回（无业务输出）/ `exit` 终止。
+预置同名假值同样被值比对拦下。守卫放在最内层 eval **之外**，不破坏
+`declare(strict_types=1)` 首语句约束；含顶层 `return` 的源码统一走
+`return @eval($d);` 逐层透传，保持 `include` 返回值语义。
+
+### 11.25.3 反篡改 v3 与反调试加强
+
+反篡改 v2 存在一个可绕过盲区：改坏密文 blob 后 `gzinflate()` 静默失败，
+`@eval()` 里的自校验根本没机会执行，程序仍能"正常"输出。v3 在守卫行 eval 之外
+加一道明文完整性闸 `sha1($gb) !== '<gzHash>'`；主体自校验升级为 salt 派生
+不等长分段 + 链式哈希 `X[i] = sha1(seg[i] ‖ prev ‖ i)` + 链整体指纹
+`CH = sha1(拼接所有 X)`，并由 P1 启动守卫 / P2 shutdown 主体链复检 /
+P3 shutdown 守卫行与尾区复检构成多点触发。
+
+反调试新增 `func2`（xdebug_call_* / phpdbg_* 全家族）与 `ini2`（xdebug.* /
+`opcache.jit_debug` 等）探针组；`response=silent` 把判定与反制分离
+（`@ob_start()` + `$GLOBALS` 命中标记 + shutdown 清空全部输出缓冲），
+`multipoint` 做 shutdown 二次判定以覆盖运行中 attach。两组参数均已登记进
+`LayerDescriptor`，分层档位不会静默丢弃。
+
+### 11.25.4 高级 PHP/HTML 混写与一个词法坑
+
+`InlineHtml::normalize()` 在管线入口把混写源码等价改写为纯 PHP，使所有后续层
+不再各自适配 HTML。三个原本必现的故障：high/VM 档 `eval()` 内遇 HTML 段
+`unexpected token "<"`；`shell:module_link` 把函数定义追加到 `?>` 之后的 HTML 里
+导致语法损坏并回滚；末尾 `?>` 吞换行 + `rtrim` 导致输出少 1 字节。
+
+实现上还有个容易踩的 PHP 词法坑：**`//` 行注释里出现 `?>` 会关闭 PHP 模式**，
+后续整段源码被词法器当作 `T_INLINE_HTML`，表现为「源码自身 `unexpected token`」。
+规范化器与主管线里的注释因此统一改用块注释或安全描述。替代语法
+（`if(): endif;`、`foreach: endforeach;` 等）全部归一为花括号，避免控制流混淆器
+把 `:` 当作单语句主体在第一个 `;` 截断。
+
+### 11.25.5 修复：拟真函数名与 PHP 内建函数撞名
+
+`NameStyle::funcName()` 的词池可拼出 `openLog` / `readFile` / `readDir` /
+`hash_file` / `parse_str` / `filter_list` / `parse_url` / `closeLog` / `closeDir`。
+**PHP 函数名大小写不敏感**，这些名字与内建函数同名；实测 `ultra` + 特定 salt
+产物抛 `ArgumentCountError: openlog() expects exactly 3 arguments, 0 given`——
+调用落到了内建 `openlog()` 上。修复为生成后避开所有已注册函数名，命中则换确定性
+变体重试（同 salt 仍可复现），极端情况加前缀兜底。
+
+同批还修掉工程模式把 PHP 内建函数登记进跨文件 `SymbolTable` 的问题
+（`call_user_func('_xxx')` 找不到定义）、TP8 一键构建遗漏非 `.php` 资源，
+以及 `antidebug_probe_check` 的 options 正则不识别含数字组名。
+
+### 11.25.6 验证
+
+新增 6 个专项回归合计 291 项；主套件补 10 个 S6 用例；全套 57 个测试文件 0 失败；
+主矩阵 108 组合 + 逐层内联 18 组合逐字节 MATCH / 0 警告。TP8 端到端在 PHP 8.3
+下以隔离 DB 跑通 9/9 端点（含复杂混写页 `/shop/dashboard` 4087 B 一致），
+两端 DB 最终 md5 相同，证明混淆未改变任何写入序列。

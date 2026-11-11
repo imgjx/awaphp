@@ -189,6 +189,25 @@ diff /tmp/orig.txt /tmp/obf.txt && echo "BASELINE SAME 26/26"
 | 构建确定性 | 同 salt 同输入 → 产物逐字节一致（仅 banner 时间戳不同） | 增量重建、CI 缓存友好 |
 | 动态调用的函数 / 类不改名 | `call_user_func('f')` 等字符串引用 | 动态符号保守排除，宁可少混淆不可运行时崩 |
 
+### 6.1 复杂 PHP/HTML 混写页面（v1.2.0）
+
+真实 TP8 视图常把 PHP 块与 HTML 交错：`<?=` 短标签、`if: endif;` 等替代语法
+跨标签、PHP 嵌进 HTML 属性与 `<script>` / `<style>`、heredoc 内 HTML、
+`?><?php` 相邻边界、HTML 注释里嵌 PHP。早期版本进 eval / GZ / VM 壳会直接
+`unexpected token "<"`，或把内联模块函数定义追加到 `?>` 之后的 HTML 里。
+
+v1.2.0 在管线入口用 `InlineHtml::normalize()` 把这类源码**等价改写为纯 PHP**
+后再交给所有后续层，六档预设对复杂模板页运行输出逐字节一致。测试项目
+`tests/tptest.zip` 已加入一份约 200 行的极复杂混写视图
+`tp8/view/shop_dashboard.php`，由 `app/controller/Dashboard.php` 经
+`$GLOBALS['__awa_dashboard']` 注入业务数据、路由 `/shop/dashboard` 暴露，
+端到端 9/9 端点逐字节 MATCH。
+
+一键构建脚本 `other/thinkphp8-build.php` 现在会在混淆成功后**自动补齐所有缺失的
+非 `.php` 资源**（`.env`、异常页 `.tpl`、静态资源、runtime 数据库等）。此前只产出
+`.php`，混淆版会因缺 `.env` / `.tpl` 而 500；若使用旧脚本，需手动把这些资源
+从原项目复制到输出目录。
+
 ---
 
 ## 7. 调试钩子（环境变量）

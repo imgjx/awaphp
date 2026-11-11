@@ -1,6 +1,6 @@
 <?php
 /**
- * 内建 / 原生函数命名参数回归（v1.2.0-dev）
+ * 内建 / 原生函数命名参数回归（v1.2.0）
  *
  * 背景：基线压测发现 tests/fixtures/named_args.php 在 high/max/ultra（含 VM）档
  * 100% 运行致命，与 salt 无关：
