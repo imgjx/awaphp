@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.2.0-orange)
+![Version](https://img.shields.io/badge/version-1.2.1-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,6 +40,17 @@
 
 ## 特性
 
+> **v1.2.1 更新要点**：① **VM / ultra·嵌套 EVAL 壳链完全支持现代 PHP 编译语法**——
+> 命名空间（含 bracketed 多命名空间）、接口、trait（含 `insteadof` / `as` 冲突解决）、
+> enum、类、闭包与引用、箭头函数、`match`、生成器（`yield` / `yield from`）、命名参数、
+> heredoc / nowdoc、`list` 解构、`try-catch-finally`、匿名类、引用返回、显式 `goto`、
+> `group use` / 显式别名、一等可调用等，均在 `ultra` 档逐字节运行等价；
+> ② 修复 6 类 ultra 壳链正确性缺陷：`::NeW` 关键字大小写随机化破坏大小写敏感标识符、
+> 显式 `goto` 被状态机包进循环、纯 enum 文件被半吊子 VM 编译、引用返回函数声明被间接化、
+> bracketed 命名空间 `use` 别名断链、trait `use` 列表名字断链；
+> ③ 新增 1 个超复杂主样例 + 3 个变式（`tests/fixtures/vm_full_syntax*.php`）纳入主套件，
+> 84 次 ultra 多 salt 压测 0 失败、全量回归 50/50 通过。详见 `CHANGELOG.md`。
+>
 > **v1.2.0 正式版更新要点**：① **逐层内联**（`--inline-each-layer`）——每个编码壳的
 > 解码逻辑都做一次模块链接、每层独立前缀，不再只有最内层有内联函数；
 > ② **反剥离互锁壳** `shell:anti_strip`（K 层锚点网格，抠出任意内层单独运行即静默拒绝）、

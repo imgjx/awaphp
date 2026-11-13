@@ -167,9 +167,13 @@ final class FunctionCallEncoder
     }
 
     /**
-     * B5a：收集本文件中「声明了引用参数」的函数名。
-     * 判定：函数声明的参数列表内，'&'（字符串 token 或 PHP 8.1+ 的两种
-     * T_AMPERSAND_* 变体）之后紧跟 T_VARIABLE / T_ELLIPSIS。
+     * B5a：收集本文件中「调用点不可编码为 call_user_func」的函数名。
+     * 两类：
+     *  1) 声明了引用参数（function f(&$x)）：call_user_func 按值传参，引用不回写；
+     *  2) 引用返回（function &f()）：call_user_func 无法返回引用，声明点若被编码会变成
+     *     `function &call_user_func(...)` 直接语法错误、引用绑定 `$r = &f()` 也会退化成
+     *     值语义——故声明点与所有调用点一律跳过编码（宁可少混淆也不破坏）。
+     * 判定：函数名前的 '&'（引用返回符）/ 参数列表内 '&' 后紧跟变量（引用参数）。
      * @param array<int,mixed> $tokens
      * @return array<string,true>
      */
@@ -183,14 +187,18 @@ final class FunctionCallEncoder
                 continue;
             }
             $nameIdx = Parser::nextSignificant($tokens, $i);
-            // function &foo() 返回引用形式：跳过 '&'（字符串或 T_AMPERSAND 变体）
-            if ($nameIdx >= 0 && ((is_string($tokens[$nameIdx]) && $tokens[$nameIdx] === '&')
-                || (is_array($tokens[$nameIdx]) && defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
-                    && $tokens[$nameIdx][0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG))) {
+            // function &foo() 返回引用：跳过 '&'，并把该函数整体标记为不可编码
+            $refReturn = false;
+            if ($nameIdx >= 0 && $this->isAmpersand($tokens[$nameIdx])) {
+                $refReturn = true;
                 $nameIdx = Parser::nextSignificant($tokens, $nameIdx);
             }
             if ($nameIdx < 0 || !is_array($tokens[$nameIdx]) || $tokens[$nameIdx][0] !== T_STRING) {
                 continue;
+            }
+            if ($refReturn) {
+                $set[$tokens[$nameIdx][1]] = true;
+                continue; // 引用返回已覆盖声明点+所有调用点，无需再查引用参数
             }
             $open = Parser::nextSignificant($tokens, $nameIdx);
             if ($open < 0 || !is_string($tokens[$open]) || $tokens[$open] !== '(') {
@@ -201,13 +209,7 @@ final class FunctionCallEncoder
                 continue;
             }
             for ($j = $open + 1; $j < $close; $j++) {
-                $t = $tokens[$j];
-                $isAmp = (is_string($t) && $t === '&')
-                    || (is_array($t) && defined('T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG')
-                        && $t[0] === T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG)
-                    || (is_array($t) && defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
-                        && $t[0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG);
-                if (!$isAmp) {
+                if (!$this->isAmpersand($tokens[$j])) {
                     continue;
                 }
                 $nx = Parser::nextSignificant($tokens, $j);
@@ -219,6 +221,21 @@ final class FunctionCallEncoder
             }
         }
         return $set;
+    }
+
+    /** 是否为引用符 '&'（含 PHP 8.1+ 的两种 T_AMPERSAND_* 变体） */
+    private function isAmpersand($tok): bool
+    {
+        if (is_string($tok)) {
+            return $tok === '&';
+        }
+        if (!is_array($tok)) {
+            return false;
+        }
+        return (defined('T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG')
+                && $tok[0] === T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG)
+            || (defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
+                && $tok[0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG);
     }
 
     /**

@@ -177,12 +177,13 @@ final class TokenObfuscator
             if (!isset(self::KEYWORDS[$low])) {
                 continue;
             }
-            // 命名参数名（`array_slice(array: ...)` / `str_pad(string: ...)`）大小写敏感：
-            // PHP 8 关键字恰好作形参名时 tokenizer 仍给出 T_ARRAY，且 KEYWORDS 也含
-            // string/int 等转型名，随机化大小写会变成 ARRAY:/STRING:，运行期直接抛
-            // "Unknown named parameter"。goto 标签 / case 标签名同样大小写敏感，
-            // 这些「后跟单个冒号」的位置一律保持原样（跳过不影响整体混淆强度）。
-            if ($this->nextIsColon($tokens, $i)) {
+            // 关键字作【大小写敏感标识符】时绝不随机化大小写（详见 isKeywordAsName）。
+            // PHP 8 允许关键字作类常量名 / enum case 名 / 方法名 / 函数名 / goto 标签 /
+            // 命名参数名，而这些 token 仍是 T_NEW/T_LIST/T_MATCH/… 关键字类型。若按类型
+            // 随机化，声明端（`const new=5`）与引用端（`Cfg::new`）会被各自独立改成不同
+            // 大小写 → "Undefined constant 类名::NeW"（类名大小写敏感）。声明端与引用端
+            // 一律保持原样，天然一致。
+            if ($this->isKeywordAsName($tokens, $i)) {
                 continue;
             }
             $new = $this->randomCase($text, $rand);
@@ -210,6 +211,74 @@ final class TokenObfuscator
             return $t === ':';
         }
         return false;
+    }
+
+    /**
+     * 判断 $i 处的关键字形态 token 是否实为【大小写敏感标识符】。
+     *
+     * PHP 8 起放宽"关键字可作成员名"：`Foo::new` / `const new=5` / `enum{case list;}` /
+     * `function match(){}` / `goto new;` / `f(new: 1)` 里这些名字的 token 类型【仍是
+     * 关键字】（T_NEW/T_LIST/T_MATCH/…），但语义是标识符、且类名常量/enum case/goto 标签
+     * /命名参数名大小写敏感。casePass 若按 token 类型随机化大小写，会：
+     *   1) 把声明端与引用端改成互不一致的大小写 → "Undefined constant 类名::NeW"；
+     *   2) 把 `new` 关键字（T_NEW，实例化）保留、却把别处的 `::new` 改坏。
+     * 故凡"处于标识符位置"的关键字一律跳过大小写化——两端都保持源码原样即天然一致，
+     * 且不影响对真正语言关键字（if/while/echo/return…）的形态混淆强度。
+     *
+     * 覆盖位置（前导 token 判定）：
+     *  - `::` 之后              : Foo::new / Foo::class / 静态成员 / enum case 引用
+     *  - -> / ?-> 之后          : $o->new / $o?->new（PHP 已给 T_STRING，兜底）
+     *  - const / case 之后      : const new=5; / case new;（声明端）
+     *  - function / fn 之后     : function new(){} / fn(...) 名字位（含 & 引用返回）
+     *  - class/interface/trait/enum/namespace/extends/implements/insteadof/as/use/new/instanceof 之后 : 类型/名字位
+     *  - goto 之后 / 后跟单冒号: goto new; / new: / 命名参数 new: / case/default 标签
+     *
+     * @param array<int,mixed> $tokens
+     */
+    private function isKeywordAsName(array $tokens, int $i): bool
+    {
+        // 后跟单个 ':'：命名参数名 / goto 标签 / switch case 标签 / 三元 else，大小写敏感
+        if ($this->nextIsColon($tokens, $i)) {
+            return true;
+        }
+        $prev = Parser::prevSignificant($tokens, $i);
+        if ($prev < 0) {
+            return false;
+        }
+        $pt = $tokens[$prev];
+        // `function &new()` 引用返回：名字前多一个 '&'（T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG
+        // 或裸 '&'），跳过它再看前导 token 是否为 function。
+        $isAmp = (is_string($pt) && $pt === '&')
+            || (is_array($pt) && defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
+                && $pt[0] === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG);
+        if ($isAmp) {
+            $prev = Parser::prevSignificant($tokens, $prev);
+            if ($prev < 0) {
+                return false;
+            }
+            $pt = $tokens[$prev];
+        }
+        if (!is_array($pt)) {
+            return false;
+        }
+        // 前导 token 类型集合：这些之后的关键字形态 token 都是"名字"而非语言关键字
+        static $nameLeaders = null;
+        if ($nameLeaders === null) {
+            $constNames = [
+                'T_DOUBLE_COLON', 'T_OBJECT_OPERATOR', 'T_NULLSAFE_OBJECT_OPERATOR',
+                'T_CONST', 'T_CASE', 'T_FUNCTION', 'T_FN', 'T_GOTO',
+                'T_CLASS', 'T_INTERFACE', 'T_TRAIT', 'T_ENUM', 'T_NAMESPACE',
+                'T_EXTENDS', 'T_IMPLEMENTS', 'T_INSTEADOF', 'T_AS', 'T_USE',
+                'T_NEW', 'T_INSTANCEOF', 'T_ATTRIBUTE',
+            ];
+            $nameLeaders = [];
+            foreach ($constNames as $c) {
+                if (defined($c)) {
+                    $nameLeaders[constant($c)] = true;
+                }
+            }
+        }
+        return isset($nameLeaders[$pt[0]]);
     }
 
     /** 全大写 / 全小写 / 逐字符随机混合 */

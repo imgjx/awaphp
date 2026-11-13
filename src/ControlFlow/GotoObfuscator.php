@@ -53,6 +53,15 @@ final class GotoObfuscator
         $maxBlock = max(2, $cpx);
         $this->traps = max(0, min(4, (int) $config->get('goto_trap')));
 
+        // 源码含显式 goto 时整体跳过：本层会自行生成 goto 分派标签，若与用户 goto/label
+        // 交织进同一循环，运行期即 "'goto' into loop" 编译期致命；且用户标签可能被
+        // StatementSplitter 与相邻语句合并切进分派器。goto 罕见，正确性优先。
+        foreach ($tokens as $t) {
+            if (is_array($t) && $t[0] === T_GOTO) {
+                return $tokens;
+            }
+        }
+
         $n = count($tokens);
         $result = [];
         $i = 0;
@@ -182,7 +191,9 @@ final class GotoObfuscator
             if (!is_array($t)) {
                 continue;
             }
-            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN, T_TRY, T_CATCH, T_FINALLY, T_THROW], true)) {
+            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN, T_TRY, T_CATCH, T_FINALLY, T_THROW,
+                // 函数体内含 goto：跳转/标签被拆进 GOTO 分派器会非法，整体跳过。
+                T_GOTO], true)) {
                 return true;
             }
             // 匿名函数：T_FUNCTION 后紧跟 '('

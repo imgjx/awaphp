@@ -20,7 +20,7 @@
  *      token 为止（下一个显著 token 非 `\`）时整链解析，只改最后一段。
  *
  * 安全：以字符串字面量出现过的符号由 DynamicSymbols 整体排除；
- * implements 列表的逗号后继项由 $inImplements 状态覆盖（不再依赖事后补扫）。
+ * implements 列表的逗号后继项由 $inNameList 状态覆盖（不再依赖事后补扫）。
  */
 
 declare(strict_types=1);
@@ -113,24 +113,37 @@ final class ClassObfuscator
         $aliases = [];      // 别名 => FQCN（use 导入，含隐式别名）
         $aliasKeep = [];    // 显式别名（`use A\B\X as R;`）：绑定保持 R，引用不动
         $declSites = [];    // 已改名声明点：[类体闭括号下标, class_alias 回挂语句]
-        $curNs = '';        // 当前命名空间
-        $inImplements = false;
-        $braceDepth = 0;    // 花括号深度：0 = 顶层（namespace 导入语句只在顶层）
+        $curNs = '';            // 当前命名空间
+        $inNameList = false;
+        $braceDepth = 0;        // 花括号深度
+        $braceStack = [];       // 每个 '{' 是否由 bracketed namespace 引入
+        $nonNsDepth = 0;        // 处于「非 namespace 花括号」（类体/函数体/块）内的层数
+        $pendingNsBrace = false; // 下一个 '{' 是否为 bracketed namespace 的块括号
 
         $n = count($tokens);
         for ($i = 0; $i < $n; $i++) {
             $tok = $tokens[$i];
             if (!is_array($tok)) {
                 if ($tok === '{') {
+                    $isNs = $pendingNsBrace;
+                    $pendingNsBrace = false;
+                    $braceStack[] = $isNs;
+                    if (!$isNs) {
+                        $nonNsDepth++;
+                    }
                     $braceDepth++;
-                    $inImplements = false;
+                    $inNameList = false;
                 } elseif ($tok === '}') {
+                    $isNs = array_pop($braceStack);
+                    if ($isNs === false) {
+                        $nonNsDepth = max(0, $nonNsDepth - 1);
+                    }
                     if ($braceDepth > 0) {
                         $braceDepth--;
                     }
-                    $inImplements = false;
+                    $inNameList = false;
                 } elseif ($tok === ';') {
-                    $inImplements = false;
+                    $inNameList = false;
                 }
                 continue;
             }
@@ -139,6 +152,7 @@ final class ClassObfuscator
             // ---- 命名空间跟踪（声明/裸引用的 FQCN 解析基准）----
             if ($type === T_NAMESPACE) {
                 $ns = '';
+                $nsEnd = null;
                 for ($j = $i + 1; $j < $n; $j++) {
                     $t2 = $tokens[$j];
                     if (is_array($t2) && in_array($t2[0], self::NAME_TOKENS, true)) {
@@ -146,17 +160,23 @@ final class ClassObfuscator
                     } elseif (is_array($t2) && in_array($t2[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
                         continue;
                     } else {
+                        $nsEnd = $t2;
                         break;
                     }
                 }
                 $curNs = ltrim($ns, '\\');
+                // bracketed namespace（花括号式）：块花括号不算「类/函数体」，块内的
+                // use 导入仍需走 consumeUse 别名闭环；分号式 namespace 以 ';' 结尾。
+                $pendingNsBrace = is_string($nsEnd) && $nsEnd === '{';
                 continue;
             }
 
-            // ---- 顶层 use 导入：整条语句专用解析（别名表 + 导入段改名）----
-            // 类体内的 `use SomeTrait;`（trait 引入）不是导入语句：走常规引用改名，
-            // 由 positionGate(T_USE) 覆盖；目标名解析与导入一致（裸名看别名表/当前命名空间）。
-            if ($type === T_USE && $braceDepth === 0) {
+            // ---- use 导入：顶层（分号式 namespace）或 bracketed namespace 块内 ----
+            // 仅当不处于任何「非 namespace 花括号」（类体/函数体/if 块）内时才是导入语句，
+            // 走 consumeUse 的别名闭环（import → FQCN → 改名 → 裸引用同步）。
+            // 类体内 trait use / 闭包 use(...) 不走此分支：前者 nonNsDepth>0（落类体），
+            // 后者由下方 '(' 判定跳过。
+            if ($type === T_USE && $nonNsDepth === 0) {
                 $nx = Parser::nextSignificant($tokens, $i);
                 if ($nx >= 0 && is_array($tokens[$nx]) && $tokens[$nx][0] === T_FUNCTION) {
                     continue; // use function f：函数混淆器不处理，跳过
@@ -171,8 +191,29 @@ final class ClassObfuscator
                 continue;
             }
 
+            // 类体内 trait 引入（use A, B { A::m insteadof B; ... }）：
+            // 与 implements 一样是「逗号分隔类名列表」，逗号后继的 trait 名
+            // 必须随导入别名同步改名，否则 Trait not found。排除闭包 use (...)
+            // 与 use function/const（这两类不是类名列表）。
+            if ($type === T_USE && $nonNsDepth > 0) {
+                $nx = Parser::nextSignificant($tokens, $i);
+                $isClosureUse = $nx >= 0 && is_string($tokens[$nx]) && $tokens[$nx] === '(';
+                $isFnOrConstUse = $nx >= 0 && is_array($tokens[$nx])
+                    && in_array($tokens[$nx][0], [T_FUNCTION, T_CONST], true);
+                if (!$isClosureUse && !$isFnOrConstUse) {
+                    $inNameList = true;
+                }
+                continue;
+            }
+
             if ($type === T_IMPLEMENTS) {
-                $inImplements = true;
+                $inNameList = true;
+                continue;
+            }
+
+            // trait 冲突解决 A::m insteadof B, C; 之后可跟多个逗号分隔 trait 名
+            if ($type === T_INSTEADOF) {
+                $inNameList = true;
                 continue;
             }
 
@@ -199,7 +240,7 @@ final class ClassObfuscator
                 }
                 $next = Parser::nextSignificant($tokens, $i);
                 $nextType = $next >= 0 ? Parser::type($tokens[$next]) : -1;
-                if ($this->positionGate($prevType, $tokens, $prev, $nextType, $tokens[$next] ?? null, $inImplements, $paramRanges, $catchRanges, $i)) {
+                if ($this->positionGate($prevType, $tokens, $prev, $nextType, $tokens[$next] ?? null, $inNameList, $paramRanges, $catchRanges, $i)) {
                     // 只改最后一段（命名空间前缀原样保留）
                     $sp = strrpos($text, '\\');
                     $head = $sp === false ? '' : substr($text, 0, $sp + 1);
@@ -234,7 +275,7 @@ final class ClassObfuscator
                 }
                 $startPrev = Parser::prevSignificant($tokens, $chainStart);
                 $startPrevType = $startPrev >= 0 ? Parser::type($tokens[$startPrev]) : -1;
-                if ($this->positionGate($startPrevType, $tokens, $startPrev, $nextType, $tokens[$next] ?? null, $inImplements, $paramRanges, $catchRanges, $i)) {
+                if ($this->positionGate($startPrevType, $tokens, $startPrev, $nextType, $tokens[$next] ?? null, $inNameList, $paramRanges, $catchRanges, $i)) {
                     $tokens[$i][1] = $map[$fqcn];
                 }
                 continue;
@@ -257,7 +298,7 @@ final class ClassObfuscator
             if (!isset($map[$fqcn])) {
                 continue;
             }
-            if ($this->positionGate($prevType, $tokens, $prev, $nextType, $tokens[$next] ?? null, $inImplements, $paramRanges, $catchRanges, $i)) {
+            if ($this->positionGate($prevType, $tokens, $prev, $nextType, $tokens[$next] ?? null, $inNameList, $paramRanges, $catchRanges, $i)) {
                 $tokens[$i][1] = $map[$fqcn];
                 if ($isDecl && $map[$fqcn] !== $name) {
                     // 声明点已改名：记录 class_alias 回挂点（供外部动态类名 / PSR-4 原文件名命中）
@@ -283,7 +324,7 @@ final class ClassObfuscator
 
     /**
      * 位置门控：该 T_STRING 是否处于"类名"位置（声明 / 实例化 / 继承 / 类型提示 / :: 前等）。
-     * 与 v1 规则一致，外加 implements 列表逗号后继项。
+     * 与 v1 规则一致，外加 implements / trait use 列表逗号后继项、insteadof 右侧 trait 名。
      *
      * @param array<int,mixed> $tokens
      * @param array<int,array{int,int}> $paramRanges
@@ -295,16 +336,16 @@ final class ClassObfuscator
         int $prev,
         $nextType,
         $nextTok,
-        bool $inImplements,
+        bool $inNameList,
         array $paramRanges,
         array $catchRanges,
         int $i
     ): bool {
         $rename = false;
-        if (in_array($prevType, [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM, T_NEW, T_EXTENDS, T_IMPLEMENTS, T_USE, T_DOUBLE_COLON, T_INSTANCEOF, T_ATTRIBUTE], true)) {
+        if (in_array($prevType, [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM, T_NEW, T_EXTENDS, T_IMPLEMENTS, T_USE, T_DOUBLE_COLON, T_INSTANCEOF, T_ATTRIBUTE, T_INSTEADOF], true)) {
             $rename = true;
-        } elseif ($inImplements && $prev >= 0 && is_string($tokens[$prev]) && $tokens[$prev] === ',') {
-            $rename = true; // implements A, B 的逗号后继项
+        } elseif ($inNameList && $prev >= 0 && is_string($tokens[$prev]) && $tokens[$prev] === ',') {
+            $rename = true; // implements A, B / trait use A, B 的逗号后继项
         } elseif ($nextType === T_VARIABLE) {
             $rename = true; // 类型提示 / catch / 属性类型
         } elseif ($nextType === T_DOUBLE_COLON) {

@@ -552,6 +552,20 @@ final class VmCompiler
         $this->pendingGotos = [];
 
         $stmts = StatementSplitter::split($this->tokens);
+        // 预扫描：顶层 enum 声明（PHP 8.1）—— VM 自定义 ISA 没有 enum 的等价表达
+        // （case 单例、backing value、->name/->value、接口实现、enum 方法等无法用
+        // stdClass+META 类表等价还原）。若只在表达式上下文偶发触发 "VM 不支持的词法
+        // T_ENUM" 才回退，会让"太简单"的纯 enum 文件被半吊子编译：enum 声明落进
+        // compileStatement 被当作普通语句，运行期 `E::case` 找不到真实类
+        // （Class "..." not found / 输出为空）。故在编译入口一致地整体回退——
+        // 由 shell:vm 的 vmPayloadNest 把整份源码作为不透明载荷编入 VM，eval 单元里
+        // enum 语法 100% 原生，语义逐字节保真。T_ENUM 词法只由声明产生（enum 作成员名/
+        // 参数名/常量名时 tokenizer 给的是 T_STRING），故检测无副作用。
+        foreach ($stmts as $stmt) {
+            if ($this->firstSig($this->stripLeadingAttributes($stmt)) === T_ENUM) {
+                throw VmUnsupported::fileLevel('顶层 enum 声明：VM 走不透明载荷兜底');
+            }
+        }
         // 预扫描：收集全程序 const 声明的常量名，使标识符解析能识别「运行期定义的常量」
         // （PHP 的常量在运行期才存在，编译期 defined() 看不到，需按名发射 CONST_FETCH）
         foreach ($stmts as $stmt) {

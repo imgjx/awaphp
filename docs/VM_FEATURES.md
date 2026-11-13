@@ -1292,3 +1292,38 @@ P3 shutdown 守卫行与尾区复检构成多点触发。
 主矩阵 108 组合 + 逐层内联 18 组合逐字节 MATCH / 0 警告。TP8 端到端在 PHP 8.3
 下以隔离 DB 跑通 9/9 端点（含复杂混写页 `/shop/dashboard` 4087 B 一致），
 两端 DB 最终 md5 相同，证明混淆未改变任何写入序列。
+
+## 11.26 v1.2.1：VM / ultra 壳链完全支持现代 PHP 编译语法 + 6 类正确性修复
+
+> 目标不是给自定义 ISA 硬塞全部语法，而是让 `ultra`（真·嵌套 VM + 10 层 EVAL +
+> 结构毒化 + 全反检测矩阵）**逐字节等价地吃下现代 PHP 全部主流编译语法**：不支持
+> 或难精确表达的语法，一律由 `shell:vm` 的 `vmPayloadNest()` 把整份源码作为不透明
+> 载荷编入 VM，运行期在 eval 单元内保持 100% 原生语义。
+
+### 11.26.1 语法矩阵（`tests/fixtures/vm_full_syntax*.php`）
+
+主样例 + 3 个变式覆盖：分号式 / bracketed 多命名空间、`use` / `group use` / 显式别名、
+跨命名空间继承；接口 / 多接口、trait（`insteadof` / `as`）、enum（backing / 接口 / 方法）、
+抽象类继承、`parent::` / `self::` / `static::`、readonly、属性提升、匿名类、nullsafe；
+闭包 `use (&$ref)`、嵌套箭头函数、一等可调用、`yield` / `yield from` / `send()` /
+`getReturn()`、引用返回 / 引用参数、命名参数乱序 / 解包 / 可变参数；`match(true)` 嵌套、
+`switch` 穿透、嵌套 `try-catch-finally`、显式 `goto`、heredoc / nowdoc 复杂插值、
+`list` 带键嵌套解构、字符串插值数组下标。
+
+### 11.26.2 六类正确性缺陷（详见 `CHANGELOG.md` v1.2.1）
+
+| # | 症状 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `Undefined constant 类名::NeW` | `casePass()` 按 token 类型随机化关键字大小写，但类常量 / enum case / goto 标签 / 命名参数名大小写敏感 | `TokenObfuscator::isKeywordAsName()` 在标识符上下文整体跳过大小写化 |
+| 2 | `'goto' into loop or switch statement is disallowed` | 顶层状态机 / GOTO 分发把 `label:` 卷进 switch/while 内部 | 源码含 `T_GOTO` 时整体跳过状态机与 GOTO 分发 |
+| 3 | 纯 enum 文件 `Class "_xxx" not found` | enum 无 ISA 等价表达，纯 enum 文件「太简单」未触发回退被半吊子编译 | `VmCompiler::compile()` 预扫描顶层 `T_ENUM` → `VmUnsupported::fileLevel()` → 不透明载荷兜底 |
+| 4 | `unexpected token "(", expecting variable` | `function &f()` 声明名被 `func` 层误判为调用点，改成 `function &call_user_func(...)` | `FunctionCallEncoder::byRefFunctions()` 把引用返回函数纳入不可编码集合 |
+| 5 | bracketed 命名空间 `Class "A\Base" not found` | `use` 门控 `$braceDepth===0` 漏掉花括号式命名空间内的导入，绕过别名闭环 | `ClassObfuscator` 用花括号归属栈区分 namespace 块 / 类体，重定导入判定 |
+| 6 | `Trait "A\Suffix" not found` | trait `use A, B { A::m insteadof B; }` 逗号后继与 `insteadof` 右侧名字未随导入段改名 | 「逗号分隔类名列表」状态扩展到 trait use，`T_INSTEADOF` 加入位置白名单 |
+
+### 11.26.3 验证
+
+- 4 样例纳入 `tests/run_tests.php`（S7），`--level=ultra` 逐字节比对。
+- **84 次 ultra 多 salt 压测**（7 样例 × 12 salt）→ 0 crash / 0 mismatch / 0 lint 失败。
+- **全量回归 50 / 50 通过**（含历史 S1–S6 + 目录递归 + 防篡改 + 元信息）。
+- 验收按「1 超复杂主样例 → 2 变式（有问题继续修）→ 再 1 变式 → 全通过即发布」推进。

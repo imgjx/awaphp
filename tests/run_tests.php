@@ -92,6 +92,17 @@ $cases = [
     ['S6 混写边界 / ultra+逐层内联',    'mixed_edge.php',     '--level=ultra --inline-each-layer --salt=mx5', true],
     ['S6 反剥离互锁 / high 预设',       'demo.php',           '--level=high --salt=as1', true],
     ['S6 反篡改v3+反调试 / max 预设',   'demo.php',           '--level=max --salt=at1', true],
+
+    // ===== v1.2.1 VM 完全支持现代 PHP 编译语法 / ultra·EVAL 壳链正确性 =====
+    // 主样例 + 3 个变式，覆盖 命名空间(含 bracketed)/接口/trait(含 insteadof·as)/enum/类
+    // /闭包&引用/箭头函数/match/生成器/命名参数/heredoc·nowdoc/list 解构/try-catch/匿名类
+    // /引用返回/显式 goto/一等可调用/group use 等，逐字节比对原生与 ultra 产物输出。
+    // 相关修复：::NeW 关键字大小写、显式 goto 被状态机包进循环、纯 enum 半吊子 VM 编译、
+    // 引用返回函数声明被间接化、bracketed 命名空间 use 别名断链、trait use 列表断链。
+    ['S7 VM 全语法 / 主样例 ultra',     'vm_full_syntax.php',    '--level=ultra --salt=vm1', true],
+    ['S7 VM 全语法 / 变式1 ultra',      'vm_full_syntax_v1.php', '--level=ultra --salt=vm2', true],
+    ['S7 VM 全语法 / 变式2 ultra',      'vm_full_syntax_v2.php', '--level=ultra --salt=vm3', true],
+    ['S7 VM 全语法 / 变式3 ultra',      'vm_full_syntax_v3.php', '--level=ultra --salt=vm4', true],
 ];
 
 echo "===== PHP 混淆器 测试套件 =====\n";

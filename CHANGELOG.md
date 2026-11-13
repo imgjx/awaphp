@@ -1,5 +1,85 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.1 — VM 完全支持现代 PHP 编译语法 / ultra·嵌套 EVAL 壳链正确性修复
+
+> 主题：让 `ultra` 档（真·嵌套 VM + 10 层 EVAL 壳 + 结构毒化 + 全反检测矩阵）能
+> **逐字节等价地吃下现代 PHP 的全部主流编译语法**，并把复杂样例暴露出的壳链正确性
+> 缺陷逐一复现、定位、修复。验收流程按「1 个超复杂主样例 → 2 个变式（有问题继续修）
+> → 再 1 个变式 → 全通过即发布」推进，四个样例均以原生输出为基线做逐字节比对。
+
+### 支持的语法矩阵
+
+`tests/fixtures/vm_full_syntax.php`（主样例）与 `_v1` / `_v2` / `_v3`（三个变式）覆盖：
+
+- **命名空间**：单文件分号式、bracketed 多命名空间 `namespace A\B { ... }`、
+  `use` 导入、`group use`（`use A\B\{C, D};`）、显式别名 `as`、跨命名空间继承。
+- **面向对象**：接口 / 多接口实现、trait（`insteadof` / `as` 冲突解决）、
+  enum（backing value、接口实现、case 方法、`match`）、抽象类 + 继承、
+  `parent::` / `self::` / `static::` 晚期静态绑定、readonly 属性、属性提升、
+  匿名类（`extends` + `implements` + 构造参数）、`instanceof`、nullsafe。
+- **函数式**：闭包 `use (&$ref)` 引用捕获、箭头函数（含嵌套）、一等可调用 `f(...)`、
+  生成器 `yield` / `yield from` / `send()` / `getReturn()`、引用返回 `function &f()`、
+  引用参数 `function f(&$x)`、命名参数乱序 / 参数解包 / 可变参数。
+- **控制流与字面量**：`match`（含 `match(true)` 多条件 / 嵌套）、`switch` 穿透、
+  `try-catch-finally`（多 catch / 嵌套）、显式 `goto` 标签、heredoc / nowdoc
+  复杂插值、`list` 带键嵌套解构、字符串插值数组下标、`new self|static|parent`。
+
+### 修复的正确性缺陷（6 类）
+
+1. **`Undefined constant 类名::NeW` — 关键字大小写随机化破坏大小写敏感标识符**
+   （`src/Token/TokenObfuscator.php`）。PHP 允许关键字形态 token 作类常量名、enum case 名、
+   goto 标签、命名参数名，这些**名字大小写敏感**，而 `casePass()` 按 token 类型随机化，
+   会把 `const new=5` 改成 `CONST NEW=5`、把 `Cfg::new` 改成 `Cfg::NeW`，声明端与引用端
+   失配 → 运行期未定义常量。新增 `isKeywordAsName()`，识别 `::` / `const` / `case` /
+   `function` / `fn` / `goto` / 标签冒号 / 类型名位等标识符上下文并**整体跳过大小写化**，
+   声明与引用天然保持源码原样一致。
+
+2. **显式 `goto` 被状态机 / GOTO 分发包进循环**
+   （`src/ControlFlow/StateMachine.php`、`GotoObfuscator.php`）。PHP 禁止 `goto` 从循环 /
+   switch 外跳进内部，`StateMachineObfuscator` 把顶层语句切进 switch/while 分发器时，
+   `label:` 可能被卷进内部 → `'goto' into loop or switch statement is disallowed`。
+   改为：源码含 `T_GOTO` 时**整体跳过**顶层状态机与 GOTO 分发变换（goto 属罕见语法，
+   正确性优先）。
+
+3. **纯 enum 文件被半吊子 VM 编译**
+   （`src/Vm/Compiler.php`）。enum 无自定义 ISA 等价表达（case 单例、backing value、
+   `->name` / `->value`、接口实现、enum 方法），纯 enum 文件此前「太简单」未触发
+   不支持回退，导致 `Class "App\Demo\_xxx" not found`。改为编译入口预扫描顶层
+   `T_ENUM` 声明并抛 `VmUnsupported::fileLevel()`，由 `shell:vm` 统一走
+   `vmPayloadNest()` 不透明载荷，eval 单元内 100% 原生语义。
+
+4. **引用返回函数声明名被间接化成非法语法**
+   （`src/Function_/FunctionCallEncoder.php`）。`function &slot()` 的名字前趋是引用符 `&`
+   而非 `T_FUNCTION`，`call` / `enc` 模式把函数**声明点**误判为调用点，改写成
+   `function &call_user_func(...)` → `unexpected token "(", expecting variable`；
+   同时 `$r = &slot()` 引用绑定会被 `call_user_func` 降级为值语义。改为把「引用返回函数」
+   纳入 `byRefFunctions()` 的不可编码集合，声明点与所有调用点统一跳过间接化。
+
+5. **bracketed 命名空间下 `use` 导入别名断链**
+   （`src/Class_/ClassObfuscator.php`）。`use` 导入语句的门控原为 `$braceDepth === 0`
+   （假设「namespace 导入只在顶层」），但花括号式命名空间内 `use` 的 `$braceDepth === 1`，
+   会绕过 `consumeUse()` 的别名闭环，只把导入段末段改名而 `extends Base` 保持原名 →
+   `Class "Core\App\Base" not found`。改为用花括号归属栈区分「namespace 块」与「类体 /
+   函数体」，仅当不处于任何非 namespace 花括号内时才视作导入语句。
+
+6. **trait `use` 列表 / `insteadof` 右侧名字断链**
+   （`src/Class_/ClassObfuscator.php`）。`use A, B { A::m insteadof B; }` 中，位置门控
+   只覆盖 `T_USE` 首项与 `::` 左侧，逗号后继 trait 名与 `insteadof` 右侧 trait 名保持
+   原名、与已改名的导入段失配 → `Trait "V3\Models\Suffix" not found`。把「逗号分隔类名
+   列表」状态从 `implements` 扩展到类体内 trait use，并把 `T_INSTEADOF` 加入类名位置白名单。
+
+### 测试 / 验证
+
+- 4 个新样例纳入 `tests/run_tests.php`（S7 段），`--level=ultra` 逐字节比对原生输出。
+- **84 次 ultra 多 salt 压测**（7 样例 × 12 salt：主样例 + 3 变式 + `::new` 关键字常量 /
+  引用返回 / bracketed `use` 三个最小复现）→ 0 crash / 0 mismatch / 0 lint 失败。
+- **全量回归 50 / 50 通过**（含全部历史 S1–S6 用例 + 目录递归 + 防篡改 + 元信息）。
+- 每个样例均要求：原生 `php -l` 通过、原生输出稳定、混淆产物 `php -l` 通过、
+  混淆产物输出与原生 `diff` 无差异。
+
+> 说明：`src/LogicTransform/`（超级激进逻辑恒等变换）仍为**未接线、未纳入本版**的
+> 实验性半成品；v1.2.1 的范围严格限定为「VM 全语法支持 + ultra 壳链正确性修复」。
+
 ## v1.2.0 — 正式版：逐层内联 / 反剥离互锁 / 反篡改 v3 / 反调试加强 / 高级 PHP 混写
 
 > 主题：把「只保护最内层」的短板补成**每层都保护**，并让高强度档位能吃下真实框架的

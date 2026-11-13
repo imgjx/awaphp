@@ -170,6 +170,16 @@ final class StateMachineObfuscator
      */
     private function processTopLevel(array $tokens): array
     {
+        // 源码含显式 goto 时，整个顶层不做状态机平坦化。
+        // 原因：goto 的标签 `label:` 常与紧随语句被 StatementSplitter 合并成一条区间
+        // （label 无分号），且 goto 可跨任意语句跳转；一旦标签或跳转语句被切进分派器
+        // （switch/while 循环）内，运行期即 "'goto' into loop or switch statement is
+        // disallowed" 编译期致命。精确切分标签边界易与命名参数 / 三元 / case 混淆，
+        // 故对含 goto 的文件整体放弃顶层平坦化——goto 属罕见语法，正确性优先；
+        // controlflow / GOTO / eval / VM 等其它混淆层照常生效，强度不受实质影响。
+        if ($this->hasGoto($tokens)) {
+            return $tokens;
+        }
         $ranges = StatementSplitter::splitRanges($tokens);
         if (count($ranges) < 2) {
             return $tokens;
@@ -294,6 +304,21 @@ final class StateMachineObfuscator
         return true;
     }
 
+    /**
+     * token 流中是否含显式 goto（T_GOTO）。含则整个作用域不做状态机/分派变换，
+     * 避免标签或跳转被切进循环内触编译期致命。goto 属罕见语法，正确性优先。
+     * @param array<int,mixed> $tokens
+     */
+    private function hasGoto(array $tokens): bool
+    {
+        foreach ($tokens as $t) {
+            if (is_array($t) && $t[0] === T_GOTO) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function findBodyBrace(array $tokens, int $nameIdx): int
     {
         $pdepth = 0;
@@ -357,7 +382,9 @@ final class StateMachineObfuscator
             if (!is_array($t)) {
                 continue;
             }
-            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN, T_TRY, T_CATCH, T_FINALLY, T_THROW], true)) {
+            if (in_array($t[0], [T_FN, T_MATCH, T_CURLY_OPEN, T_TRY, T_CATCH, T_FINALLY, T_THROW,
+                // 函数体内含 goto：标签/跳转一旦被拆进分发器（switch/循环）就非法，整体跳过。
+                T_GOTO], true)) {
                 return true;
             }
             if ($t[0] === T_FUNCTION) {
