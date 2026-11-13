@@ -103,6 +103,15 @@ $cases = [
     ['S7 VM 全语法 / 变式1 ultra',      'vm_full_syntax_v1.php', '--level=ultra --salt=vm2', true],
     ['S7 VM 全语法 / 变式2 ultra',      'vm_full_syntax_v2.php', '--level=ultra --salt=vm3', true],
     ['S7 VM 全语法 / 变式3 ultra',      'vm_full_syntax_v3.php', '--level=ultra --salt=vm4', true],
+
+    // ===== v1.2.2 超激进逻辑变换（logic 层 / --logic 裸开关）=====
+    // 专用样例 logic_tangle.php 覆盖「输出 10086 → 造两个临时变量 → 串计算 → 跨语句复用」
+    // 以及 strict_types 恒等积木、const / enum case / 属性默认值等常量表达式上下文、
+    // 引用参数与引用赋值、match(true) 的 => 标签、heredoc / nowdoc、显式 goto 等边界。
+    ['S8 逻辑变换 / 裸开关 int=1',       'logic_tangle.php',   '--logic --logic-intensity=1 --no-comments --salt=lg1', true],
+    ['S8 逻辑变换 / 裸开关 int=2',       'mixed_advanced.php', '--logic --logic-intensity=2 --no-comments --salt=lg2', true],
+    ['S8 逻辑变换 / 裸开关 int=3',       'logic_tangle.php',   '--logic --logic-intensity=3 --no-comments --salt=lg3', true],
+    ['S8 逻辑变换 / 缠结样例 ultra',     'logic_tangle.php',   '--level=ultra --salt=lg4', true],
 ];
 
 echo "===== PHP 混淆器 测试套件 =====\n";
@@ -174,6 +183,14 @@ if (is_file($atOut)) {
 } else {
     record(false, '防篡改：产物生成', '未生成产物');
 }
+
+// ---- v1.2.2 专项：超激进逻辑变换底层逐值等价 ----
+// 直接调用 LogicRewriter 对全部 fixtures 施加 intensity 1/2/3，逐条做 php -l +
+// 原生/变换产物逐字节输出比对（不经过壳链，专测恒等改写自身的正确性）。
+echo "\n-- v1.2.2 专项：逻辑变换底层校验 --\n";
+$smokeR = runCapture(sprintf('%s %s', escapeshellarg($php), escapeshellarg(__DIR__ . '/logic_smoke.php')));
+$smokeOk = $smokeR['exit'] === 0 && str_contains($smokeR['out'], 'FAILED=0');
+record($smokeOk, '逻辑变换底层全强度（php -l + 逐字节输出）', trim($smokeR['out']));
 
 // ---- 帮助 / 信息输出 ----
 echo "\n-- 元信息 --\n";

@@ -87,6 +87,7 @@ return [
     // 运行时成本仅剩「加载时一次解码」，跑起来与原生同速。
     'low' => [
         'layers' => [
+            ['name' => 'logic',       'params' => ['intensity' => 1]],
             ['name' => 'var',          'params' => ['length' => 10]],
             ['name' => 'func',         'params' => ['length' => 12, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -118,6 +119,7 @@ return [
     // 增长的壳全部堆满，运行时开销集中在一次解码 + 启动探针。
     'mid' => [
         'layers' => [
+            ['name' => 'logic',       'params' => ['intensity' => 2]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -151,6 +153,7 @@ return [
     // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测（含蜜罐/结构毒化） =====================
     'high' => [
         'layers' => [
+            ['name' => 'logic',       'params' => ['intensity' => 2]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -182,6 +185,7 @@ return [
     // ===================== max：VM 状态机全参数拉满 + 深层 GOTO + 语义变换 + 全反检测矩阵 =====================
     'max' => [
         'layers' => [
+            ['name' => 'logic',       'params' => ['intensity' => 3]],
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -217,6 +221,7 @@ return [
     // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
     'ultra' => [
         'layers' => [
+            ['name' => 'logic',       'params' => ['intensity' => 3]],
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],

@@ -16,7 +16,7 @@ final class LayerRegistry
     private const TOKEN = [
         'var', 'func', 'class', 'controlflow', 'statemachine', 'number',
         'string', 'comment', 'stat', 'ws', 'dead', 'junk_runtime', 'token', 'semantic',
-        'anti_ast',
+        'anti_ast', 'logic',
     ];
 
     /** 源码头/尾包裹层（shell）：按序包裹源码字符串；数组越靠后 = 越外层 */

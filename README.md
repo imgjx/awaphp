@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.2.1-orange)
+![Version](https://img.shields.io/badge/version-1.2.2-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,6 +40,17 @@
 
 ## 特性
 
+> **v1.2.2 更新要点**：① **超激进逻辑变换（`logic` 层 / `--logic`）正式接线**——
+> 只要实际逻辑与输出不变，就把任意位置的数字字面量、一元 `!`、比较 `< > <= >=`、
+> 布尔 `&& || xor` 全部改写成类型安全、逐值恒等但外观完全不同的等价表达式；强度 3
+> 再把简单赋值 / `echo` 展开成「先创建两个临时变量 → 位运算串计算 → 后续语句复用」的
+> 互相牵连变量网（例如输出 `10086` 会变成 5 个临时变量的计算链），新变量再被 `var` 层
+> 一并重命名，产物面目全非；② 预设 `low=1 / mid=2 / high=2 / max=3 / ultra=3`，
+> `min` 保持零开销；③ 修掉 6 类语义/语法缺陷（strict_types 下 `sha1(1)` TypeError、
+> 位运算恒等式缺整体括号、`caseActive` 残留、函数调用名被操作数抽取截断、引用赋值被
+> 缠结打断、高风险控制流结构重建生成悬空 else）；④ 全量回归 55/55、底层 60/60、
+> 80 次 ultra 多 salt 压测 0 失败。详见 `CHANGELOG.md` / `docs/VM_FEATURES.md` 11.27。
+>
 > **v1.2.1 更新要点**：① **VM / ultra·嵌套 EVAL 壳链完全支持现代 PHP 编译语法**——
 > 命名空间（含 bracketed 多命名空间）、接口、trait（含 `insteadof` / `as` 冲突解决）、
 > enum、类、闭包与引用、箭头函数、`match`、生成器（`yield` / `yield from`）、命名参数、

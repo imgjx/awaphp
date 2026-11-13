@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.1');
+define('OBFUSCATOR_VERSION', '1.2.2');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -76,6 +76,7 @@ foreach ([
     'src/AntiDetect/StringRuntimeAssembler.php',
     'src/AntiAst/IdentityExpr.php',
     'src/AntiAst/AntiAst.php',
+    'src/LogicTransform/LogicRewriter.php',
     'src/Project/SymbolTable.php',
     'src/Project/ProjectBuilder.php',
 ] as $f) {
@@ -359,6 +360,13 @@ function obf_help(): string
       --anti-ast       深度反AST：把语句位的 echo/print/return 常量字面量改写成
                        "累加器 + 恒等表达式"（如 $x=strlen(sha1(1));… 拼出目标值再 echo），
                        源码里再见不到裸数字/裸串，改写前后语义逐字节等价。默认关。
+      --logic          超激进逻辑变换（v1.2.2）：任意位置表达式的类型安全恒等重组
+                       （数字 / 一元 ! / 比较 / 布尔都换成等价但面目全非的形态），
+                       强度 3 再把简单赋值与 echo 展开成"先造两个临时变量 → 串计算
+                       → 后续语句复用"的互相牵连变量网，临时变量再被变量层改名。
+                       与 --anti-ast 可叠加；分层模式对应 logic 层。
+      --logic-intensity=  变换强度 1|2|3（默认 2）：1=数字/!，2=+比较/布尔，
+                       3=+临时变量缠结。仅 --logic / logic 层启用时生效。
       --whitelist-dirs=      不混淆的目录（逗号分隔，相对输入目录；支持 * 通配），整目录原样拷贝
       --whitelist-files=     不混淆的文件（逗号分隔，精确相对路径，如 config/app.php）
       --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 \$db,\$cfg）

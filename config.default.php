@@ -98,6 +98,11 @@ return [
     // 深度反AST：语句位 echo/print/return 的常量字面量改写成"累加器 + 恒等表达式"形式
     'anti_ast'    => false,   // 深度反AST 总开关（默认关，需显式开启：--anti-ast 或分层 JSON 的 anti_ast 层）
 
+    // 超激进逻辑变换（v1.2.2）：任意位置表达式恒等重组 + 临时变量缠结。
+    // 散装模式用 --logic / --logic-intensity=1|2|3；分层模式用 logic 层。
+    'logic'           => false, // 总开关（默认关，预设按档位显式开启）
+    'logic_intensity' => 2,     // 1=数字/! 2=+比较/布尔 3=+临时变量缠结
+
     // 白名单：不混淆的目录 / 文件 / 符号。目录模式可整文件跳过（原样拷贝）；符号保留原名。
     // dirs/files 用相对输入目录的路径（file 为精确匹配，dir 为前缀匹配，支持 * 通配）；
     // variables 带或不带 $ 均可；functions/classes 用原名（类支持 FQCN 或短名）；

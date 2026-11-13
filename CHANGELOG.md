@@ -1,5 +1,56 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.2 — 超激进逻辑变换（反 AST 超集）正式接线
+
+> 主题：把「只要实际逻辑和输出不变，可以把代码改得面目全非」做成正式层。此前
+> `src/LogicTransform/` 是未接线、未通过回归的实验性半成品（v1.2.1 发布说明里明确
+> 排除），本版完成正确性修复、全量接线、全档位回归后正式发布。
+
+### 三档强度（`--logic` / 分层 `logic` 层）
+
+| 强度 | 变换 |
+| --- | --- |
+| 1 | 任意位置的**数字字面量恒等展开**（`strlen(sha1('1'))` / `md5` 长度积木；常量表达式上下文改用纯位运算）、一元 `!X` → `(X == false)` |
+| 2 | 上述 + 比较 `< > <= >=` → `<=>` 结合 `===` / `!==` 恒等式、布尔 `&& \|\| xor` → 真值位求和恒等式 |
+| 3 | 上述 + **临时变量缠结**：把简单赋值 / `echo` 展开成「创建两个临时变量 → 位运算串计算 → 后续语句复用」的互相牵连变量网，新变量再被 `var` 层重命名 |
+
+### 用户点名形态的实际产物（输出 10086）
+
+原生 `$base = 10086;` → 变换后（节选；这些变量名还会被 `var` 层再改一次）：
+
+```php
+$_mNv10 = (strlen(sha1('1'))*252 + strlen('xxxxxx'));   // 常量本身也隐藏
+$_mNv11 = ...; $_mNv12 = ...;                            // 两个临时变量 Ka / Kb
+$_mNv13 = $_mNv11 ^ $_mNv12;                             // = 10086
+$_mNv14 = ($_mNv13 ^ $_mNv11) ^ $_mNv12;                 // = 0，复用 Ka / Kb
+$_mNv13 = ((($_mNv6 ?? null) === ($_mNv7 ?? null)) ? 0 : 0) + $_mNv13; // 复用上一条语句的变量
+$_mNv10 = $_mNv13 + $_mNv14;                             // 仍 = 10086
+$base = $_mNv10;
+```
+
+### 正确性修复（本轮把 18 个失败逐一定位到 0）
+
+1. **`declare(strict_types=1)` 下 `sha1(1)` / `md5(1)` 抛 TypeError** — 恒等积木改为字符串实参 `sha1('1')` / `md5('1')`。此缺陷同时影响已接线的 `anti_ast` 层，一并修复。
+2. **`intExprConstSafe()` 的 `(Ka) ^ (Kb)` 缺整体括号** — `^` 优先级低于 `<= / == / + / . / ===`，参与运算被解析成 `($n <= Ka) ^ Kb`，导致 `match` / enum 分支错乱。改为 `((Ka) ^ (Kb))`。
+3. **`LogicCtx::caseActive` 残留** — `enum case X = 1;` 以 `;` 结束、`match` 的 `default =>` 用 `=>`，两者都不清除标志，运行时数字被大面积误判为常量上下文。补齐 `;` / `T_DOUBLE_ARROW` 清除。
+4. **`leftOperand()` 截断函数调用名** — 反向扫描遇 `is_int(` 的 `(` 使括号深度归零即返回，把 `is_int` 留在区间外，布尔重组生成 `count(true)` / `Array callback must have exactly two elements`。修为纳入整个调用名，并加「左操作数被前缀挂住」兜底拦截。
+5. **引用赋值被缠结打断** — `&slot()` 的 `&` 在 PHP 8.1 是 `T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG`（旧代码只排除 `FOLLOWED_BY` 变体），`$ref = &f()` 被拆成 `$tmp = &f(); $ref = $tmp;`，引用链断裂。补齐两种变体 + 语句区间内 `&` 兜底。
+6. **砍掉高风险控制流结构重建** — 原 intensity 3 的 `if/elseif→嵌套`、`switch→if 链` 在单语句 `if` 下丢掉 `if` 关键字生成悬空 `else`（11 个 lint 失败），且与控制流 / 状态机壳链交互危险。整段移除，改用「临时变量缠结」达到同等混乱度而语义正交。
+7. 另补：常量表达式上下文扩展覆盖 `#[...]` 属性参数、`static $x = ...` 静态初始化；常量形态的 Ka/Kb 改为 salt 派生，随 salt 变化且可复现。
+
+### 接线与验证
+
+- 新 token 层 `logic` 注册进 `LayerRegistry` / `LayerDescriptor`（参数 `intensity` 1–3），
+  `Config` / `config.default.php` / `Obfuscator`（分层 + 散装两条路径）/ `entry.php` 全接线；
+  CLI 新增 `--logic` / `--logic-intensity=`；预设 `low=1 / mid=2 / high=2 / max=3 / ultra=3`
+  （`min` 保持零开销不启用），**`logic` 层置于 `var` 层之前**，新临时变量被一并重命名。
+- 新增 `tests/fixtures/logic_tangle.php`（用户点名形态 + strict_types / const / enum case /
+  引用 / match(true) / heredoc·nowdoc / list 解构 / 显式 goto 等边界）；`tests/logic_smoke.php`
+  对全部 fixtures × 3 强度做 `php -l` + 逐字节输出比对，纳入主套件专项。
+- **底层冒烟 60 / 60 通过**；**全量回归 55 / 55 通过**（含新增 S8 与底层专项）；
+  **80 次 ultra 多 salt 压测**（10 样例 × 8 salt）→ 0 crash / 0 mismatch / 0 lint 失败。
+- `AWAENC_DESIGN.md` 设计草案移入 `.gitignore` 忽略的 `longtmp/`，今后提交无需再手动精确排除。
+
 ## v1.2.1 — VM 完全支持现代 PHP 编译语法 / ultra·嵌套 EVAL 壳链正确性修复
 
 > 主题：让 `ultra` 档（真·嵌套 VM + 10 层 EVAL 壳 + 结构毒化 + 全反检测矩阵）能

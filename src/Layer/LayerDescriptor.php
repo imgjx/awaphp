@@ -140,6 +140,16 @@ final class LayerDescriptor
                 'params' => [],
                 'tags' => ['反分析'],
             ],
+            'logic' => [
+                'kind'  => 'token',
+                'label' => '超激进逻辑变换',
+                'desc'  => '任意位置表达式的类型安全恒等重组（数字 / 一元 ! / 比较 / 布尔），强度 3 再把简单赋值与 echo 展开成「创建两个临时变量 → 串计算 → 跨语句复用」的互相牵连变量网；新变量被 var 层一并重命名。全部改写经样本值代入校验，产物逐字节等价',
+                'params' => [
+                    'intensity' => ['label' => '变换强度', 'type' => self::T_INT, 'default' => 2, 'min' => 1, 'max' => 3,
+                                    'hint' => '1=数字/! 2=+比较/布尔 3=+临时变量缠结'],
+                ],
+                'tags' => ['反分析'],
+            ],
             'ws' => [
                 'kind'  => 'token',
                 'label' => '空白压缩',

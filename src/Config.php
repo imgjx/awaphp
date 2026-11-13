@@ -167,6 +167,9 @@ final class Config
         $this->data['confrontation_intensity']  = max(1, min(3, $i($this->data['confrontation_intensity'] ?? 2)));
         // 深度反AST：把语句位 echo/print/return 的常量字面量改写成"累加器 + 恒等表达式"形式
         $this->data['anti_ast'] = $b($this->data['anti_ast'] ?? false) ?? false;
+        // 超激进逻辑变换（反 AST 超集）：任意位置表达式恒等重组 + 临时变量缠结
+        $this->data['logic']           = $b($this->data['logic'] ?? false) ?? false;
+        $this->data['logic_intensity'] = max(1, min(3, $i($this->data['logic_intensity'] ?? 2)));
 
         // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
         $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];

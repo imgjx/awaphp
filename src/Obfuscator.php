@@ -935,6 +935,10 @@ final class Obfuscator
             case 'anti_ast':
                 $tokens = (new AntiAst($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
+            case 'logic':
+                $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
+                    ->process($tokens, $cfg);
+                break;
         }
     }
 
@@ -1016,6 +1020,10 @@ final class Obfuscator
                 break;
             case 'anti_ast':
                 $map['anti_ast'] = true;
+                break;
+            case 'logic':
+                $map['logic'] = true;
+                $map['logic_intensity'] = (int) ($params['intensity'] ?? 2);
                 break;
         }
         return new Config(array_merge($this->config->all(), $map));
@@ -1710,6 +1718,13 @@ final class Obfuscator
     private function pipelineOnce(string $code, bool $isLast): string
     {
         $tokens = Parser::tokenize($code);
+
+        // 超激进逻辑变换：必须置于变量重命名之前，使新引入的临时变量被 var 层
+        // 一并改名；分层路径由 logic 层负责，散装路径由本 flag 触发。
+        if ($this->config->get('logic')) {
+            $logic = new LogicRewriter($this->salt, $this->logger, (int) $this->config->get('logic_intensity'));
+            $tokens = $logic->process($tokens, $this->config);
+        }
 
         $var = new VariableObfuscator($this->salt, $this->logger);
         $func = new FunctionObfuscator($this->salt, $this->logger, $this->symbols);

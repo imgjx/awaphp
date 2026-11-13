@@ -18,10 +18,12 @@ declare(strict_types=1);
 final class IdentityExpr
 {
     /** @var array<int,string> 整数积木：表达式 => 恒等值 */
+    // 注意：md5/sha1 的首参必须传**字符串字面量**。若写成 md5(1)，
+    // 在 declare(strict_types=1) 的源文件中会抛 TypeError（int 不能隐式转 string）。
     private const INT_BLOCKS = [
-        32 => 'strlen(md5(1))',   // 32
-        40 => 'strlen(sha1(1))',  // 40
-        65 => "ord('A')",         // 65
+        32 => "strlen(md5('1'))",   // 32
+        40 => "strlen(sha1('1'))",  // 40
+        65 => "ord('A')",           // 65
     ];
 
     /**
@@ -46,13 +48,13 @@ final class IdentityExpr
         $r = $v % 40;
         $parts = [];
         if ($b > 0) {
-            $parts[] = 'strlen(sha1(1))*' . $b;
+            $parts[] = "strlen(sha1('1'))*" . $b;
         }
         if ($r > 0) {
             $a = intdiv($r, 32);
             $rr = $r % 32;
             if ($a > 0) {
-                $parts[] = 'strlen(md5(1))*' . $a;
+                $parts[] = "strlen(md5('1'))*" . $a;
             }
             if ($rr > 0) {
                 $parts[] = "strlen('" . str_repeat('x', $rr) . "')";
@@ -87,6 +89,40 @@ final class IdentityExpr
         $p1 = base64_encode(substr($str, 0, $off));
         $p2 = base64_encode(substr($str, $off));
         return "base64_decode('" . $p1 . "') . base64_decode('" . $p2 . "')";
+    }
+
+    /**
+     * 常量安全形态的整数恒等表达式：仅用位运算（^），**绝不调用任何函数**，
+     * 因此可在常量表达式上下文（const / case 标签 / 参数默认值 / 属性默认值 /
+     * define() 值）安全使用。把 $v 拆成 Ka ^ Kb（Ka 随机、Kb = Ka ^ v），源码中
+     * 不再出现 $v 明文，且等号两侧恒等式经 verify() 校验。
+     * @return string|null 失败返回 null（保持原样）
+     */
+    public function intExprConstSafe(string $raw, int $seed = 0): ?string
+    {
+        $digits = str_replace('_', '', $raw);
+        if ($digits === '' || !ctype_digit($digits)) {
+            return null;
+        }
+        // 八进制 / 十六进制（0x… / 0b…）由 Number 层或保持原样处理，这里只认十进制
+        if (strlen($digits) > 1 && $digits[0] === '0') {
+            return null;
+        }
+        $v = (int) $digits;
+        // 取 32 位范围内的随机基底（$seed 由调用方以 salt 派生，可复现且随 salt 变化）
+        $ka = $this->constKa($v, $seed);
+        $kb = $ka ^ $v;
+        // 必须整体再包一层括号：`^` 在 PHP 中优先级低于 <= / == / + / . / === 等，
+        // 只写 (Ka) ^ (Kb) 时参与运算会被解析成 (A <= Ka) ^ Kb 之类的错误语义。
+        return '((' . $ka . ') ^ (' . $kb . '))';
+    }
+
+    /** 由 $v 与 salt 派生种子共同决定一个稳定的 Ka（避免恒为 0 / 与 v 过近） */
+    private function constKa(int $v, int $seed = 0): int
+    {
+        $h = (int) (crc32((string) $v . '|ka|' . $seed) & 0x7fffffff);
+        $ka = ($h % 0x7fffffff) | 0x1000; // 保证非零且高位有值
+        return $ka;
     }
 
     /**
