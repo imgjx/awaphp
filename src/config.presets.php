@@ -221,7 +221,7 @@ return [
     // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
     'ultra' => [
         'layers' => [
-            ['name' => 'logic',       'params' => ['intensity' => 3]],
+            ['name' => 'logic',       'params' => ['intensity' => 3, 'decoy' => true, 'fake_tail' => true, 'minify' => true]],
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],

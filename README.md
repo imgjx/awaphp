@@ -1,6 +1,6 @@
 # 嗷呜awaのPHP 混淆器
 
-![Version](https://img.shields.io/badge/version-1.2.2-orange)
+![Version](https://img.shields.io/badge/version-1.2.3-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -40,6 +40,8 @@
 
 ## 特性
 
+> **v1.2.3 更新要点**：① **超激进逻辑变换全面强化**——恒等积木改用 salt 派生的随机串（不再清一色 `x`/`1`）、字符串 `base64`/`hex2bin`/`str_rot13` 多段多编码拼接、临时变量 5→2 降开销、命名加长防冲突；② **派生多分支诱饵**（`echo` 派生成恒真假分支，else 输出派生假值）、**死变量末尾假值**（延迟两句就地覆盖为随机数字/字符串）、**压行**；③ 以上为「普通档」100% 安全、ultra 默认开，高级「破坏档」`logic_extreme` 独立开关默认关。
+>
 > **v1.2.2 更新要点**：① **超激进逻辑变换（`logic` 层 / `--logic`）正式接线**——
 > 只要实际逻辑与输出不变，就把任意位置的数字字面量、一元 `!`、比较 `< > <= >=`、
 > 布尔 `&& || xor` 全部改写成类型安全、逐值恒等但外观完全不同的等价表达式；强度 3

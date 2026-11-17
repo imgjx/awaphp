@@ -1368,3 +1368,41 @@ P3 shutdown 守卫行与尾区复检构成多点触发。
 - **全量回归 55 / 55 通过**（S1–S8 + 目录递归 + 防篡改 + 底层专项 + 元信息）。
 - **80 次 ultra 多 salt 压测**（10 样例 × 8 salt）→ 0 crash / 0 mismatch / 0 lint 失败。
 - 预设：`low=1 / mid=2 / high=2 / max=3 / ultra=3`，`min` 保持零开销不启用。
+
+## 11.28 v1.2.3：超激进逻辑变换强化（随机积木 / 多编码字符串 / 诱饵多分支 / 死变量假值 / 压行）
+
+### 11.28.1 恒等积木随机化（`IdentityExpr`）
+
+- `md5`/`sha1` 首参与 `strlen` 定长串改用 salt 派生的随机字母数字串（不再清一色 `x`/`1`），
+  每个整数积木末尾叠加一个 `strlen('随机')*0` 的恒零扰动项。
+- 字符串恒等 = 多段（1~3）+ 多编码（`base64_decode` / `hex2bin` / `str_rot13` 随机选）拼接，
+  源码无明文、无统一编码特征；全部 `verify()` 校验。
+
+### 11.28.2 逻辑层强化
+
+- 临时变量从 5 个降到 2 个（`a,b`），运行期开销与体积显著下降；命名为 `_` + 9 位
+  salt 派生随机 + 全局查重，基本不可能与用户变量重名。
+- 新增字符串字面量 runtime 多编码改写（排除 const / 参数默认值 / 属性默认值 / static /
+  `#[...]` 等常量表达式上下文，以及 declare）。
+- 派生多分支诱饵（`decoy`）：部分 `echo` → `if ((($v===$v)||($v!==$v))) { echo $v; } else { echo <派生假值>; }`，
+  条件对 NAN 也恒真，else 输出派生随机值。
+- 死变量末尾假值（`fake_tail`）：临时变量"延迟两句"后就地赋随机数字/字符串（此时已不被
+  carry 读取），不依赖文件末尾插入，bracket 命名空间 / 混写 HTML 均安全。
+- 压行（`minify`）：删空白/注释，仅在词素粘连处补**真正的** `T_WHITESPACE`。
+  关键修复：早期用裸 `' '` 当空格，会让后续 token 层的 `prevSignificant` 误判，
+  把 `const new` 的 `new` 随机大小写（`Undefined constant Cfg::new`）；改为真空白 token 后修复。
+  另：PHP 8 下只有 `T_NAME_*`（完整名字）才需前置空格，`group use` 的 `T_NS_SEPARATOR`
+  **不补**，否则 class 层 `use A\{X,Y}` 解析漏项导致接口断链。
+- 高级破坏档（`extreme`，默认关）：用户变量"保存→假值→恢复"，最终值不变但可能定义原本
+  未定义的变量；仅在无 bracket 命名空间、无内联 HTML 时生效。
+
+### 11.28.3 VM 修复
+
+- `VmCompiler` 预扫描：`const`/`case` 后接关键字名（`const new` / `enum case list`）时整体回退
+  不透明载荷。VM 的 const/case 编译只认 `T_STRING`，遇关键字名会静默丢常量，运行期
+  `Cfg::new` 变成 `Undefined constant` 或输出为空。
+
+### 11.28.4 验证
+
+- 底层冒烟 60/60；纯逻辑（intensity 3 全开）多 salt 80/80；ultra 多 salt 36/36；
+  全量回归 55/55；11 个复杂语法 fixture 的 ultra 单测全部逐字节 MATCH。

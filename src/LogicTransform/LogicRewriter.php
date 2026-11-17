@@ -41,6 +41,13 @@ final class LogicRewriter
     private int $intensity;
     private array $usedVars = [];
     private int $constSeed = 0;
+    private int $genCtr = 0;
+    /** @var array<int,string> 本层创建的所有临时变量名（用于末尾赋假值） */
+    private array $tempVars = [];
+    private bool $decoyOn = false;      // 派生多分支诱饵（普通档，默认 ultra 开）
+    private bool $fakeTailOn = false;   // 末尾给临时变量赋随机假值（普通档，默认 ultra 开）
+    private bool $extremeOn = false;    // 高级档：用户变量保存→假值→恢复（默认关，可能破坏）
+    private bool $minifyOn = false;     // 压行
 
     public function __construct(Salt $salt, Logger $logger, int $intensity = 2)
     {
@@ -60,16 +67,34 @@ final class LogicRewriter
         if ($this->intensity < 1) {
             return $tokens;
         }
+        $ultra = $this->intensity >= 3;
+        // 普通档（默认 ultra 开，100% 安全）：多分支诱饵 / 临时变量末尾假值 / 压行。
+        // 高级档（独立开关，默认关，可能有破坏性）：用户变量保存→假值→恢复。
+        $this->decoyOn    = (bool) $cfg->get('logic_decoy', $ultra);
+        $this->fakeTailOn = (bool) $cfg->get('logic_fake_tail', $ultra);
+        $this->extremeOn  = (bool) $cfg->get('logic_extreme', false);
+        $this->minifyOn   = (bool) $cfg->get('logic_minify', $ultra);
         $this->constSeed = $this->salt->isEmpty()
             ? 0
             : (int) hexdec(substr(bin2hex($this->salt->derive('logic-const', 4)), 0, 7));
+        // 让恒等积木里的随机串随 salt 变化（可复现），不再清一色 'x'/'1'
+        $this->id->setSeed($this->constSeed);
+        $this->genCtr = 0;
+        $this->tempVars = [];
         $this->collectVars($tokens);
         // 先缠结（此时右值仍是原始字面量，可识别整数走位运算恒等链），
-        // 再做表达式级递归变换（把剩余数字一并展开）。
+        // 再做表达式级递归变换（把剩余数字/字符串一并展开）。
         if ($this->intensity >= 3) {
             $tokens = $this->tanglePass($tokens);
         }
-        return $this->transformRange($tokens, true);
+        $tokens = $this->transformRange($tokens, true);
+        if ($this->fakeTailOn || $this->extremeOn) {
+            $tokens = $this->fakeTailPass($tokens);
+        }
+        if ($this->minifyOn) {
+            $tokens = $this->minifyTokens($tokens);
+        }
+        return $tokens;
     }
 
     /**
@@ -102,6 +127,21 @@ final class LogicRewriter
                         ? $this->id->intExprConstSafe($tok[1], $this->constSeed)
                         : $this->id->intExpr((int) $tok[1]);
                     if ($expr !== null && $this->id->verify((int) $tok[1], $expr)) {
+                        $matches[$i] = ['start' => $i, 'end' => $i, 'repl' => $this->exprTokens($expr)];
+                    }
+                }
+                continue;
+            }
+
+            // —— 字符串字面量多编码改写（仅顶层；排除常量表达式上下文 / declare）——
+            // 常量上下文（const / case / 参数默认值 / 属性默认值 / static 初始化 / #[...]
+            // 属性参数）里的字符串必须是字面量，调用 base64_decode 等会致命；
+            // heredoc/nowdoc 与插值字符串不是单个 T_CONSTANT_ENCAPSED_STRING，天然不在此列。
+            if ($transformNumbers && is_array($tok) && $tok[0] === T_CONSTANT_ENCAPSED_STRING) {
+                if (!$ctx->inDeclare() && !$ctx->isConstContext()) {
+                    $s = $this->stripQuotes($tok[1]);
+                    $expr = $this->id->stringExpr($s);
+                    if ($this->id->verify($s, $expr)) {
                         $matches[$i] = ['start' => $i, 'end' => $i, 'repl' => $this->exprTokens($expr)];
                     }
                 }
@@ -287,6 +327,7 @@ final class LogicRewriter
         $n = count($tokens);
         $matches = [];
         $carry = null;      // 上一条改写语句产生的 [a,b] 变量名，供跨语句复用
+        $dead = null;       // 上上句的 [a,b]（本句已不再使用），在本句末尾赋假值
         $prevSig = null;    // 上一个有效 token 的边界标记
         $stmtStart = -1;
         $paren = 0;
@@ -322,9 +363,10 @@ final class LogicRewriter
                     continue;
                 } elseif ($t === ';' && $paren === 0 && $bracket === 0) {
                     if ($stmtStart >= 0) {
-                        $m = $this->tryTangleStmt($tokens, $stmtStart, $i, $carry);
+                        $m = $this->tryTangleStmt($tokens, $stmtStart, $i, $carry, $dead);
                         if ($m !== null) {
                             $matches[$stmtStart] = $m;
+                            $dead = $carry;
                             $carry = $m['carry'];
                         }
                     }
@@ -351,7 +393,7 @@ final class LogicRewriter
      * 尝试把 [s, e]（e 为结尾 ';'）的语句展开成临时变量缠结块。
      * @return array{start:int,end:int,repl:array<int,mixed>,carry:array}|null
      */
-    private function tryTangleStmt(array $tokens, int $s, int $e, ?array $carry): ?array
+    private function tryTangleStmt(array $tokens, int $s, int $e, ?array $carry, ?array $older = null): ?array
     {
         $first = $tokens[$s];
         $isAssign = is_array($first) && $first[0] === T_VARIABLE;
@@ -431,42 +473,51 @@ final class LogicRewriter
             $isIntRhs = false;
         }
 
-        $vk = $this->genName();  // 原值（只求值一次）
+        // 只用两个寄存器：$a（累加/结果）、$b（异或/副本）。相比旧版 5 个临时变量
+        // 大幅降低运行期开销与代码体量；跨语句复用仍保留（借用上一句的 a,b 做恒 0 运算）。
         $a = $this->genName();
         $b = $this->genName();
-        $c = $this->genName();
-        $d = $this->genName();
 
         if ($isIntRhs) {
-            // Ka ^ Kb === v；a、b 反复参与，最终仍得 v
+            // Ka ^ Kb === v
             $ka = $this->tangleKa($intVal);
             $kb = $ka ^ $intVal;
-            $block = '$' . $vk . ' = ' . $rhs . ";\n"
-                . '$' . $a . ' = ' . $this->id->intExpr($ka) . ";\n"
+            $block = '$' . $a . ' = ' . $this->id->intExpr($ka) . ";\n"
                 . '$' . $b . ' = ' . $this->id->intExpr($kb) . ";\n"
-                . '$' . $c . ' = $' . $a . ' ^ $' . $b . ";\n"
-                . '$' . $d . ' = ($' . $c . ' ^ $' . $a . ') ^ $' . $b . ";\n";
+                . '$' . $a . ' = $' . $a . ' ^ $' . $b . ";\n";
             if ($carry !== null) {
                 // 跨语句复用上一条语句的变量：恒 0（任意类型安全），加和不改变值
-                $block .= '$' . $c . ' = ((($' . $carry[0] . ' ?? null) === ($' . $carry[1] . ' ?? null)) ? 0 : 0) + $' . $c . ";\n";
+                $block .= '$' . $a . ' = ((($' . $carry[0] . ' ?? null) === ($' . $carry[1] . ' ?? null)) ? 0 : 0) + $' . $a . ";\n";
             }
-            $block .= '$' . $vk . ' = $' . $c . ' + $' . $d . ";\n";
+            $res = $a;
         } else {
-            $block = '$' . $vk . ' = ' . $rhs . ";\n"
-                . '$' . $a . ' = $' . $vk . ";\n"
-                . '$' . $b . ' = (($' . $a . ' === $' . $a . ') ? $' . $a . ' : $' . $vk . ");\n"
-                . '$' . $c . ' = [ $' . $b . " ];\n"
-                . '$' . $d . ' = ($' . $c . '[0] === $' . $a . ') ? $' . $c . '[0] : $' . $b . ";\n";
+            $block = '$' . $a . ' = ' . $rhs . ";\n"
+                . '$' . $b . ' = (($' . $a . ' === $' . $a . ') ? $' . $a . ' : $' . $a . ");\n";
             if ($carry !== null) {
                 // 跨语句复用：恒真三元（两分支同值），任意类型安全
-                $block .= '$' . $c . ' = (($' . $carry[0] . ' ?? null) === ($' . $carry[1] . ' ?? null))'
-                    . ' ? $' . $vk . ' : $' . $vk . ";\n";
+                $block .= '$' . $b . ' = (($' . $carry[0] . ' ?? null) === ($' . $carry[1] . ' ?? null))'
+                    . ' ? $' . $b . ' : $' . $a . ";\n";
             }
-            $block .= '$' . $vk . ' = $' . $d . ";\n";
+            $res = $b;
         }
-        $tail = $isAssign
-            ? '$' . ltrim((string) $lhs, '$') . ' = $' . $vk . ';'
-            : 'echo $' . $vk . ';';
+        if ($older !== null) {
+            // 上上句的临时变量本句已不再使用：就地赋随机假值（数字/字符串交替），
+            // 既不影响任何后续计算（后面只 carry 本句的 a,b），又制造"仍在用"的假象。
+            $block .= '$' . $older[0] . ' = ' . $this->fakeValue($this->genCtr + 7) . ';'
+                . ' $' . $older[1] . ' = ' . $this->fakeValue($this->genCtr + 11) . ";\n";
+        }
+        if ($isAssign) {
+            $tail = '$' . ltrim((string) $lhs, '$') . ' = $' . $res . ';';
+        } elseif ($this->decoyOn) {
+            // 派生多分支诱饵：恒真条件（对 NAN 也成立：`===` 与 `!==` 至少一个为真）
+            // 选择真输出，else 分支输出一个派生假值（多编码的随机串/数），
+            // 让逆向者无法仅凭"这条分支输出什么"确定真实输出。
+            $decoy = $this->fakeValue(10000 + $this->genCtr);
+            $tail = 'if (($' . $res . ' === $' . $res . ') || ($' . $res . ' !== $' . $res . ')) {'
+                . ' echo $' . $res . '; } else { echo ' . $decoy . '; }';
+        } else {
+            $tail = 'echo $' . $res . ';';
+        }
         return [
             'start' => $s,
             'end'   => $e,
@@ -1047,6 +1098,22 @@ final class LogicRewriter
         return is_string($t) && $t === $c;
     }
 
+    /** 去掉字符串字面量的引号并还原转义（单/双引号），用于生成等价表达式 */
+    private function stripQuotes(string $raw): string
+    {
+        if ($raw === '' || strlen($raw) < 2) {
+            return $raw;
+        }
+        $q = $raw[0];
+        $inner = substr($raw, 1, -1);
+        if ($q === "'") {
+            return str_replace(["\\'", '\\\\'], ["'", '\\'], $inner);
+        }
+        return preg_replace_callback('/\\\\([nrt\\\\$"\'])/', static fn ($m): string => match ($m[1]) {
+            'n' => "\n", 't' => "\t", 'r' => "\r", '\\' => '\\', '$' => '$', '"' => '"', "'" => "'",
+        }, $inner);
+    }
+
     private function collectVars(array $tokens): void
     {
         foreach ($tokens as $t) {
@@ -1058,15 +1125,223 @@ final class LogicRewriter
 
     private function genName(): string
     {
-        $seed = $this->salt->isEmpty() ? bin2hex(random_bytes(4)) : $this->salt->derive('logic-rw', 10);
-        for ($try = 0; $try < 50; $try++) {
-            $cand = '_m' . substr(preg_replace('/[^a-zA-Z0-9]/', '', $seed), 0, 6) . ($try === 0 ? '' : (string) $try);
+        $this->genCtr++;
+        $material = $this->salt->isEmpty()
+            ? bin2hex(random_bytes(6))
+            : bin2hex($this->salt->derive('logic-rw|' . $this->genCtr, 8));
+        $material = preg_replace('/[^a-zA-Z0-9]/', '', $material);
+        if ($material === '' || $material === null) {
+            $material = bin2hex(random_bytes(6));
+        }
+        // 名字形如 _<9位随机>：长度足够、前缀固定 '_'，并与已收集变量全局查重，
+        // 碰撞时递增十六进制后缀，基本不可能与用户变量重名（旧版 6 位短名相对更易撞）。
+        for ($try = 0; $try < 200; $try++) {
+            $cand = '_' . substr($material, 0, 9) . ($try === 0 ? '' : dechex($this->genCtr * 131 + $try));
             if (!isset($this->usedVars[$cand])) {
                 $this->usedVars[$cand] = true;
+$this->tempVars[] = $cand;
                 return $cand;
             }
         }
-        return '_m' . substr(md5($seed . microtime()), 0, 8);
+        do {
+            $cand = '_' . bin2hex(random_bytes(8));
+        } while (isset($this->usedVars[$cand]));
+        $this->usedVars[$cand] = true;
+        $this->tempVars[] = $cand;
+        return $cand;
+    }
+
+    /**
+     * 末尾假值：给本层创建的所有临时变量在文件末尾赋随机数字/字符串（多编码）。
+     * 这些变量在真实逻辑里已不再被读取，末尾覆盖不影响输出；作用是让逆向者看到
+     * 一堆"还在被赋值"的变量，误以为仍有未读逻辑。高级档（extreme）额外对用户
+     * 普通变量做「保存→假值→恢复」，最终值不变（但可能定义原本未定义的变量）。
+     */
+    private function fakeTailPass(array $tokens): array
+    {
+        // 临时变量的"末尾假值"已改为 tanglePass 内的「延迟两句就地覆盖」（更安全，
+        // 不受 namespace / HTML 结构影响）。此处只处理 extreme 档的用户变量：
+        // 在文件末尾对"出现过赋值"的普通变量做「保存→假值→恢复」，最终值不变。
+        // 为避免把代码插到命名空间块外 / HTML 区，遇到 bracketed namespace 或
+        // 内联 HTML 时整体跳过（extreme 本就是"可能有破坏性"的独立开关）。
+        $code = '';
+        $n = 0;
+        if ($this->extremeOn && !$this->hasBracketNamespace($tokens) && !$this->hasInlineHtml($tokens)) {
+            $tempSet = [];
+            foreach ($this->tempVars as $tv) {
+                $tempSet[$tv] = true;
+            }
+            $assigned = $this->collectAssignedVars($tokens);
+            $skipSG = ['this' => 1, 'GLOBALS' => 1, '_GET' => 1, '_POST' => 1, '_COOKIE' => 1,
+                '_SERVER' => 1, '_FILES' => 1, '_ENV' => 1, '_REQUEST' => 1, '_SESSION' => 1];
+            $cnt = 0;
+            foreach ($assigned as $v => $_) {
+                if (isset($skipSG[$v]) || isset($tempSet[$v]) || $cnt >= 20) {
+                    continue;
+                }
+                $save = $this->genName();
+                $code .= '$' . $save . ' = $' . $v . '; $' . $v . ' = ' . $this->fakeValue($n) . '; $' . $v . ' = $' . $save . ";\n";
+                $n++;
+                $cnt++;
+            }
+        }
+        if ($code === '') {
+            return $tokens;
+        }
+        $ins = $this->exprTokens($code);
+        // 插到最后一个 T_CLOSE_TAG 之前；无 close tag 则追加到末尾。
+        $pos = count($tokens);
+        for ($i = count($tokens) - 1; $i >= 0; $i--) {
+            if (is_array($tokens[$i]) && $tokens[$i][0] === T_CLOSE_TAG) {
+                $pos = $i;
+                break;
+            }
+        }
+        array_splice($tokens, $pos, 0, $ins);
+        return $tokens;
+    }
+
+    /** 是否使用花括号式命名空间（`namespace X { ... }`）—— 末尾插代码会落到命名空间外 */
+    private function hasBracketNamespace(array $tokens): bool
+    {
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            if (!is_array($tokens[$i]) || $tokens[$i][0] !== T_NAMESPACE) {
+                continue;
+            }
+            for ($j = $i + 1; $j < $n; $j++) {
+                $t = $tokens[$j];
+                if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+                if (is_string($t) && $t === ';') {
+                    break;
+                }
+                if (is_string($t) && $t === '{') {
+                    return true;
+                }
+                if (is_array($t) && in_array($t[0], [T_OPEN_TAG, T_CLOSE_TAG], true)) {
+                    break;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 是否存在内联 HTML（混写文件末尾插代码会变成 HTML 文本） */
+    private function hasInlineHtml(array $tokens): bool
+    {
+        foreach ($tokens as $t) {
+            if (is_array($t) && $t[0] === T_INLINE_HTML && trim($t[1]) !== '') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 生成一个随机假值表达式（数字或字符串交替，均为多编码/恒等展开形态） */
+    private function fakeValue(int $i): string
+    {
+        $seed = $this->salt->isEmpty()
+            ? bin2hex(random_bytes(4))
+            : bin2hex($this->salt->derive('logic-fake|' . $i, 6));
+        $seed = preg_replace('/[^a-zA-Z0-9]/', '', $seed) ?? 'x';
+        if ($seed === '') {
+            $seed = 'x';
+        }
+        if ($i % 2 === 0) {
+            $s = substr($seed . 'fake', 0, 8);
+            return $this->id->stringExpr($s);
+        }
+        $num = (int) (hexdec(substr($seed, 0, 6)) % 900000) + 1000;
+        return $this->id->intExpr($num);
+    }
+
+    /** 收集"出现过赋值"的用户变量名（T_VARIABLE 后紧跟 '='），供 extreme 档使用 */
+    private function collectAssignedVars(array $tokens): array
+    {
+        $out = [];
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!is_array($t) || $t[0] !== T_VARIABLE) {
+                continue;
+            }
+            $nx = Parser::nextSignificant($tokens, $i);
+            if ($nx >= 0 && is_string($tokens[$nx]) && $tokens[$nx] === '=') {
+                $out[ltrim($t[1], '$')] = true;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * 压行：删除空白与注释 token，仅在两个"词素"相邻会粘连时补一个空格。
+     * heredoc 体是 T_ENCAPSED_AND_WHITESPACE（非空白 token），原样保留。
+     * 行注释删除后补一个换行，避免吞掉后续代码。
+     */
+    private function minifyTokens(array $tokens): array
+    {
+        $out = [];
+        $prevText = '';
+        $prevTok = null;
+        foreach ($tokens as $tok) {
+            $text = is_array($tok) ? $tok[1] : $tok;
+            if (is_array($tok) && in_array($tok[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                if ($tok[0] === T_COMMENT && (substr($text, 0, 2) === '//' || ($text[0] ?? '') === '#')) {
+                    // 必须用真正的 T_WHITESPACE token（而非裸字符串），否则后续层
+                    // 的 Parser::prevSignificant 不认它是空白，导致关键字上下文误判。
+                    $out[] = [T_WHITESPACE, "\n", 0];
+                    $prevText = "\n";
+                    $prevTok = null;
+                }
+                continue;
+            }
+            if ($text === '') {
+                continue;
+            }
+            if ($prevText !== '' && $this->needSpaceBetween($prevTok, $prevText, $tok, $text)) {
+                $out[] = [T_WHITESPACE, ' ', 0];
+            }
+            $out[] = $tok;
+            $prevText = $text;
+            $prevTok = $tok;
+        }
+        return $out;
+    }
+
+    private function needSpaceBetween($prevTok, string $prevText, $tok, string $text): bool
+    {
+        $a = $prevText[strlen($prevText) - 1];
+        $b = $text[0];
+        $wordy = static fn (string $c) => $c !== '' && (ctype_alnum($c) || $c === '_' || $c === '$' || ord($c) >= 0x80);
+        if ($wordy($a) && $wordy($b)) {
+            return true;
+        }
+        if ($b === '.' && is_array($prevTok) && in_array($prevTok[0], [T_LNUMBER, T_DNUMBER], true)) {
+            return true;
+        }
+        // 关键字后紧跟 `\FQCN`（如 `new \App\Circle`）：压缩成 `new\App\Circle` 会被
+        // 词法器当成函数调用。PHP 8 的 `\App\Circle` 是 T_NAME_FULLY_QUALIFIED 等
+        // 「完整名字」token，只有这类才需要前置空格；而 group use `A\B\{X,Y}` 里的 `\`
+        // 是 T_NS_SEPARATOR 分隔符，若在其前补空格会破坏 class 层对 use 列表的解析
+        // （别名表漏项 → 接口/父类断链）。故 PHP 8 下只认 T_NAME_*。
+        if ($wordy($a) && $b === '\\' && is_array($tok)) {
+            $types = [];
+            foreach (['T_NAME_QUALIFIED', 'T_NAME_FULLY_QUALIFIED', 'T_NAME_RELATIVE'] as $c) {
+                if (defined($c)) {
+                    $types[] = constant($c);
+                }
+            }
+            if ($types !== []) {
+                if (in_array($tok[0], $types, true)) {
+                    return true;
+                }
+            } elseif ($tok[0] === T_NS_SEPARATOR) {
+                return true; // PHP 7.4 兼容
+            }
+        }
+        return false;
     }
 }
 

@@ -1024,6 +1024,10 @@ final class Obfuscator
             case 'logic':
                 $map['logic'] = true;
                 $map['logic_intensity'] = (int) ($params['intensity'] ?? 2);
+                $map['logic_decoy']     = (bool) ($params['decoy'] ?? false);
+                $map['logic_fake_tail'] = (bool) ($params['fake_tail'] ?? false);
+                $map['logic_extreme']   = (bool) ($params['extreme'] ?? false);
+                $map['logic_minify']    = (bool) ($params['minify'] ?? false);
                 break;
         }
         return new Config(array_merge($this->config->all(), $map));

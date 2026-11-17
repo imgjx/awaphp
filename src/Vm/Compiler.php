@@ -566,6 +566,35 @@ final class VmCompiler
                 throw VmUnsupported::fileLevel('顶层 enum 声明：VM 走不透明载荷兜底');
             }
         }
+        // 预扫描：常量名 / case 标签被写成关键字（`const new` / `case list` / `case fn`）。
+        // PHP 允许关键字作为类常量名 / enum case 名（大小写敏感标识符），但 VM 的
+        // const/case 编译只认 T_STRING，遇到 T_NEW/T_LIST/T_MATCH 等会静默丢弃，
+        // 运行期 `Cfg::new` 变成 Undefined constant / 输出为空。这里整体回退不透明载荷，
+        // 让 eval 单元内 100% 原生语义。
+        $tn = count($this->tokens);
+        for ($ti = 0; $ti < $tn; $ti++) {
+            $tt = $this->tokens[$ti];
+            if (!is_array($tt) || ($tt[0] !== T_CONST && $tt[0] !== T_CASE)) {
+                continue;
+            }
+            $tj = $ti + 1;
+            while ($tj < $tn && is_array($this->tokens[$tj])
+                && in_array($this->tokens[$tj][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                $tj++;
+            }
+            if ($tj >= $tn) {
+                continue;
+            }
+            $nx = $this->tokens[$tj];
+            $isName = is_array($nx) && $nx[0] === T_STRING;
+            $isVal = is_array($nx) && in_array($nx[0], [T_LNUMBER, T_DNUMBER, T_CONSTANT_ENCAPSED_STRING], true);
+            if ($tt[0] === T_CONST && !$isName) {
+                throw VmUnsupported::fileLevel('const 常量为关键字名：VM 走不透明载荷兜底');
+            }
+            if ($tt[0] === T_CASE && !$isName && !$isVal) {
+                throw VmUnsupported::fileLevel('case 标签为关键字名：VM 走不透明载荷兜底');
+            }
+        }
         // 预扫描：收集全程序 const 声明的常量名，使标识符解析能识别「运行期定义的常量」
         // （PHP 的常量在运行期才存在，编译期 defined() 看不到，需按名发射 CONST_FETCH）
         foreach ($stmts as $stmt) {

@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.2');
+define('OBFUSCATOR_VERSION', '1.2.3');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -367,6 +367,13 @@ function obf_help(): string
                        与 --anti-ast 可叠加；分层模式对应 logic 层。
       --logic-intensity=  变换强度 1|2|3（默认 2）：1=数字/!，2=+比较/布尔，
                        3=+临时变量缠结。仅 --logic / logic 层启用时生效。
+      --logic-decoy      echo 派生多分支诱饵：恒真条件选真输出，else 输出派生假值
+                       （普通档，100% 安全；ultra 默认开）。
+      --logic-fake-tail  临时变量"延迟两句"后就地赋随机数字/字符串假值，
+                       制造仍在被使用的假象（普通档，100% 安全；ultra 默认开）。
+      --logic-minify     压行：删除空白/注释，仅词素粘连处补空格（普通档；ultra 默认开）。
+      --logic-extreme    高级破坏档：对用户变量做"保存→假值→恢复"，最终值不变但可能把
+                       原本未定义的变量定义成 null；独立开关，默认关。
       --whitelist-dirs=      不混淆的目录（逗号分隔，相对输入目录；支持 * 通配），整目录原样拷贝
       --whitelist-files=     不混淆的文件（逗号分隔，精确相对路径，如 config/app.php）
       --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 \$db,\$cfg）
