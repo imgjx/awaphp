@@ -78,6 +78,31 @@ final class Obfuscator
         'shell:newline_poison' => true,
     ];
 
+    /**
+     * v1.2.4 逐壳层激进变换（logic_shell）必须跳过的层。
+     *
+     * 逻辑变换作用于「该层包裹后的整段代码」，因此有两类层不能参与：
+     *   1) 自校验 / 指纹 / 明文锚点 / 换行配额敏感层 —— 这些层在 applyShellLayer() 时
+     *      刚把哈希写进守卫、把锚点写成固定明文、把换行按配额插好，之后再对整段
+     *      代码做 token 级恒等重组会改变字节，导致运行期自校验失配 / 锚点找不到 /
+     *      换行配额被破坏（与 INLINE_SKIP_LAYERS / shieldIfNeeded 同理）。
+     *   2) VM 编译壳 —— 解释器代码里 opcode 常量/数组索引是密集数字，逻辑变换会
+     *      把它们改写成 strlen(md5()) 积木，令每条指令分派都付出函数调用代价
+     *      （运行期性能灾难）；且 VM 产物本身是自定义 ISA 字节码，属"编译壳"而非
+     *      "解码壳"，它在外层 eval/gz 包裹时其解码逻辑会被逐层变换间接保护。
+     *
+     * 其余解码壳（eval / gz / anti_debug / anti_hook / module_link）逐层施加。
+     */
+    private const LOGIC_SHELL_SKIP_LAYERS = [
+        'shell:vm'             => true,
+        'shell:structpoison'   => true,
+        'shell:anti_tamper'    => true,
+        'shell:license'        => true,
+        'shell:honeypot'       => true,
+        'shell:newline_poison' => true,
+        'shell:anti_strip'     => true,
+    ];
+
     public function __construct(
         private Config $config,
         private Salt $salt,
@@ -847,6 +872,10 @@ final class Obfuscator
                 } else {
                     $code = $this->applyShellLayer($name, $params, $code);
                 }
+                // v1.2.4 逐壳层激进变换：对本层新生成的解码逻辑再施加一次逻辑恒等重组。
+                // 内层载荷已被编码为长字符串（受 maxlen 保护不改），只有解码逻辑被变换。
+                // 必须在内联/自保护之前做——让后续层把新引入的恒等积木再裹一层。
+                $code = $this->logicShellIfNeeded($code, $name);
                 // 逐层内联：把本层壳新生成的解码逻辑里的函数调用也内联成模块函数。
                 // shell:module_link 本身就是内联层，跳过避免同层做两遍。
                 if ($this->config->get('inline_each_layer')
@@ -1028,6 +1057,7 @@ final class Obfuscator
                 $map['logic_fake_tail'] = (bool) ($params['fake_tail'] ?? false);
                 $map['logic_extreme']   = (bool) ($params['extreme'] ?? false);
                 $map['logic_minify']    = (bool) ($params['minify'] ?? false);
+                $map['logic_wild']      = (bool) ($params['wild'] ?? false);
                 break;
         }
         return new Config(array_merge($this->config->all(), $map));
@@ -1662,6 +1692,63 @@ final class Obfuscator
         $next = $this->shieldIfNeeded($next, $layerKey);
         $this->logger->debug("已应用{$label}");
         return $next;
+    }
+
+    /**
+     * v1.2.4 逐壳层激进变换（logic_shell）。
+     *
+     * 对「本层壳包裹后」的整段代码施加一次逻辑恒等重组。内层源码此时已被编码成
+     * base64/gz/字节码长串（超过 maxlen 阈值 → 跳过，不改动载荷），因此实际被激进
+     * 变换的只有本层新生成的解码逻辑：常量数字 → 恒等积木、比较/布尔 → 面目全非的
+     * 等价式、短串 → 多编码还原。效果：攻击者剥开任意一层，看到的解码代码同样是
+     * 恒等表达式拼成的"天书"，无法按解码器模板直接理解。
+     *
+     * 安全约束：
+     *   - 跳过指纹/锚点/解释器敏感层（见 LOGIC_SHELL_SKIP_LAYERS）；
+     *   - 强制关闭 decoy / fake_tail / extreme / minify（这些在解码逻辑上会插分支、
+     *     动用户变量、删注释，风险高且与壳的字节布局冲突），只保留纯恒等重组；
+     *   - 逐层强度可配（logic_shell_intensity），默认 2；内部再做 php -l 校验，
+     *     任何异常/语法不过都回滚到本层变换前的代码，绝不产出不可运行文件。
+     */
+    private function logicShellIfNeeded(string $code, string $layerName): string
+    {
+        if (!$this->config->get('logic_shell')) {
+            return $code;
+        }
+        if (isset(self::LOGIC_SHELL_SKIP_LAYERS[$layerName])) {
+            return $code;
+        }
+        $before = $code;
+        try {
+            $maxlen = max(0, (int) $this->config->get('logic_shell_maxlen', 512));
+            // 逐层变换最低强度 2：intensity=1 仅做数字展开 + 一元 `!` 重组，后者作用在
+            // 解码逻辑里的比较链时，会在运行期多层 eval 拼接出的代码里生成非法 `===`
+            // 链（静态 php -l 只看最外层解码器，发现不了）。强度 2 起有完整的比较/布尔
+            // 重组，经全量验证安全，故把 1 提升到 2。
+            $shellIntensity = max(2, min(3, (int) $this->config->get('logic_shell_intensity', 2)));
+            $cfg = new Config(array_merge($this->config->all(), [
+                'logic'           => true,
+                'logic_intensity' => $shellIntensity,
+                'logic_decoy'     => false,
+                'logic_fake_tail' => false,
+                'logic_extreme'   => false,
+                'logic_minify'    => false,
+                'logic_str_maxlen' => $maxlen,
+                // 逐层变换强制不叠加 wild：wild 的深度字符串编码（substr/双层base64/
+                // 空串噪声）会被外层壳反复 token 化→递归膨胀，与多层壳链冲突导致构建
+                // OOM/超时。wild 只在 logic 层（源码主体、且需避开 VM 档）显式使用。
+                'logic_wild'      => false,
+            ]));
+            $tokens = Parser::tokenize($code);
+            $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
+                ->process($tokens, $cfg);
+            $out = $this->emit($tokens);
+            $check = (new Validator($this->logger))->checkSyntaxString($out);
+            return $check['ok'] ? $out : $before;
+        } catch (Throwable $e) {
+            $this->logger->warn("[层 {$layerName}] 逐壳层逻辑变换异常，回滚: " . $e->getMessage());
+            return $before;
+        }
     }
 
     /**

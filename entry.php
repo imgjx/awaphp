@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.3');
+define('OBFUSCATOR_VERSION', '1.2.4');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -122,6 +122,19 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-inline-each-layer') {
             $out['inline_each_layer'] = false;
+            continue;
+        }
+        // v1.2.4 逐壳层激进变换（--logic-shell= 由通用 --key=value 解析）
+        if ($a === '--no-logic-shell') {
+            $out['logic_shell'] = false;
+            continue;
+        }
+        if ($a === '--logic-wild') {
+            $out['logic_wild'] = true;
+            continue;
+        }
+        if ($a === '--no-logic-wild') {
+            $out['logic_wild'] = false;
             continue;
         }
         if ($a === '--no-vm-combo') {
@@ -374,6 +387,22 @@ function obf_help(): string
       --logic-minify     压行：删除空白/注释，仅词素粘连处补空格（普通档；ultra 默认开）。
       --logic-extreme    高级破坏档：对用户变量做"保存→假值→恢复"，最终值不变但可能把
                        原本未定义的变量定义成 null；独立开关，默认关。
+      --logic-wild       天马行空加强（v1.2.4）：扩张恒等积木编码库——字符串多段嵌套编码
+                       （双层 base64 / strrev / rot13 组合 / 恒等空串噪声）、整数 ord/hexdec/
+                       bindec/abs/移位链、缠结加法/减法链；逐值校验保真。默认关，独立开关。
+                       注意：深度编码产物会显著拖慢 VM 字节码编译，含 shell:vm 的高档位
+                       （high/max/ultra）不建议开启；适合 low/mid 等无 VM 档位追求极限混淆。
+逐壳层激进变换（v1.2.4）
+      --logic-shell      每个 shell 壳包裹后，对本层新生成的解码逻辑再施加一次逻辑恒等
+                       重组：剥开任意一层看到的解码代码同样是面目全非的恒等式。内层密文
+                       载荷（长串）自动跳过不改；自校验/指纹/授权/蜜罐/VM 编译壳自动跳过。
+                       ultra 默认开；--no-logic-shell 关闭。
+      --logic-shell-intensity=  逐层变换强度 2|3（默认 2；传 1 自动提升到 2）：
+                       2=数字/比较/布尔/字符串恒等重组，3=+临时变量缠结（每层解码逻辑
+                       都缠结，更慢更激进）。强度 1 因一元 `!` 重组在多层 eval 解码链里
+                       可能拼出非法代码，逐层模式下不可用。
+      --logic-shell-maxlen=  字符串字面量改写上限字节数（默认 512）：超过则跳过，保护内层
+                       密文载荷；0=不限（不推荐，会膨胀并可能破坏结构指纹）。
       --whitelist-dirs=      不混淆的目录（逗号分隔，相对输入目录；支持 * 通配），整目录原样拷贝
       --whitelist-files=     不混淆的文件（逗号分隔，精确相对路径，如 config/app.php）
       --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 \$db,\$cfg）

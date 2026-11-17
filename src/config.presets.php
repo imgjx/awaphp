@@ -254,5 +254,11 @@ return [
         'confrontation_intensity' => 3,
         // VM opcode 组合执行（抗反编译）强度 3
         'vm_combo' => 3,
+        // v1.2.4：逐壳层激进变换（ultra 默认开，独立开关可关）
+        // 注：logic_wild（天马行空深度编码）刻意不在此默认开启——它会与 VM 字节码编译
+        // 冲突导致构建 OOM，仅适合无 VM 档位显式 --logic-wild 使用。
+        'logic_shell'            => true,
+        'logic_shell_intensity'  => 2,
+        'logic_shell_maxlen'     => 512,
     ] + $FRAMEWORK_SAFE,
 ];

@@ -155,6 +155,8 @@ final class LayerDescriptor
                                     'hint' => '用户变量「保存→假值→恢复」，最终值不变但可能定义原本未定义变量（默认关）'],
                     'minify'    => ['label' => '压行', 'type' => self::T_BOOL, 'default' => false,
                                     'hint' => '删除空白/注释压成最少行'],
+                    'wild'      => ['label' => '天马行空加强', 'type' => self::T_BOOL, 'default' => false,
+                                    'hint' => '字符串/整数恒等积木库扩张（双层 base64 / strrev / rot13 组合 / ord/hexdec/bindec / 缠结掩码链），逐值校验保真；ultra 默认开'],
                 ],
                 'tags' => ['反分析'],
             ],

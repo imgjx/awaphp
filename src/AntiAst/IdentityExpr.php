@@ -23,6 +23,8 @@ final class IdentityExpr
     private int $seed;
     /** 内部计数器：让同一文件内多个积木取到不同的随机串（否则 md5(同一串) 可被模式识别） */
     private int $ctr = 0;
+    /** v1.2.4 天马行空加强：扩张恒等积木编码库（默认关，保持既有档位行为） */
+    private bool $wild = false;
 
     public function __construct(int $seed = 0)
     {
@@ -34,6 +36,12 @@ final class IdentityExpr
     {
         $this->seed = $seed;
         $this->ctr = 0;
+    }
+
+    /** v1.2.4：开启天马行空加强档，扩张恒等积木的形态库 */
+    public function setWild(bool $on): void
+    {
+        $this->wild = $on;
     }
 
     /**
@@ -74,6 +82,11 @@ final class IdentityExpr
 
     private function intPosExpr(int $v): string
     {
+        // wild 档：走扩张积木库（ord/hexdec/bindec/abs/移位/strlen 变体随机组合），
+        // 每个片段都恒等于其标称值，整条仍由 verify() 兜底校验。
+        if ($this->wild) {
+            return $this->intPosExprWild($v);
+        }
         // 主积木取 40（sha1 长度）整除，余下再用 32（md5 长度）整除，最后用定长随机串补零头。
         // 关键：md5/sha1 的首参必须是**字符串字面量**且用随机串，既避免 strict_types 下
         // int→string 的 TypeError，也让每个积木长得不一样（不再是清一色 'x'/'1'）。
@@ -104,6 +117,93 @@ final class IdentityExpr
     }
 
     /**
+     * wild 档整数积木：把一个正整数拆成若干片段，每个片段用**不同形态**的恒等表达式。
+     * 可用形态（片段值 p）：
+     *   - strlen('<p 个随机字符>')           直接定长串
+     *   - ord('<chr(p)>')                    单字符 ASCII（p<256）
+     *   - hexdec('<p 的十六进制>')           十六进制字面量
+     *   - bindec('<p 的二进制>')             二进制字面量
+     *   - abs(-p)                            绝对值
+     *   - ((K << s) >> s)  where K>>s==p     移位恒等（K=p<<s）
+     * 每片经 ctr 轮换，整条经 verify 兜底。
+     */
+    private function intPosExprWild(int $v): string
+    {
+        if ($v === 0) {
+            return '(0)';
+        }
+        // 随机把 v 拆成 1~3 片（大数多拆），每片独立编码
+        $pieces = [];
+        $remain = $v;
+        $nSeg = $v > 40 ? 3 : ($v > 8 ? 2 : 1);
+        for ($i = 0; $i < $nSeg; $i++) {
+            if ($i === $nSeg - 1) {
+                $p = $remain;
+            } else {
+                // 确定性派生拆片大小（同 seed 可复现），不用 random_int
+                $span = max(1, intdiv($remain, 2));
+                $pick = (int) (crc32($this->seed . '|split|' . $this->ctr . '|' . $i) & 0x7fffffff);
+                $p = $remain > 1 ? (1 + ($pick % $span)) : 0;
+            }
+            $remain -= $p;
+            if ($p > 0) {
+                $pieces[] = $this->intPieceWild($p);
+            }
+        }
+        $remain > 0 && $pieces[] = $this->intPieceWild($remain);
+        if ($pieces === []) {
+            $pieces[] = '(' . $v . ')';
+        }
+        // 追加恒 0 扰动
+        $pieces[] = $this->zeroExprWild();
+        return '(' . implode(' + ', $pieces) . ')';
+    }
+
+    /** 单个正整数片段的 wild 恒等形态 */
+    private function intPieceWild(int $p): string
+    {
+        $k = $this->ctr % 6;
+        $this->ctr++;
+        if ($k === 1 && $p >= 32 && $p < 127) {
+            // 只用可打印 ASCII，避免 chr() 产出 \0 / 换行等控制字节落进字符串字面量
+            return "ord('" . addcslashes(chr($p), "\\'") . "')";
+        }
+        if ($k === 2) {
+            return 'hexdec(\'' . dechex($p) . '\')';
+        }
+        if ($k === 3) {
+            return 'bindec(\'' . decbin($p) . '\')';
+        }
+        if ($k === 4) {
+            return 'abs(-' . $p . ')';
+        }
+        if ($k === 5) {
+            $s = 3;
+            $K = $p << $s;
+            return '((' . $K . ' << ' . $s . ') >> ' . $s . ')';
+        }
+        return "strlen('" . $this->randStr($p) . "')";
+    }
+
+    /** wild 档恒 0 扰动表达式 */
+    private function zeroExprWild(): string
+    {
+        $k = $this->ctr % 4;
+        $this->ctr++;
+        if ($k === 1) {
+            return "({$k} - {$k})";
+        }
+        if ($k === 2) {
+            return "(strlen('" . $this->randStr(3) . "') * 0)";
+        }
+        if ($k === 3) {
+            $ch = $this->randStr(1); // 必须同一字符相减才恒为 0
+            return "(ord('" . $ch . "') - ord('" . $ch . "'))";
+        }
+        return '(0)';
+    }
+
+    /**
      * 生成等于 $str 的字符串表达式（结果恒等于 $str）。
      * 强化：按长度拆成 1~3 段，每段用**随机编码策略**（base64 / hex2bin / str_rot13）
      * 各自编码、运行期各自解码，再全部拼接回来——源码里既没有明文，也没有统一的
@@ -115,6 +215,25 @@ final class IdentityExpr
             return "''";
         }
         $len = strlen($str);
+        // wild 档：拆得更碎（最多 5 段），段间插入恒等空串噪声，形态库更丰富
+        if ($this->wild) {
+            $n = $len <= 2 ? 1 : ($len <= 5 ? 2 : ($len <= 12 ? 3 : ($len <= 24 ? 4 : 5)));
+            $segs = $this->splitN($str, $n);
+            $parts = [];
+            foreach ($segs as $seg) {
+                $parts[] = $this->encodeSeg($seg);
+                // 每段之间随机插入一个恒等空串积木（'' / str_repeat('x',0) / substr('ab',5)）
+                if (($this->ctr % 3) === 0) {
+                    $parts[] = $this->emptyStringExpr();
+                }
+            }
+            $expr = implode(' . ', $parts);
+            // 尾部再套一层 strrev(strrev(...)) 或 substr(...,0) 恒等包裹（随机）
+            if (($this->ctr % 2) === 0) {
+                $expr = 'substr(' . $expr . ', 0)';
+            }
+            return $expr;
+        }
         $n = $len <= 2 ? 1 : ($len <= 7 ? 2 : 3);
         $segs = $this->splitN($str, $n);
         $parts = [];
@@ -126,6 +245,20 @@ final class IdentityExpr
             $expr .= " . ''";
         }
         return $expr;
+    }
+
+    /** 生成一个恒等于空串的表达式（wild 档段间噪声用） */
+    private function emptyStringExpr(): string
+    {
+        $k = $this->ctr % 3;
+        $this->ctr++;
+        if ($k === 1) {
+            return "str_repeat('" . $this->randStr(2) . "', 0)";
+        }
+        if ($k === 2) {
+            return "substr('" . $this->randStr(4) . "', 99)";
+        }
+        return "''";
     }
 
     /** 把字符串均匀切成最多 $n 段（保证每段非空；长度不足时退化） */
@@ -146,10 +279,10 @@ final class IdentityExpr
         return array_values(array_filter($out, static fn ($x) => $x !== ''));
     }
 
-    /** 单段编码：随机取 base64 / hex2bin / str_rot13 三种可逆编码之一 */
+    /** 单段编码：base64 / hex2bin / str_rot13；wild 档再加入 strrev / 双层 base64 / 组合编码 */
     private function encodeSeg(string $seg): string
     {
-        $k = $this->ctr % 3;
+        $k = $this->ctr % ($this->wild ? 6 : 3);
         $this->ctr++;
         if ($k === 1) {
             return "hex2bin('" . bin2hex($seg) . "')";
@@ -158,6 +291,19 @@ final class IdentityExpr
             // str_rot13 只转 ASCII 字母，其余原样；对单引号/反斜杠做 addcslashes 转义，
             // 运行期由 PHP 单引号解析还原，再 str_rot13 还原原文。
             return "str_rot13('" . addcslashes(str_rot13($seg), "\\'") . "')";
+        }
+        if ($k === 3 && $this->wild) {
+            // strrev 反转：把段的字节序倒过来存，运行期再反转还原。
+            return "strrev('" . addcslashes(strrev($seg), "\\'") . "')";
+        }
+        if ($k === 4 && $this->wild) {
+            // 双层 base64：base64_encode 两次，运行期 base64_decode 两次。
+            $dbl = base64_encode(base64_encode($seg));
+            return "base64_decode(base64_decode('" . $dbl . "'))";
+        }
+        if ($k === 5 && $this->wild) {
+            // 组合编码：先 rot13 再 base64，运行期先 base64_decode 再 rot13。
+            return "str_rot13(base64_decode('" . base64_encode(str_rot13($seg)) . "'))";
         }
         return "base64_decode('" . base64_encode($seg) . "')";
     }

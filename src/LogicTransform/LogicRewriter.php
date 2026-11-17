@@ -48,6 +48,8 @@ final class LogicRewriter
     private bool $fakeTailOn = false;   // 末尾给临时变量赋随机假值（普通档，默认 ultra 开）
     private bool $extremeOn = false;    // 高级档：用户变量保存→假值→恢复（默认关，可能破坏）
     private bool $minifyOn = false;     // 压行
+    private bool $wildOn = false;       // v1.2.4 天马行空加强档：扩张恒等积木编码库
+    private int $strMaxLen = 0;         // 字符串字面量改写长度上限（0=不限；逐壳层用于保护密文载荷）
 
     public function __construct(Salt $salt, Logger $logger, int $intensity = 2)
     {
@@ -74,11 +76,16 @@ final class LogicRewriter
         $this->fakeTailOn = (bool) $cfg->get('logic_fake_tail', $ultra);
         $this->extremeOn  = (bool) $cfg->get('logic_extreme', false);
         $this->minifyOn   = (bool) $cfg->get('logic_minify', $ultra);
+        // v1.2.4 天马行空加强 + 字符串长度上限（逐壳层保护密文载荷）
+        $this->wildOn     = (bool) $cfg->get('logic_wild', false);
+        $this->strMaxLen  = max(0, (int) $cfg->get('logic_str_maxlen', 0));
         $this->constSeed = $this->salt->isEmpty()
             ? 0
             : (int) hexdec(substr(bin2hex($this->salt->derive('logic-const', 4)), 0, 7));
         // 让恒等积木里的随机串随 salt 变化（可复现），不再清一色 'x'/'1'
         $this->id->setSeed($this->constSeed);
+        // v1.2.4 天马行空加强：扩张恒等积木编码库（双层 base64 / strrev / ord / 移位链等）
+        $this->id->setWild($this->wildOn);
         $this->genCtr = 0;
         $this->tempVars = [];
         $this->collectVars($tokens);
@@ -138,7 +145,10 @@ final class LogicRewriter
             // 属性参数）里的字符串必须是字面量，调用 base64_decode 等会致命；
             // heredoc/nowdoc 与插值字符串不是单个 T_CONSTANT_ENCAPSED_STRING，天然不在此列。
             if ($transformNumbers && is_array($tok) && $tok[0] === T_CONSTANT_ENCAPSED_STRING) {
-                if (!$ctx->inDeclare() && !$ctx->isConstContext()) {
+                // 逐壳层模式：超过长度上限的字符串一律不碰——那几乎必定是内层壳的
+                // base64/gz/字节码密文载荷，改写它会膨胀产物且与结构指纹冲突。
+                $tooLong = $this->strMaxLen > 0 && strlen($tok[1]) > $this->strMaxLen;
+                if (!$tooLong && !$ctx->inDeclare() && !$ctx->isConstContext()) {
                     $s = $this->stripQuotes($tok[1]);
                     $expr = $this->id->stringExpr($s);
                     if ($this->id->verify($s, $expr)) {
@@ -479,12 +489,26 @@ final class LogicRewriter
         $b = $this->genName();
 
         if ($isIntRhs) {
-            // Ka ^ Kb === v
+            // Ka OP Kb === v。wild 档随机在 XOR / 加法 / 减法 / 位掩码链之间切换，
+            // 让缠结运算本身也不再是清一色的 `^`，进一步打散模式匹配。
             $ka = $this->tangleKa($intVal);
-            $kb = $ka ^ $intVal;
+            $mode = $this->wildOn ? ($this->genCtr % 3) : 0;
+            if ($mode === 1) {
+                // 加法链：Ka + Kb === v  => Kb = v - Ka
+                $kb = $intVal - $ka;
+                $op = '+';
+            } elseif ($mode === 2) {
+                // 减法链：Ka - Kb === v  => Kb = Ka - v
+                $kb = $ka - $intVal;
+                $op = '-';
+            } else {
+                // 位运算 XOR（默认/经典形态）
+                $kb = $ka ^ $intVal;
+                $op = '^';
+            }
             $block = '$' . $a . ' = ' . $this->id->intExpr($ka) . ";\n"
                 . '$' . $b . ' = ' . $this->id->intExpr($kb) . ";\n"
-                . '$' . $a . ' = $' . $a . ' ^ $' . $b . ";\n";
+                . '$' . $a . ' = $' . $a . ' ' . $op . ' $' . $b . ";\n";
             if ($carry !== null) {
                 // 跨语句复用上一条语句的变量：恒 0（任意类型安全），加和不改变值
                 $block .= '$' . $a . ' = ((($' . $carry[0] . ' ?? null) === ($' . $carry[1] . ' ?? null)) ? 0 : 0) + $' . $a . ";\n";

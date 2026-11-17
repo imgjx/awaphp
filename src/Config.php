@@ -170,6 +170,11 @@ final class Config
         // 超激进逻辑变换（反 AST 超集）：任意位置表达式恒等重组 + 临时变量缠结
         $this->data['logic']           = $b($this->data['logic'] ?? false) ?? false;
         $this->data['logic_intensity'] = max(1, min(3, $i($this->data['logic_intensity'] ?? 2)));
+        // v1.2.4 逐壳层激进变换 + 天马行空加强档
+        $this->data['logic_shell']           = $b($this->data['logic_shell'] ?? false) ?? false;
+        $this->data['logic_shell_intensity'] = max(1, min(3, $i($this->data['logic_shell_intensity'] ?? 2)));
+        $this->data['logic_shell_maxlen']    = max(0, $i($this->data['logic_shell_maxlen'] ?? 512));
+        $this->data['logic_wild']            = $b($this->data['logic_wild'] ?? false) ?? false;
 
         // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
         $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];
