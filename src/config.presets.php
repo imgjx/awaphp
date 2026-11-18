@@ -69,9 +69,14 @@ return [
     //   体积通常比原文件更小（去注释 + 压空白）；性能损耗实测稳定 ≤ 1.28×。
     'min' => [
         'layers' => [
+            // v1.2.5：先做编译时优化（纯字面量运算在构建期算完，运行期零开销、产物更小），
+            // 再把字符串改成"高效复杂编码"——不再用逐字符 PHP 循环异或装配，改由
+            // base64 / gz+base64 / chr 拼接 / \xHH 十六进制等多种编码混合，
+            // 解码全走 PHP 原生函数（C 实现），同样看不见明文，但运行时开销更低。
+            ['name' => 'constfold',    'params' => ['level' => 1]],
             ['name' => 'var',          'params' => ['length' => 8]],
             ['name' => 'number',       'params' => ['on' => true]],
-            ['name' => 'string',       'params' => ['xor' => true, 'length' => 8, 'split' => 1]],
+            ['name' => 'string',       'params' => ['xor' => false, 'length' => 8, 'split' => 2]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'ws',           'params' => []],
         ],
@@ -87,10 +92,12 @@ return [
     // 运行时成本仅剩「加载时一次解码」，跑起来与原生同速。
     'low' => [
         'layers' => [
+            ['name' => 'constfold',   'params' => ['level' => 1]],
             ['name' => 'logic',       'params' => ['intensity' => 1]],
             ['name' => 'var',          'params' => ['length' => 10]],
             ['name' => 'func',         'params' => ['length' => 12, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
+            ['name' => 'funcsplit',    'params' => ['level' => 1, 'max' => 96]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 8, 'split' => 2]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 2, 'goto_cpx' => 6]],
@@ -119,10 +126,12 @@ return [
     // 增长的壳全部堆满，运行时开销集中在一次解码 + 启动探针。
     'mid' => [
         'layers' => [
+            ['name' => 'constfold',   'params' => ['level' => 2]],
             ['name' => 'logic',       'params' => ['intensity' => 2]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
+            ['name' => 'funcsplit',    'params' => ['level' => 2, 'max' => 96]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 3, 'goto_cpx' => 8]],
             ['name' => 'statemachine', 'params' => ['complexity' => 8, 'passes' => 2, 'traps' => 2, 'opaque' => true]],
             ['name' => 'number',       'params' => ['on' => true]],
@@ -153,10 +162,12 @@ return [
     // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测（含蜜罐/结构毒化） =====================
     'high' => [
         'layers' => [
+            ['name' => 'constfold',   'params' => ['level' => 2]],
             ['name' => 'logic',       'params' => ['intensity' => 2]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
+            ['name' => 'funcsplit',    'params' => ['level' => 2, 'max' => 96]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 3, 'goto_cpx' => 8]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => true, 'length' => 6, 'split' => 4]],
@@ -185,10 +196,12 @@ return [
     // ===================== max：VM 状态机全参数拉满 + 深层 GOTO + 语义变换 + 全反检测矩阵 =====================
     'max' => [
         'layers' => [
+            ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3]],
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
+            ['name' => 'funcsplit',    'params' => ['level' => 3, 'max' => 96]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 4, 'goto_cpx' => 12]],
             ['name' => 'statemachine', 'params' => ['complexity' => 10, 'passes' => 2, 'traps' => 3, 'opaque' => true]],
             ['name' => 'number',       'params' => ['on' => true]],
@@ -221,10 +234,12 @@ return [
     // ===================== ultra：真·嵌套 VM（layers=2）+ 状态机/垃圾字节码/深层 GOTO/语义变换全顶格 =====================
     'ultra' => [
         'layers' => [
+            ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3, 'decoy' => true, 'fake_tail' => true, 'minify' => true]],
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
+            ['name' => 'funcsplit',    'params' => ['level' => 3, 'max' => 96]],
             ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 5, 'goto_cpx' => 16]],
             ['name' => 'statemachine', 'params' => ['complexity' => 12, 'passes' => 3, 'traps' => 4, 'opaque' => true]],
             ['name' => 'number',       'params' => ['on' => true]],

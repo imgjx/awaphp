@@ -259,6 +259,9 @@ final class Obfuscator
                 'layers'         => max(1, (int) $this->config->get('vm_layers')),
                 // VM opcode 组合执行（--vm-combo）：单 opcode 拆等价多指令序列，抗反编译。0=关。
                 'combo'          => (int) $this->config->get('vm_combo'),
+                // VM 指令集加速（--vm-super-isa）：把高频指令组合并为新 ISA 复合指令。
+                // 0=关；默认 3 条。既提速（少走主循环分派）又干扰逆向（出现陌生 opcode）。
+                'superIsa'       => max(0, (int) $this->config->get('vm_super_isa')),
                 // VM JIT 友好模式（--no-vm-jit 关）：内联编码栈，利于 OPcache JIT 追踪。
                 'jit'            => (bool) $this->config->get('vm_jit'),
                 'inloop'         => (bool) $this->config->get('vm_inloop'),
@@ -964,6 +967,12 @@ final class Obfuscator
             case 'anti_ast':
                 $tokens = (new AntiAst($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
+            case 'constfold':
+                $tokens = (new ConstFolder($this->logger))->process($tokens, $cfg);
+                break;
+            case 'funcsplit':
+                $tokens = (new FunctionSplitter($this->salt, $this->logger))->process($tokens, $cfg);
+                break;
             case 'logic':
                 $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
                     ->process($tokens, $cfg);
@@ -1007,6 +1016,15 @@ final class Obfuscator
                 $map['sm_passes']     = (int) ($params['passes'] ?? 2);
                 $map['sm_traps']      = (int) ($params['traps'] ?? 2);
                 $map['sm_opaque']     = (bool) ($params['opaque'] ?? true);
+                break;
+            case 'constfold':
+                $map['const_fold']       = true;
+                $map['const_fold_level'] = (int) ($params['level'] ?? 2);
+                break;
+            case 'funcsplit':
+                $map['func_split']       = true;
+                $map['func_split_level'] = (int) ($params['level'] ?? 1);
+                $map['func_split_max']   = (int) ($params['max'] ?? 64);
                 break;
             case 'number':
                 $map['num_enc'] = (bool) ($params['on'] ?? false);
@@ -1482,7 +1500,15 @@ final class Obfuscator
             @file_put_contents(rtrim($dumpSrc, '/') . '/' . date('His') . '_' . substr(md5($src), 0, 6) . '.opts.json', json_encode($opts, JSON_UNESCAPED_SLASHES));
         }
         try {
-            $art = (new VmRuntimeGenerator($this->salt))->buildArtifact($src, $opts);
+            $__gen = new VmRuntimeGenerator($this->salt);
+            $art = $__gen->buildArtifact($src, $opts);
+            $__sd = $__gen->superDefs();
+            if ($__sd !== []) {
+                $this->logger->debug(sprintf('vm-super-isa: 生效 %d 条超级指令 %s',
+                    count($__sd),
+                    implode(',', array_map(static fn ($op, $m) => $op . '[' . count($m) . ']', array_keys($__sd), $__sd))
+                ));
+            }
             foreach ($art['includes'] as $w) {
                 $this->logger->warn('shell:vm include: ' . $w);
             }
@@ -1610,6 +1636,8 @@ final class Obfuscator
             // 运行期解包时还原；--no-vm-symbols 关闭后行为与 v1.1.7 逐字节等价。
             'symbols'        => (bool) ($params['symbols'] ?? true),
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
+            // 指令集加速条数（0=关）
+            'superIsa'       => max(0, (int) ($params['superIsa'] ?? (int) $this->config->get('vm_super_isa'))),
             'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
             'inloop'         => (bool) ($params['inloop'] ?? $this->config->get('vm_inloop')),
             'selfcheck'      => (bool) ($params['selfcheck'] ?? $this->selfcheck),
@@ -1810,6 +1838,14 @@ final class Obfuscator
     {
         $tokens = Parser::tokenize($code);
 
+        // 编译时优化（常量预计算）：必须排在 logic / 反 AST 之前 —— 先把"简单但费力"
+        // 的纯字面量算完，再让后面的层去混淆结果；顺序颠倒会让折叠命中率骤降且白做功。
+        // 分层路径由 constfold 层负责，散装路径由本 flag 触发。
+        if ($this->config->get('const_fold')) {
+            $cf = new ConstFolder($this->logger);
+            $tokens = $cf->process($tokens, $this->config);
+        }
+
         // 超激进逻辑变换：必须置于变量重命名之前，使新引入的临时变量被 var 层
         // 一并改名；分层路径由 logic 层负责，散装路径由本 flag 触发。
         if ($this->config->get('logic')) {
@@ -1835,6 +1871,15 @@ final class Obfuscator
             $tokens = $funcCall->process($tokens, $this->config, $ctx);
         }
         $tokens = $cls->process($tokens, $this->config, $ctx);
+
+        // 函数型代码打散：把 echo/print/赋值这几类"无副作用"语句提取成顶层函数再原位调用。
+        // 必须排在 var / func / class 之后 —— 这样提取出的形参与实参都是**已改名**的标识符，
+        // 不会出现"函数体里旧名、调用点新名"的错位；分层路径由 funcsplit 层负责。
+        if ($this->config->get('func_split')) {
+            $fs = new FunctionSplitter($this->salt, $this->logger);
+            $tokens = $fs->process($tokens, $this->config);
+        }
+
 
         // 深度反AST：语句位 echo/print/return 的常量字面量改写为"累加器 + 恒等表达式"。
         // 须置于数字/字符串编码之前，才能命中原始裸常量（编码后字面量形态已变，无法识别）。

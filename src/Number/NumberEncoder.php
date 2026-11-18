@@ -54,6 +54,22 @@ final class NumberEncoder
                 $skip[$k] = true;
             }
         }
+
+        // break/continue 的层数操作数必须是【裸整数字面量】：PHP 的语法是
+        // `continue T_LNUMBER`，不接受任何表达式。改写成 `(0x2)` 后 php -l 直接
+        // 报 "'continue' operator with non-integer operand is no longer supported"。
+        // WordPress 整站实测命中 22 个文件（switch 里的 `break 2;` / `continue 2;`）。
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!is_array($t) || ($t[0] !== T_BREAK && $t[0] !== T_CONTINUE)) {
+                continue;
+            }
+            $j = Parser::nextSignificant($tokens, $i + 1);
+            if ($j > $i && $j < $n && is_array($tokens[$j]) && $tokens[$j][0] === T_LNUMBER) {
+                $skip[$j] = true;
+            }
+        }
+
         for ($i = 0; $i < $n; $i++) {
             if (isset($skip[$i])) {
                 continue;

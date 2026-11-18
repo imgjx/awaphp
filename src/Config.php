@@ -127,6 +127,10 @@ final class Config
         $combo = $this->data['vm_combo'] ?? 0;
         $combo = ($combo === true) ? 2 : (int) $combo;
         $this->data['vm_combo']         = max(0, min(3, $combo));
+        // 指令集加速条数：裸 --vm-super-isa（无值）按默认 3 处理，避免被当成 1
+        $sisa = $this->data['vm_super_isa'] ?? 3;
+        $sisa = ($sisa === true || $sisa === '' || $sisa === null) ? 3 : (int) $sisa;
+        $this->data['vm_super_isa']     = max(0, min(24, $sisa));
         $this->data['junk_runtime']   = $b($this->data['junk_runtime'] ?? false) ?? false;
         $this->data['junk_intensity'] = max(1, min(10, $i($this->data['junk_intensity'] ?? 1)));
         $this->data['junk_fake_b64']  = $b($this->data['junk_fake_b64'] ?? true) ?? true;
@@ -175,6 +179,14 @@ final class Config
         $this->data['logic_shell_intensity'] = max(1, min(3, $i($this->data['logic_shell_intensity'] ?? 2)));
         $this->data['logic_shell_maxlen']    = max(0, $i($this->data['logic_shell_maxlen'] ?? 512));
         $this->data['logic_wild']            = $b($this->data['logic_wild'] ?? false) ?? false;
+        // v1.2.5 编译时优化（常量预计算）+ 函数型代码打散。
+        // 散装键路径由 pipelineOnce 直接消费；分层路径由 constfold / funcsplit 层
+        // 通过 layerConfig() 注入同名键，二者共用同一组归一化。
+        $this->data['const_fold']       = $b($this->data['const_fold'] ?? false) ?? false;
+        $this->data['const_fold_level'] = max(1, min(3, $i($this->data['const_fold_level'] ?? 2)));
+        $this->data['func_split']       = $b($this->data['func_split'] ?? false) ?? false;
+        $this->data['func_split_level'] = max(1, min(3, $i($this->data['func_split_level'] ?? 1)));
+        $this->data['func_split_max']   = max(0, $i($this->data['func_split_max'] ?? 64));
 
         // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
         $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];
@@ -273,6 +285,8 @@ final class Config
                     $stray[] = '--' . str_replace('_', '-', $k);
                 }
             }
+            // 注意 vm_super_isa 不列入：它默认值 >0，且分层档位由 shell:vm 层消费，
+            // 并非「必须显式 --vm」。列入会导致所有 level 档位误报。
             foreach (['vm_junk', 'vm_fake_fog', 'vm_probe'] as $k) {
                 if ((int) ($this->data[$k] ?? 0) > 0) {
                     $stray[] = '--' . str_replace('_', '-', $k);

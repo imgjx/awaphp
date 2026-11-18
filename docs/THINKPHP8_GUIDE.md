@@ -1,5 +1,7 @@
 # ThinkPHP8 项目混淆实战指南
 
+**简体中文** · [English](en/THINKPHP8_GUIDE.md)
+
 > 适用场景：ThinkPHP8（TP8）应用项目整体混淆——控制器 / 模型 / 服务 / 验证器 / 中间件 / 事件等 `app/` 目录源码。
 > 配套示例项目：`longtmp/tp8demo/tp8`（原版）与 `longtmp/tp8demo/tp8_obf`（混淆版），基线对照脚本 `tp8_baseline.sh`，打包用例 `tests/tptest.zip`。
 > 验证基线：TP8 示例项目 26 行对照文本与原版**逐字节一致**（`BASELINE SAME 26/26`）。

@@ -1,5 +1,7 @@
 # 自定义虚拟机（VM）特性支持文档
 
+**简体中文** · [English](en/VM_FEATURES.md)
+
 > 适用模块：`src/Vm/`（编译器 `Compiler.php` + 动态运行时生成器 `RuntimeGenerator.php` + 操作码 `Op.php`）
 > 接入点：`src/ControlFlow/VirtualMachine::wrap()`（自定义 ISA 路径，失败优雅回退）
 

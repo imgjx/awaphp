@@ -1,0 +1,331 @@
+# 嗷呜awaのPHP 混淆器（AWAPHP）
+
+[English](README.md) · **简体中文**
+
+![Version](https://img.shields.io/badge/version-1.2.5-orange)
+![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
+> 基于 PHP `tokenizer` 的源码混淆与运行时保护工具：把可读的 PHP 源码转换成**等价、可运行、但极难静态逆向**的形态。
+
+混淆结果经 `php -l` 校验，且**运行输出与原文严格一致**——它抬高逆向成本，而不是改变程序行为。
+
+---
+
+<span style="color:red">
+
+> ⚠️ **关于火绒（Huorong）误报 `VirtualMachine.php` 为 Webshell 的说明**
+>
+> 火绒这次也是抽风了——我自己在本地开发迭代的时候，就被它把我整个项目给「搞炸」了：就因为 `src/ControlFlow/VirtualMachine.php` 这一个文件被它判成 Webshell，我也是无语😅。
+>
+> 本项目**源码 100% 开源**，VM 解释器只是把 PHP 编译成自定义 ISA 字节码再逐条分发执行，**没有任何恶意行为、不联网、不落盘、不反弹**。火绒的启发式规则把「运行时拼接 + eval 派发」这类正常混淆特征当成了 Webshell 特征，属于典型的误报。
+>
+> **如果各位在 IDE / 火绒里看到 `VirtualMachine.php` 报毒，直接把这个文件加进杀软的信任区（白名单）即可**，不必理会。其它文件若也误报，同理加信任区，源码都在仓库里，可自行审计。
+
+</span>
+
+---
+
+## 这是什么
+
+一个面向 PHP 项目的源码保护工具，核心思路是在 `token_get_all` 解析出的 token 流上做**可逆、保语义**的变换，再在外层套上多层**运行时保护壳**。它不依赖任何第三方服务、不把密钥交给远程服务器，全部逻辑都在本地 `src/` 内完成。
+
+设计目标：
+
+- **正确性优先**：任何一层变换若导致 `php -l` 失败或运行结果变化，先**就地修复**（序言归一、常量形态纠正等）再校验；修复不成立才回退到上一安全版本——正常情况下**每一层壳都完整保留**，不会「破一层少一层」。
+- **token 级而非字符串级**：所有混淆作用于解析后的 token 流，避免脆弱的正则替换破坏代码。
+- **可复现**：给定相同的输入与 salt，产出的代码本体逐字节一致（仅文件头时间戳不同）。
+- **渐进式**：每一类保护都是独立开关，可按项目需要自由组合强度。
+- **性能可选**，六档从「几乎零成本」到「抗动态分析」：`min` 是**最接近原生**的档（性能贴近原生、几乎零开销）：不引入反调试、无壳、无昂贵派生解密（仅做变量名/数字/多方案字符串编码/去注释/压空白 + 编译时常量预计算，运行时仍是普通 PHP 文件，字符串解码全走 `base64_decode`/`gzuncompress`/`chr`/`\xHH` 这类 PHP 原生能力）——实测纯计算 1.01×、TP8 与原生同速，产物反而更小；`low` / `mid` 把「不随语句数增长」的保护全部堆满（token 级全量 + EVAL/结构毒化/防篡改多层壳），只是不用 VM，运行时开销压在**一次解码**上——实测 `low` 6.3 ms / `mid` 11.1 ms。VM 自 `high` 起启用；v1.1.1 重写了操作数栈编码并把状态机派发 5 条指令压成 1 条，同样的代码比 1.1.0 快 **2.5~2.6×**；v1.1.3 进一步把编码栈内联进压栈闭包、解释器保持平坦大函数以适配 OPcache 追踪 JIT，再快约 4%；v1.2.5 起 VM 再把高频指令组合并成超级指令，进一步减少主循环开销（详见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)）。
+
+---
+
+## 特性
+
+### 标识符混淆
+- 变量 / 函数 / 类 / 接口 / trait 名称混淆，全局一致替换。
+- **FQCN 感知类改名**（单文件模式）：按「命名空间全限定名」粒度改名，`app\service\PriceCalculator → app\service\_x7f3a…`，声明点 `class_alias` 把原名回挂（反射 / 字符串类名 / `class_exists` 照常命中）。**目录级构建（整套系统模式）默认保留类名原名**——类名改名与 PSR-4「命名空间 + 文件名」约定冲突，故工程模式不重命名类、靠框架自动加载工作；个别需排除的符号用**白名单**（详见 `docs/THINKPHP8_GUIDE.md`）保持原名，无需 classmap 自动加载器。
+- **跨文件符号一致**：`--manifest` 两遍扫描生成全局符号表，同 salt 下跨文件符号对齐，支持增量重建。**同 salt 下各文件独立混淆仍全局一致**（映射由 salt 确定性派生）。
+- **动态符号保守排除**：名字以字符串字面量出现过的函数 / 类（`call_user_func('f')`、`new $cls()`）一律不重命名，杜绝「能过 `php -l`、一运行就崩」。
+- **拟真命名**：守卫 / 诱饵 / 版本校验变量从业务词池生成，产物中不再出现 `__awa_*`、`$__CODE` 等一眼识别串。
+
+### Token 形态混淆（语法级保真，不改语义）
+- **关键字大小写随机化**：`ecHo` / `WhIlE` / `fUnCtIoN` 均合法，直接杀死针对关键字的 grep / 正则特征。
+- **字面量等价形态**：`true→!0`、`false→!1`；`array(...)→[...]`。（不带 `(int)↔(integer)` 这类转换别名互换：PHP 8.5 起非规范 cast 被标记 deprecated，框架会把它升级成异常，且同义词对反编译毫无阻力。）
+- **引号形态安全翻转**：`'a'↔"a"`，仅在没有转义 / 插值 / 冲突引号时翻转，否则原样保留。
+- **heredoc / nowdoc 变换**（`--token-heredoc`）：纯字面量串改写为 `<<<'ID' … ID` 形态。
+- **顶层诱饵注释**（`--token-decoy=N`）：插入误导性注释（假许可证缓存、假完整性探针），干扰静态阅读。
+
+### 字符串与数字编码
+- 分段 base64 编码（`--str-length`）。
+- **运行时异或装配**（`--str-xor`）：每条字符串使用独立密钥，破一条不等于破全部，抗静态扫描更强。
+- HTML 实体编码（`--html`）。
+- 数字等价表达式改写（`--num-enc`）：`0x` / 运算组合替代字面量。
+
+### 控制流混淆
+- 不透明谓词、条件取反 + 分支交换、永不执行诱饵分支（`--cfg=low|medium|high`）。
+- **GOTO 状态机扁平化**（`--goto` / `--goto-cpx`）：函数体改写为 `while (1) { switch ($__s) { … } }`，支持嵌套与分块。
+- **原生状态机层（`statemachine`，v1.1.6 新增）**：从 VM 字节码层**拆出来**的通用控制流平坦化——**不依赖 VM 壳**，`mid` 档（无 VM）也能用上同款强度。每条状态转移包一层**恒真的不透明谓词** `if(($o^$o)===0){$s=$next;}else{$s=$trap;}`（else 是指向自锁诱饵的死路），并混入**诱饵死状态**（不可达标签，强行跳入即自锁死循环）。随机化状态 ID（非连续随机）、分派形态（`switch` / `if-elseif` 链）、循环头形态（`while(1)` / `while(true)` / `for(;;)`）、标签进制（十进制 / 十六进制），静态模板批量识别失效。**覆盖函数体 + 顶层语句段**（纯脚本同样生效），状态变量名与用户变量**自动避碰**、顶层作用域用完立即 `unset` 不污染全局。开关：`--sm-complexity=N`（每分发器语句数 2~32）、`--sm-passes=N`（嵌套层数 1~5）、`--sm-traps=N`（诱饵数 0~4）、`--no-sm-opaque`（关不透明谓词）。**v1.1.7 起 `low` 档移除该层**（入门档保持「加载时一次解码、跑起来与原生同速」的定位），当前仅 `mid` / `max` / `ultra` 启用；`high` / `min` 本就未接入。
+
+### 语义等价变换（反静态模式匹配）
+用**类型安全、恒等保真**的重写打乱静态分析赖以匹配的代码形态（`--semantic`，强度 `--semantic-strength=1|2|3` 递增施加）：
+- **if/else 逆置 + 交换**：`if (C) T else E` ⇄ `if (!(C)) E else T`。
+- **德摩根律**：`!(A && B)` ⇄ `!A || !B`。
+- **三元逆置**：`C ? T : E` ⇄ `!C ? E : T`。
+- **for → while**：无 `continue` 的 `for` 改写为等价 `while`。
+- 刻意**排除** `a*2→a<<1`、`a+1→-~a` 等浮点 / 溢出不保真的「小聪明」改写；每轮结束 `php -l` 校验，失败回滚上一版本。
+
+### 深度反 AST（anti_ast）
+把语句位上的**常量字面量**从"一眼可读"改写成"要算一下才知道"（`--anti-ast` 或分层配置的 `anti_ast` 层）：
+- `echo 'ok';` → 累加器 + 恒等表达式（`strlen(md5(1))===32` / `ord('A')===65` / `base64_decode(base64_encode(x))` 等积木拼出的等价取值）。
+- 每条改写都在**构建期 `eval` 逐字节校验**（改写前 vs 改写后输出一致），不通过则该条原样保留，绝不带着风险出厂。
+- 直接破坏「搜字符串常量定位敏感逻辑」的静态套路。
+- **v1.1.3 强化**：字符串常量输出改为「先解码一个内容、再拼接一个内容」两段式（`base64_decode('p1') . base64_decode('p2')`，切分点按 `crc32` 哈希散列、每次构建位置不同）+ 定义变量承载 + 极廉价恒等运算（`$s = $s ^ 0;`（整数累加器保留并加廉价噪声）/ `$s = (string)$s;`（字符串）/ `$s = $s . '';`），更高混淆密度且**不增加可观计算量**。`low` / `mid` / `high` / `max` / `ultra` 预设已默认覆盖 anti_ast（`min` 刻意不含，保持零开销）。
+
+### 逻辑恒等变换（logic）
+只要实际逻辑与输出**逐字节不变**，就把代码改得面目全非——数字、比较、布尔、字符串全部换成类型安全、逐值恒等的等价表达式，再让语句间变量互相牵连（`--logic`，强度 `--logic-intensity=1|2|3`）：
+
+- **恒等积木随机化**：`md5` / `sha1` / `strlen` 的首参改用 salt 派生的随机串（不再清一色 `x` / `1`）；字符串按长度切段，`base64_decode` / `hex2bin` / `str_rot13` 多编码拼接；临时变量从 5 个降到 2 个，命名加长并全局查重防冲突。每处改写都在构建期逐值校验，不通过则原样保留。
+- **变量缠结网**（强度 3）：简单赋值 / `echo` 展开成「先创建两个临时变量 → 位运算串计算 → 后续语句复用」的互相牵连链（输出 `10086` 会变成一串临时变量的计算式），新变量再被标识符层一并改名。
+- **派生多分支诱饵**（`--logic-decoy`）：把部分 `echo` 派生为恒真/恒假分支，else 输出一段派生假值——逆向者无法仅凭「这条分支输出什么」判断真实输出。
+- **死变量末尾假值**（`--logic-fake-tail`）：临时变量延迟两句后就地覆盖为随机数字 / 字符串，制造「仍在使用」的假象，不依赖文件末尾插入，混写 HTML / bracket 命名空间均安全。
+- **压行**（`--logic-minify`）：删除空白与注释，仅在词素会粘连处补真正的空白 token。
+- **逐壳层激进变换**（`--logic-shell`，ultra 默认开）：每个壳包裹后立即对**本层解码逻辑**再施加一次逻辑恒等重组，剥开任意一层看到的都是面目全非的恒等式；超出 `--logic-shell-maxlen`（默认 512 字节）的内层密文载荷与字节 / 锚点 / VM 敏感层自动跳过；强度 `--logic-shell-intensity=2|3`（传 1 自动提升到 2），变换后经 `php -l` 校验、异常回滚。
+- **天马行空积木库**（`--logic-wild`，独立开关默认关）：双层 base64 / `strrev` / rot13 组合、恒等空串噪声、整数 `ord` / `hexdec` / `bindec` / `abs` / 移位链、加减法缠结链。深度编码产物会显著拖慢 VM 编译，故适合 `low` / `mid` 等无 VM 档位显式开启，含 `shell:vm` 的高档位不建议开。
+- **高级破坏档**（`--logic-extreme`，独立开关默认关）：对用过赋值的用户变量做「保存 → 假值 → 恢复」，最终值不变，但可能把原本未定义的变量定义成 null，故默认不启用。
+
+### 虚拟机保护（VM）
+把整段程序编译为**自定义字节码**，由内置解释器逐条解密执行（`--vm`）：
+- **模块链接**（`--vm-linker`）：命中清单的函数调用内联进同一 Program，产物无 `include`、无模块路径、调用关系无法静态还原。默认启用**内置模块**（`--vm-link-modules`，默认开）：自动加载包内 `src/Module/builtin/`，将 `base64_encode` / `base64_decode` 等 **70+ 个**原生函数替换为内置自定义实现并内联进字节码，调用点不再暴露原生函数名（含 `md5` / `sha1` / `crc32` —— 纯 PHP 重写，与原生逐字节一致，纯属"把函数名从产物里抹掉"的那一类）。可通过 `--vm-linker=<dir>` 指定自定义模块目录覆盖。
+  - **v1.1.9 起不再仅 VM**：新增原生路径层 `shell:module_link`——`low` / `mid` 预设默认开启，把命中调用点改写为模块内真实函数名（`strlen` → `__mod_strlen` 等）并把模块**原生 PHP 定义**追加进产物（利用函数声明提升），无需 VM 即可内联；支持**传递式**内联（模块体内又引用其它清单函数时一并内联）。`high` / `max` / `ultra` 继续走 VM 字节码内联。至此 `low` 及以上档位全覆盖。散装键构建需显式 `--vm-linker=<dir>` 才启用原生路径，以免改变默认产物形态。
+- **字节码垃圾指令**（`--vm-junk=N`）：注入「真实执行但栈平衡、无副作用」的废 opcode，淹没真实逻辑。
+- **诱饵函数 / fake-fog**（`--vm-fake-fog=N`）：永不调用的栈平衡假函数，膨胀函数表。
+- **分片密钥链**（`--vm-keychain`）：`kᵢ = sha256(kᵢ₋₁ ‖ i)`，单点密钥无法还原其它分片。
+- **常量池加密**（默认开，`--no-vm-cpool` 关）：`PUSH_C` 字面量抽入独立常量池（指令改索引引用、重复字面量去重），池以独立密钥加密——运行期解码后的指令流里只有索引，静态提取分片密钥也看不到明文常量。
+- **内置函数名编码**（`--vm-builtin-replace`）：`strlen` / `array_map` 等明文调用名盐化后编码进包，运行期解码。
+- **解释器运行时变形**（`--vm-morph`）：派发叠加独立第二层 scramble，每构建 dispatch 数学不同，消除固定指纹。
+- **反调试 / 反篡改探针矩阵**（`--vm-probe=N`）：xdebug / phpdbg / uopz 检测 + 字节码 CRC 自校验。
+- **指令集精简**：41 条同构 opcode 合并为 6 个参数化 opcode（`BINOP` / `UNOP` / `CAST_OP` / `INC_OP` / `VAROP` / `ARRAY_BUILD`）+ 隐藏 sub-id 表，消除「每个 opcode 自报家门」的语义指纹。
+- **opcode 组合执行**（`--vm-combo[=N]`）：把单条 opcode 拆成**等价多指令序列**——`SUB→NEG+ADD`、`PUSH_C 2,MUL→DUP+ADD`、`PUSH_C 2,POW→DUP+MUL`、`BOOL_NOT→PUSH_C 0,EQ`——打破 1:1 opcode 映射，抗反编译；N=1~3 为强度（默认 2），运行时等价性经 `tests/vm_gen_probe.php` 全量回归。
+- **复杂语法保真**（v1.0.9 拓展）：`list()/[]` 解构支持**表达式键**（字符串层把 `'k'` 编码成括号表达式后仍直接编译）；生成器方法 / `yield from` / 闭包生成器 / Fiber 生成器桥；`parent::` 非虚派发；闭包 `use` 引用写回；trait 方法体保真；heredoc 插值。个别暂不支持的语句走 **EVAL_STMT 语句级兜底**——兜底文本中的类引用自动 **FQCN 化**（`use` 别名展开、命名空间补全），eval 单元（全局作用域）里照常解析；头部序言（`declare` / `namespace`）经归一化安全网恒在最前。
+- **JIT 友好模式（默认开，v1.1.3）**：操作数栈编码逻辑**内联进 `MCPUSH` 闭包**、整段解释器保持**平坦大函数**，**更易被 OPcache tracing-JIT 追踪编译**，且每次压栈省一层嵌套闭包调用（≈26 ns/指令，百万级压栈可省上百毫秒）；`--no-vm-jit` 回退「`MCENC` 编码闭包 + `MCPUSH` 调用它」旧实现，语义逐字节等价（对象均走明文槽 `$___MCPLAIN___`，属性写回不丢）。
+- **VM 内反调试（默认随 `--vm-probe` 开启，v1.1.4）**：解释器 **dispatch 循环内**每 512~8192 条指令（间隔盐派生）复检调试器/hook 扩展（phpdbg SAPI、uopz、runkit7、xdebug 实际挂载）；命中**不 `exit`**，而是把盐派生污染因子异或进 opcode 解码——指令流静默错乱、提前结束，**没有可下断点的比较分支、也没有可 patch 的 `exit`**；正常环境零语义影响，开销约 2~3 ns/指令。`--no-vm-inloop` 关闭。
+- **VM 高级环境自检（脱壳独立执行检测，默认开，v1.1.5）**：解释器初始化 + dispatch 循环内**双点**校验「外壳绑定标记」——混淆器在最外层 `define()` 一个盐派生常量，内层只持其 **sha256 摘要**（`hash_equals` 比摘要，**拿不到原文就无法伪造**）。把 runtime 闭包 + 字节码整段抠出独立运行、或删掉外层 define，自检即失败并把污染因子写进 opcode 解码 → **零输出、零报错**，无可下断点、无可 patch 的 exit。`--no-vm-selfcheck` 关闭。
+
+- **类文件语法兼容加强（v1.1.7）**：闭包 / 箭头函数 / `match` / `yield` 在**含类声明的文件**中同样编译进 VM 字节码——此前这类文件因 `parseNew()` 不支持 `new \app\controller\Shop()` 的 `T_NS_SEPARATOR` 而整体降级为 `gz+base64` 不透明载荷（方法体只是 `_PHPRUN` 原生执行，并非 VM 字节码保护）。现循环收集完整 FQCN 并经 `resolveClassRef()` 展开 `use` 别名 / 当前命名空间；同时 VM 运行期 `$___CALLMETHOD___` 与 `SCALL` / `SCALL_VAR` 改用 `ReflectionMethod::setAccessible(true)`，修复 `$this->privateMethod()` 抛 `cannot access private method` 的问题。综合类夹具在 `high` / `max` / `ultra` 逐字节一致，源码明文 marker 计数为 0。
+
+- **符号名密文 + 容器格式随机化（默认开，v1.1.8）**：字节码容器内的**全部字符串**——类名 / 方法名 / 函数名 / 变量名 / 属性名 / 常量名 / 异常表三字段 / 指令操作数里的符号串——都以**按源文件内容派生**的盐密钥加密落盘，运行期解包时还原。此前容器虽整体被分片加密，但容器内符号名是**明文**：攻击者提取产物里的分片密钥即可解开容器，`strings` 直接读出完整符号表（业务结构、命名风格、类与方法关系一览无余）。现在即便密钥被提取也只剩一坨密文；密钥**不跨文件复用**，拿 A 产物的密钥解不开 B 产物。同时**容器的类型标记字节也逐构建随机化**（原本是固定序列 `NULL=0/INT=1/STR=2/BOOL=3/FLT=4/SEG=5`，是容器格式的固定指纹，通用解容器脚本按这组常量即可套用）——现在每次构建的容器结构都不同，且同 salt 仍可复现。开关：`--no-vm-symbols`（仅关闭符号密文）。配套新增 `tests/vm_symbols.php`（28 项）专项回归。
+
+### 虚拟机加速：指令集加速 + 编译时优化（v1.2.5）
+
+- **指令集加速**（`--vm-super-isa=N`，默认 3，0=关，最多 24）：把运行期高频出现的 2~4 条指令组合并成**一条新的 ISA 复合指令**，操作数按子指令顺序平铺。运行期一次取指、一次 dispatch 执行完原本 n 条指令，少走主循环（数组取值 + 两次异或 + 跳转表查表 + switch 分派）；字节码里同时出现陌生 opcode，指令频次统计失效，兼有抗反编译效果。
+  - **正确性设计**：合并位置用 `NOP` 占位补齐，**段内指令条数完全不变**，因此相对跳转偏移、异常表 `exTab` 的绝对 pc 区间、生成器段首标记索引**全部无需重算**；super handler 末尾 `$___PC___ += n-1` 跳过占位。
+  - **安全边界**：跳转目标落在合并区间内部（有代码从中间进入）一律不合并；段内出现跳转表绝对跳转 `JMP_B` 整段放弃；只合并「无控制流副作用」的指令（栈操作 / 算术 / 位 / 比较 / 布尔 / 输出 / 转型），跳转、调用、返回、yield、闭包创建、异常处理一律不参与。
+  - 注入时机在**常量池加密之后、remap 之前**：`PUSH_C` 的操作数此时已是池索引，超级指令直接沿用。
+- **编译时优化**（`constfold` 层，`--const-fold-level=1|2|3`）：把「简单但费力」的纯字面量运算在**构建期**算完 —— `60*60*24 → 86400`、`1024*1024+512 → 1049088`、`'a'.'b'.'c' → 'abc'`。运行期不再做这些计算（省指令、零额外开销），源码里也看不到原始计算过程（干扰人工阅读）。**必须排在 `logic` 之前**：先把计算做完再让逻辑层去混淆结果，否则适得其反。严格只对纯字面量求值，遵守 PHP 8 优先级与右结合（`2+3*4=14`、`2**3**2=512`）；除零 / 溢出 / 超长结果 / 类型不符一律跳过；折叠结果仍是字面量，`const`、参数默认值等常量上下文同样合法。
+
+### 函数型代码打散（`funcsplit` 层，v1.2.5）
+
+把一节 PHP 代码提取成函数封装：`echo $i + $k . $str;` → `function _fs9ab12c34($i, $k, $str){echo $i + $k . $str;}` + 原位调用 `_fs9ab12c34($i, $k, $str);`（定义集中落到文件顶层，调用留在原处）。
+
+- **只提取三类语句**：`echo …;`、`print …;`、`$v = EXPR;`；表达式必须**无副作用**（变量、数字/字符串字面量、数组下标读、算术/位/比较/逻辑、三元、数组字面量）。任何函数调用、成员访问、`new`、引用、自增自减、`isset/empty`、`@`、插值字符串、heredoc、魔术常量、`global/static` 一律拒绝 —— 搬到另一个栈帧就会变行为。
+- **参数一律值传递**：引用传参会把未定义变量静默创建成 null、吞掉原本的 `Warning: Undefined variable`，值传递的读取行为与原表达式完全一致。
+- 多命名空间 / bracket 命名空间 / `__halt_compiler` 文件整文件跳过（函数定义无法安全落到正确作用域）。
+- 等级 `--func-split-level=1|2|3`（1 仅 echo/print；2 加简单赋值；3 再把连续 echo/print 合并成更大节），单文件上限 `--func-split-max`（默认 64，0=关）。等级 3 合并多语句时，只有「组内变量都已在本组之前明确赋值」才合并 —— 否则实参一次性求值会让未定义变量的 Warning 提前，改变输出顺序。
+
+### 反 LLM 静态分析（Confrontation-LLM） `仅供娱乐 / Just for fun`
+
+
+> **仅供娱乐**：本模块是戏谑性质的「认知污染」实验，**不保证对任何真实 LLM /
+> 逆向工具产生实际干扰效果**，也不提升代码保密性或改变程序运行语义；请勿把它
+> 当作安全防护能力。正式保护请依赖 VM 字节码 / 加壳 / 完整性防护等特性。
+
+现代逆向 / 审计大量依赖 LLM 对混淆产物做「语义理解 + 优先级排序」。LLM 倾向于信任文档注释，本模块专门制造**误导性文本特征**（`--confrontation-llm`，强度 `--confrontation-intensity=N`，1~3 递增）：
+- **伪造误导注释**：在真实函数 / 类声明前注入假 `@deprecated`（「自 v2.1 起不再使用，保留仅为向后兼容」）、`@see`（指向「`CoreCrypto::decryptPayload()` 替代实现」）、`@todo`、`@fixme`（「临时调试用，上线前需删除」）等，把仍在执行的核心逻辑标记为「已废弃 / 非生产」。
+- **伪造 CHANGELOG 注释块**：文件头插入 `/** CHANGELOG … */`，声称某些「legacy 解密入口」已被移除——实际它们仍在执行，诱导 LLM 跳过对关键路径的优先级评估。
+- **生僻 CJK 散布**：把随机生僻汉字作为 `//` 注释碎片，散布到壳内层（函数 / 类 / 语句边界），制造「含中文业务注释」的假象，干扰基于英文词典 / 标记的统计分析与摘要。
+
+- **互斥注释 / 认知污染（`--mutual-comments`，默认开；`--mutual-intensity=N`，1~3 默认 2）**：在各层壳**内部**投放「互相打脸」的断言——同一段代码同时被标注为「已废弃可删」「唯一活路径」「仅供审计」「三条均不可信」，让 LLM 与人工阅读都无法确定该信哪条。**v1.1.7 增强**：主题库 12 → 22 组，新增多条 3 向 / 4 向成簇矛盾；同簇 N 条断言的距离由 1~40 个边界收紧到 **1~3 个**（并排落在几行内，同时可见）；每层壳投放 **3/6/12 簇**（原 1/2/4 对），投放上限同步放宽。
+  - **安全边界白名单**：注释只投放到「前一个有效 token 以结构性标点 / 非词素结尾」的边界。多层壳会把行注释转块注释、压缩去空白、再在字符串装配时剥离注释，若注释恰好是 `use X AS` 与 `Boom` 之间的唯一分隔，剥离后即粘成 `ASBoom` 这类致命语法错误。从注入点层面拒绝风险边界，宁可少插、不可插错。
+
+> 全部注入**仅产生纯注释**，绝不切入字符串 / heredoc / 已有注释内部，不影响语法与运行；随机分布由 salt 确定性派生，相同盐可复现。注入点位于自校验 / 毒化壳之内，一并纳入防篡改指纹。
+
+### 加壳
+- GZ 压缩壳（`--gz`）、EVAL 多层壳（`--eval` / `--eval-layers`）、目标 PHP 版本壳（`--php-version`，支持 `7.4 / 8.0 / 8.1 / 8.2 / 8.3 / 8.4 / 8.5`，默认 `8.1`）。
+- **换行缠绕量为源码字节的 1/2**（`--newline-poison-divisor=2`，源 10KB → 约 5000 换行）：均匀撒进 token 边界、部分嵌入最长 base64 载荷、头部兜底——「删空白 / 美化」即改动密文布局。
+
+### 工程模式与白名单（v1.1.0）
+- **目录级构建保留类名原名**：整套系统模式下类名不改名（PSR-4 按「命名空间 + 文件名」加载，改名即找不到类），并**废弃 `awaphp_autoload.php`** 这套 classmap 方案——不再需要任何自动加载补丁。
+- **白名单七维**：`dirs` / `files` / `variables` / `functions` / `classes` / `constants` / `methods`（CLI：`--whitelist-dirs` / `--whitelist-files` / `--whitelist-vars` / `--whitelist-funcs` / `--whitelist-classes` / `--whitelist-consts` / `--whitelist-methods`）。命中即整文件原样拷贝或保留符号原名。
+- **框架兼容开关**：`--var-keep-props`（保留实例属性名，ORM 字段映射 / 获取器 / `toArray()` 依赖）、`--var-keep-params`（保留参数名，路由注入 / DI / 验证器按名取参依赖）。
+- **ThinkPHP 8 开箱配置**：`other/thinkphp8.config.php`（等价 `high` 分层 + 关类名混淆 + 框架目录整跳过 + 内置白名单）。
+
+### 一键构建（ThinkPHP 8）
+`other/thinkphp8-build.php` 把「扫描项目 → 自动生成白名单 → 调混淆器」合成一条命令：
+
+```bash
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+```
+
+它用 tokenizer 静态解析 `app/`（可加 `--scan=`），自动收集：
+
+| 收集项 | 为什么必须保留原名 |
+|---|---|
+| 全部类 / 接口 / trait / enum（FQCN） | PSR-4 自动加载、`class_exists`、容器绑定按名字查找 |
+| 全部全局函数 | 助手函数 / 全局函数按名调用 |
+| 顶层 `const` | 常量按名引用 |
+| 控制器 public 方法 + 魔术方法 | 路由按「控制器/方法」调度，改名即 404/500 |
+
+`--dry-run` 只扫描并打印白名单，`--app-only` 只混淆 `app/`（快速迭代），`--output` 指定输出目录（默认 `<项目>_obf`）。
+
+### OPcache 辅助编译（Zend 字节码）
+混淆产物写出后，可「加一道工」将其编译为 **Zend 字节码**（`--opcache`）：
+- 部分虚拟主机（如 **EP 虚拟主机**）默认启用 OPcache，部署后可直接以字节码形态运行，进一步抬高源码恢复门槛、提升运行效率；
+- 若环境安装 `phpc` 扩展，额外生成可移植的 `.phpc` 字节码文件；
+- 若仅启用 OPcache，则通过 `opcache_compile_file` 预热运行期字节码缓存（Web 主机首次请求即命中字节码）；
+- 环境不支持时**自动跳过、不阻断**主流程，等价于不开启该选项。
+
+### 运行时垃圾与执行缠结（反删除剥离）
+- **运行时垃圾注入**（`--junk-runtime`，强度 `--junk-intensity=N`）：在真实语句间插入 `crc32` / `base64_decode` / `strrev` 等无副作用计算，稀释真实逻辑密度。
+- **执行缠结**（`--junk-tangle`）：让垃圾值**参与真实赋值**再以恒等式抵消——`$v = intdiv($v * $jt, $jt)`（整型保真）。一旦攻击者删掉 `$jt = ($k|1)` 这类垃圾定义行，缠结行退化为 `intdiv($v * null, null)`，运行即抛 `DivisionByZeroError` 自杀。垃圾从「可剔除的噪音」升级为「正确性的组成部分」，直接反制「删代码块就完事」的剥离式破解。
+- **v1.1.3 模块重构**：垃圾模块重拆为**两个独立、极廉价**模块——`GeneralJunk`（token 层通用垃圾，覆盖全部非 VM 代码，由 `--junk-runtime` 驱动）与 `VmBytecodeJunk`（已编译 VM 字节码层面的无用字节码覆盖，单指令级极廉价、栈平衡恒为 0，由 `--vm-junk=N` 驱动），不再有"VM 专供版"与"通用版"混在一起、强计算废代码拖慢运行的问题；两者计算量均强制极低，绝不"卡成傻瓜"。
+
+### 完整性防护
+- **反调试**（`--anti-debug`）：检测 xdebug / phpdbg / uopz·runkit / blackfire·tideways / vld·parsekit / 调试回溯；**v1.1.5 新增 `proc` 组**——`/proc/self/status` 的 `TracerPid`（被 ptrace 附着：gdb/lldb/strace）+ `/proc/self/maps` 的 `frida|xdl|substrate|libinject`（注入式 hook 框架），并加强 `env` 组（`LD_PRELOAD`/`LD_AUDIT` 中的插桩痕迹，**不因非空就误杀 jemalloc 之类正常预加载**）；**v1.1.6** 再补 `ini` 组的 `auto_prepend_file`/`auto_append_file`（脱壳时挂解壳器的常用入口）与 `opcache.jit`。
+- **探针语法自检（v1.1.6）**：探针组是手写拼接的 PHP 源码，一个括号错位就会让整份产物 Parse error，而构建期**零告警**、只有跑产物才暴露。现每个探针组在**构建期**独立做一次 `php -l` 自检，出错的组**整组剔除**并明确告警、其余组照常生效——损失被限制在出错的那一组，**产物可运行性优先于探针覆盖度**。
+- **脱壳检测（外壳绑定标记，v1.1.5）**：外层 `define()` 盐派生常量 + 内层只持 sha256 摘要校验；缺标记即判定「VM 内层被抠出独立运行 / 标记被剥离」——反调试守卫走**显式终止**，VM 自检走**静默污染**（纵深两道）。
+- **防 hook eval**（`--anti-hook`）：运行期探针验证 eval 真实生效，识别被 uopz / runkit 劫持。
+- **守卫内移藏匿**：反调试 / 防 hook 守卫置于 VM / EVAL / GZ 编码壳**最内层**，被后续壳裹入密文——攻击者剥离外层代码块时够不到它们；自校验 / 授权绑定因依赖 `__FILE__` 明文锚点，仍留在最外层。
+- **自校验防篡改**（`--anti-tamper`）：掩码自校验 + 分段哈希 + 总长校验 + shutdown 二次校验。
+- **授权绑定**（`--license-domain` / `--license-expire`）：域名绑定（仅 Web SAPI，支持泛子域）+ 有效期，默认关闭。
+- **结构指纹毒化壳**（`--struct-poison`，max/ultra 默认）：文件指纹（含插桩扩展在场计数）直接参与解密密钥派生——美化、插桩、hook `gzinflate`/`eval` 全部表现为「正常跑完但解出乱码」，没有可下断点的比较分支，也没有可 hook 的 exit。
+- **换行缠绕壳**（`--newline-poison`，`--newline-poison-min=N` / `--newline-poison-ratio=F` 可调）：向产物注入大量换行符（数量 = `max(原始行数 × 1/10, 上一档下限 2000)`），一部分作语句间空行、一部分直接嵌进最长的 base64 载荷串，**纠缠进代码而非堆在尾部**。它与结构毒化壳配合：在 `mid`/`high`/独立模式下换行在最终文件里**清晰可见**，逆向者若「下意识删空格 / 美化去换行」去整理产物，轻则改动密文布局、重则在 `max`/`ultra`（换行随内层一同被 `struct-poison` 加密进密文）下使载荷错位；正常运行与原生逐字节一致。
+- **蜜罐函数**（`--honeypot=N`）：`deriveMasterKey` / `verifyLicense` 这类拟真高价值命名，正常永不调用；被破解者调用即进入 1.4s 深循环并返回伪密钥，专钓「把所有函数都跑一遍」的自动化分析。
+- **GOTO 诱饵死状态**（`--goto-trap=N`，默认 2）：每个状态机分派器混入外观一致的不可达分支，调试器强行改状态跳入即自锁死循环。
+
+### 工程保障
+- **可复现构建**（salt 非空时全部随机量由 `Salt::derive/shuffle` 派生）。
+- **自动回滚**：每次管线结束 `php -l` 校验，失败回滚到上一安全版本。
+- **输出严格一致**：测试统一断言「混淆前后执行结果一致」。
+
+---
+
+## 架构
+
+```
+entry.php            CLI 入口（参数解析、目录递归、输出、php -l 校验）
+config.default.php   默认配置模板
+src/
+  Config.php         配置归一化（CLI/JSON/数组）+ 校验
+  Salt.php           混淆盐：_ + md5(名字+salt) 前 N 位（可复现）
+  Parser.php         token_get_all 封装 + 相邻有效 token 查询
+  Logger.php         日志（text 彩色 / silence / json）
+  Validator.php      php -l 校验 + 运行一致性比对
+  Obfuscator.php     调度器：编排各模块、重复加密、GZ 外壳、回滚
+  Variable/          变量名混淆（全局一致替换，排除超全局/$$/heredoc 等）
+  Function_/         函数名混淆 + 调用编码（call_user_func 间接调用）
+  Class_/            类/接口/trait 混淆
+  Token/             关键字大小写、字面量等价、引号翻转、heredoc、诱饵注释
+  String/            字符串分段 base64 编码（跳过 const/默认参数/case 常量上下文）
+  Number/            数字等价改写
+  Encode/            HtmlEncoder（实体编码）、GzEncoder（压缩加壳）
+  Optimize/          去注释、插死代码、空白/压缩、序列化钩子
+  AntiDetect/        字符串运行时异或装配（每串独立密钥）
+  ControlFlow/       控制流混淆、GOTO 状态机、原生状态机层、VM 壳、EVAL 壳、反调试、防 hook、防篡改、诱饵函数、授权守卫
+  LogicTransform/    编译时常量预计算（ConstFolder）、函数型代码打散（FunctionSplitter）、逻辑恒等重组（LogicRewriter）
+  Vm/                VM 编译器、ISA 定义、超级指令规划（VmSuperIsa）、运行时生成
+  Layer/             层描述（LayerDescriptor）+ 层注册表（CLI 共用的参数 schema）
+  Project/           SymbolTable（全局符号表）+ ProjectBuilder（整套系统两遍扫描构建）
+  Support/           NameStyle（拟真命名）、DynamicSymbols（动态符号保守排除）、
+                     PhpVersion、StatementSplitter、Random
+```
+
+**混淆管线（由内到外）**
+
+```
+token 级（可逆、保语义）：标识符重命名 → 控制流(cfg/goto) → 常量预计算 → 数字/字符串编码
+  → 函数型打散 → 死代码/压缩
+        ↓
+字符串级外壳（由内到外依次包裹，每步 php -l 校验，失败回滚）：
+  目标 PHP 版本壳 → 反调试探针 → 防 hook eval 守卫 → VM 壳 → EVAL 多层壳 → GZ 壳
+  → 诱饵函数 → 文件头版权 → 自校验防篡改 → 授权绑定守卫
+        ↓
+  · 反调试 / 防 hook 位于编码壳最内层，被 VM/EVAL/GZ 裹入密文藏匿（删外层代码块够不到）
+  · 自校验 / 授权绑定依赖 __FILE__ 明文锚点，须留在最外层
+  · OPcache 辅助编译（`--opcache`）为独立的后处理步骤，不参与管线包裹，于产物写出后再编译为 Zend 字节码
+自校验防篡改基线 = 上述全部内容（含文件头注释），运行期读取自身文件即可校验
+```
+
+---
+
+## 快速开始
+
+```bash
+# 要求：PHP ≥ 7.4（推荐 8.x），启用 tokenizer 扩展
+
+# 混淆单个文件
+php entry.php --input=app.php --output=app_obf.php \
+    --var-length=8 --func-length=10 --class-obf \
+    --str-length=4 --num-enc --html --gz --salt=mySalt --repeat=2
+
+# 目录递归混淆（整套系统模式 + manifest 增量重建）
+php entry.php --input=src/ --output=dist/ --salt=team-salt --manifest=dist/.obf-manifest.json
+
+# 最强保护：VM + 一键加固 + 反检测
+php entry.php --input=app.php --output=app_obf.php --vm --vm-p8 \
+    --str-xor --num-enc --anti-debug --anti-tamper --salt=team-salt
+
+# 语义等价变换 + 执行缠结（反静态模式匹配 / 反删除剥离）
+php entry.php --input=app.php --output=app_obf.php \
+    --semantic --semantic-strength=3 --junk-runtime --junk-tangle --salt=team-salt
+
+# v1.2.5：VM 加速（超级指令 + 常量预计算）+ 函数型代码打散
+php entry.php --input=app.php --output=app_obf.php --level=high \
+    --vm-super-isa=6 --const-fold-level=3 --func-split-level=3 --salt=team-salt
+
+# OPcache 辅助编译为 Zend 字节码（部分虚拟主机如 EP 默认启用 OPcache）
+php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-salt
+
+# ThinkPHP 8 一键构建（自动扫描项目生成白名单 → 混淆）
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+
+# 性能基准（生成 docs/PERFORMANCE.md 里那张表）
+php tests/perf_bench.php --runs=5 --levels=min,low,mid
+
+# 运行测试
+php tests/run_tests.php          # CLI 集成全量主套件：55 项
+php tests/v125_features.php      # v1.2.5 专项：超级指令 / 常量预计算 / 函数打散（54 项）
+php tests/hardening_test.php    # 加固专项：32 项
+php tests/hardening_v108.php     # v1.0.8 加固：语法兼容 + combo + confrontation + newline-poison（37 项）
+php tests/hardening_v109.php     # v1.0.9 加固：生成器/闭包/引用形参 + 壳层头部约束 + 换行配额 + 互斥注释 + 边界保真（59 项）
+php tests/vm_syntax_probe.php    # VM 语法探测：656 例三态（真编译/回退/失败）
+php tests/vm_gen_probe.php       # VM 生成器探测：290 例（含 combo 多强度）
+```
+
+> 可用保护开关远多于上方示例，完整清单见 [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)。
+
+---
+
+## 文档
+
+> 中文文档位于 `docs/`，英文文档位于 `docs/en/`；两套内容一一对应。
+
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)：**性能损耗对比**——各档位运行时开销、开销归因（哪个开关在花钱）、ThinkPHP 8 真实页面延迟、选型建议。
+- [`docs/VM_FEATURES.md`](docs/VM_FEATURES.md)：虚拟机保护的设计细节、局限与已知修复记录（含 heredoc 支持、do-while 修复、指令集精简等）。
+- [`docs/THINKPHP8_GUIDE.md`](docs/THINKPHP8_GUIDE.md)：ThinkPHP8 项目混淆实战教程——白名单模式、一键构建脚本、`--var-keep-props` / `--var-keep-params`、基线验证方法与常见边界。
+- [`docs/CLI_OPTIONS.md`](docs/CLI_OPTIONS.md)：全部命令行开关清单。
+- [`docs/DEBUG.md`](docs/DEBUG.md)：`OBF_*` 调试钩子集中说明。
+
+---
+
+## 许可与贡献
+
+本项目以 **MIT 开源许可证** 发布：在保留版权声明与许可声明的前提下，你可以自由地使用、复制、修改、合并、发布、分发本工具及其源码。
+
+欢迎在遵循项目许可证的前提下使用、研究与贡献。请通过 Issue / Pull Request 提出改进建议与问题反馈。
+
+> 说明：混淆的目标是**抬高逆向成本**，而非「不可破」——密钥随产物分发，任何能在沙箱中运行的代码理论上都可被静态或动态还原。它适用于提高复制 / 篡改 / 逆向的工程门槛，而非作为唯一的安全边界。
+
+---
+
+作者 Blog：blog.awaone.cn

@@ -314,6 +314,11 @@ final class VmOp
     public const YIELD_FROM = 159;
     public const GEN_HEAD  = 160;
 
+    // ---- 指令集加速（v1.2.5）----
+    // NOP：空操作。用作超级指令合并后的"占位填充"，使段的指令条数、索引完全不变，
+    // 从而所有相对跳转偏移与异常表 pc 区间无需重算（详见 src/Vm/VmSuperIsa.php）。
+    public const NOP = 199;
+
     // 类静态属性不设专用 opcode：编译期把 C::$p 映射为共享帧槽位（ mangled 名
     // "\x01sp:Class:prop"），读写/自增/复合赋值全部复用 GLOBAL_REF + PUSH_V /
     // POP_V / INC_OP——GLOBAL_REF 把帧槽位绑为共享帧引用后，这些指令自然穿透，

@@ -1,6 +1,7 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v1.2.3（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v1.2.5（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 英文版见 [`en/CLI_OPTIONS.md`](en/CLI_OPTIONS.md)。
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
 **用法**
@@ -182,6 +183,22 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 
 > `logic_shell` 变换后经 `php -l` 校验，异常即回滚，不产出不可运行文件。专项回归见
 > `tests/v124_layer_logic.php`；详见 `CHANGELOG.md` v1.2.4。
+
+---
+
+## 虚拟机加速 / 函数打散（v1.2.5）
+
+| 开关 | 说明 |
+| --- | --- |
+| `--vm-super-isa=N` | **指令集加速**：把运行期高频出现的 2~4 条指令组合并成 N 条新的 ISA 复合指令。`0`=关闭，默认 **3**，上限 24。合并后用 `NOP` 占位补齐，段内指令条数不变，故跳转偏移 / 异常表 pc 区间 / 生成器段首索引全部无需重算；跳转目标落在合并区间内部的位置跳过，段内出现 `JMP_B` 整段放弃；只合并无控制流副作用的指令。`--no-vm-super-isa` 等价于 `0` |
+| `--const-fold[=N]` / `--no-const-fold` | **编译时优化总开关**（v1.2.5）：打开后才执行字面量预计算。只给 `--const-fold-level=N` 时自动开启 |
+| `--const-fold-level=1\|2\|3` | **编译时优化（`constfold` 层）**：纯字面量运算在构建期算完（`60*60*24 → 86400`、`'a'.'b' → 'ab'`）。1=`+ - *` 与字符串拼接；2=加 `/ % **` 与位运算；3=全量。遵守 PHP 8 优先级与右结合，除零 / 溢出 / 超长 / 类型不符跳过。**必须排在 `logic` 之前**。分层键：`constfold` 层 `level` 参数 |
+| `--func-split[=N]` / `--no-func-split` | **函数打散总开关**（v1.2.5）：`=N` 等价打开并设等级。只给 `--func-split-level=N` / `--func-split-max=N` 时自动开启 |
+| `--func-split-level=1\|2\|3` | **函数型代码打散（`funcsplit` 层）**：把一节代码提取成函数并在原位调用。1=仅 `echo`/`print`；2=加 `$v = EXPR;` 简单赋值；3=再把连续 `echo`/`print` 合并成更大节。参数一律值传递，表达式必须无副作用；多命名空间 / bracket 命名空间 / `__halt_compiler` 整文件跳过。分层键：`funcsplit` 层 `level` 参数 |
+| `--func-split-max=N` | 单文件函数打散上限（默认 64，`0`=关闭）。分层键：`funcsplit` 层 `max` 参数 |
+
+> 三个新能力都有「算不准就原样保留」的保守回退，且逐字节输出等价；整站实测（WordPress / ThinkPHP 8）
+> 全量产物 `php -l` 通过。详见 `CHANGELOG.md` v1.2.5。
 
 ---
 

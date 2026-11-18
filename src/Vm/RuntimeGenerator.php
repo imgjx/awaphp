@@ -66,6 +66,9 @@ final class VmRuntimeGenerator
     // v1.2.0 动态 ISA 计划：按本次构建的 salt 派生「参数化 opcode 编号 / 族内 sub-id /
     // case 排列」。编译端 rewriteProgram 与运行期 paramFamilyBody 共用同一个实例。
     private VmIsa $isa;
+    // v1.2.5 指令集加速：超级指令定义（superOp => [[子op, 操作数个数], ...]）。
+    // 由 VmSuperIsa::plan() 在「常量池加密后、remap 前」产出，caseBody 据此内联展开子指令。
+    private array $supers = [];
 
     public function __construct(?Salt $salt = null)
     {
@@ -78,7 +81,16 @@ final class VmRuntimeGenerator
         if (!class_exists(VmIsa::class, false)) {
             require_once __DIR__ . '/VmIsa.php';
         }
+        if (!class_exists(VmSuperIsa::class, false)) {
+            require_once __DIR__ . '/VmSuperIsa.php';
+        }
         $this->isa = new VmIsa($this->salt);
+    }
+
+    /** 调试/测试用：最近一次构建实际生效的超级指令定义 */
+    public function superDefs(): array
+    {
+        return $this->supers;
     }
 
     /** 仅用于调试：查看当前 salt 派生出的映射，不影响产物 */
@@ -97,6 +109,7 @@ final class VmRuntimeGenerator
      */
     public function buildArtifact(string $source, array $opts = []): array
     {
+        $this->supers = [];
         $flatten = $opts['flatten'] ?? false;
         $stateMachine = $opts['stateMachine'] ?? false;
         $nChunks = (int) ($opts['chunks'] ?? 3);
@@ -381,6 +394,22 @@ final class VmRuntimeGenerator
         $poolEnc = null;
         if ($this->cpool) {
             $poolEnc = $this->cpoolEncrypt($this->extractConstPool($program));
+        }
+        // —— 指令集加速（v1.2.5，见 src/Vm/VmSuperIsa.php）——
+        // 把高频指令组折叠成一条新 ISA 指令：[superOp, 子指令操作数平铺]，并用 NOP 占位
+        // 保持段的指令条数不变（跳转偏移 / 异常表 pc 区间 / GEN_HEAD 索引全部无需重算）。
+        // 必须放在常量池加密【之后】：此时 PUSH_C 的操作数已是池索引，超级指令直接沿用，
+        // 不必让常量池抽取逻辑认识超指令结构。新增 opcode 需要重新分配编号，故重跑一次
+        // collectUsed/assignCodes（remap 尚未执行，重分配完全安全）。
+        $superMax = (int) ($opts['superIsa'] ?? 0);
+        if ($superMax > 0) {
+            $si = new VmSuperIsa($this->salt);
+            $si->plan($program, $superMax);
+            if ($si->defs() !== []) {
+                $this->supers = $si->defs();
+                $used = $this->collectUsed($program);
+                $mapping = $this->assignCodes($used);
+            }
         }
         $this->remap($program, $mapping);
 
@@ -1312,9 +1341,54 @@ TPL;
             . "\$___MCFLAGS___[]=\$___MCFLAG___;";
     }
 
+    /**
+     * 超级指令的 case 体：把各子指令的 handler 依次内联拼接。
+     *
+     * 子 handler 里的 `$___INS___[k]` 要整体右移到本超级指令的操作数区
+     *（操作数是"子指令操作数平铺"），末尾再 `$___PC___ += n-1` 跳过占位 NOP。
+     */
+    private function superBody(int $logical): string
+    {
+        $meta = $this->supers[$logical] ?? null;
+        if ($meta === null) {
+            return '';
+        }
+        $code = '';
+        $base = 1;
+        foreach ($meta as $sub) {
+            $subOp = (int) $sub[0];
+            $argc = (int) $sub[1];
+            $body = $this->caseBody($subOp);
+            if ($body !== '') {
+                $b = $base;
+                $body = preg_replace_callback(
+                    '/\$___INS___\[(\d+)\]/',
+                    static function (array $m) use ($b): string {
+                        return '$___INS___[' . ($b + (int) $m[1] - 1) . ']';
+                    },
+                    $body
+                );
+                $code .= $body;
+            }
+            $base += $argc;
+        }
+        $n = count($meta);
+        if ($n > 1) {
+            $code .= '$___PC___+=' . ($n - 1) . ';';
+        }
+        return $code;
+    }
+
     /** 各逻辑操作码对应的 case 体（占位符需带 $ 前缀，最终被替换为随机名） */
     private function caseBody(int $logical): string
     {
+        // v1.2.5 指令集加速：超级指令 → 内联展开各子指令 handler，并跳过占位 NOP。
+        if ($logical === VmOp::NOP) {
+            return ''; // 占位空操作（不改变任何状态）
+        }
+        if (isset($this->supers[$logical])) {
+            return $this->superBody($logical);
+        }
         // v1.2.0：参数化 opcode 的逻辑编号按 salt 动态生成，无法用固定 case 常量匹配，
         // 故先查本次构建的 ISA 计划；命中则按计划里的 sub-id 生成族内 switch。
         $fam = $this->isa->familyOf($logical);

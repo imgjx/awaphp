@@ -122,8 +122,13 @@ final class InlineHtml
                         $out .= 'echo ';
                         continue 2;
                     case T_CLOSE_TAG:
-                        // 闭合标签隐含语句结束；其文本里被 PHP 吞掉的换行不输出
-                        $out .= ';';
+                        // 闭合标签隐含语句结束；其文本里被 PHP 吞掉的换行不输出。
+                        // 必须先补一个换行再补分号：PHP 里「单行注释 + 闭合标签」的闭合标签
+                        // 会结束该注释，token_get_all 给出 T_COMMENT("// 注释 ") + T_CLOSE_TAG。
+                        // 若直接补 `;`，分号会被这条单行注释吞掉，后面的语句粘连成语法错误
+                        //（WordPress 的 wp-admin/customize.php 等模板页必现）。
+                        // 补的换行位于 PHP 模式内，不进入输出流。
+                        $out .= "\n;";
                         continue 2;
                 }
             }

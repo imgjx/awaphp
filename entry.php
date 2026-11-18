@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.4');
+define('OBFUSCATOR_VERSION', '1.2.5');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -66,6 +66,8 @@ foreach ([
     'src/Vm/VmBytecodeJunk.php',
     'src/Vm/VmFakeFog.php',
     'src/Vm/VmProbeMatrix.php',
+    'src/Vm/VmIsa.php',
+    'src/Vm/VmSuperIsa.php',
     'src/ControlFlow/EvalShell.php',
     'src/ControlFlow/AntiDebug.php',
     'src/ControlFlow/AntiHookEval.php',
@@ -77,6 +79,8 @@ foreach ([
     'src/AntiAst/IdentityExpr.php',
     'src/AntiAst/AntiAst.php',
     'src/LogicTransform/LogicRewriter.php',
+    'src/LogicTransform/ConstFolder.php',
+    'src/LogicTransform/FunctionSplitter.php',
     'src/Project/SymbolTable.php',
     'src/Project/ProjectBuilder.php',
 ] as $f) {
@@ -137,8 +141,30 @@ function obf_parse_args(array $argv): array
             $out['logic_wild'] = false;
             continue;
         }
+        // v1.2.5 编译时优化 / 函数型打散：等级旗标同时把总开关打开，
+        // 否则用户只给等级而漏了开关会静默不生效。
+        if ($a === '--const-fold') {
+            $out['const_fold'] = true;
+            continue;
+        }
+        if ($a === '--no-const-fold') {
+            $out['const_fold'] = false;
+            continue;
+        }
+        if ($a === '--func-split') {
+            $out['func_split'] = true;
+            continue;
+        }
+        if ($a === '--no-func-split') {
+            $out['func_split'] = false;
+            continue;
+        }
         if ($a === '--no-vm-combo') {
             $out['vm_combo'] = 0;
+            continue;
+        }
+        if ($a === '--no-vm-super-isa') {
+            $out['vm_super_isa'] = 0;
             continue;
         }
         if ($a === '--no-vm-jit') {
@@ -228,6 +254,15 @@ function obf_parse_args(array $argv): array
             $base[$sub] = array_values(array_unique(array_merge($base[$sub] ?? [], $items)));
         }
         $out['whitelist'] = $base;
+    }
+    // v1.2.5：只给 --const-fold-level=N / --func-split-level=N / --func-split-max=N
+    // 时自动打开对应总开关，避免"给了等级却没生效"这种静默失效。
+    if (array_key_exists('const_fold_level', $out) && !array_key_exists('const_fold', $out)) {
+        $out['const_fold'] = true;
+    }
+    if ((array_key_exists('func_split_level', $out) || array_key_exists('func_split_max', $out))
+        && !array_key_exists('func_split', $out)) {
+        $out['func_split'] = true;
     }
     return $out;
 }
@@ -329,6 +364,19 @@ function obf_help(): string
                        （如 SUB→NEG+ADD、PUSH_C 2,MUL→DUP,ADD、BOOL_NOT→PUSH_C 0,EQ），
                        打破 1:1 opcode 映射，抗反编译。N=1~3 为强度（默认 2），
                        --no-vm-combo 关闭
+      --vm-super-isa[=N] VM 指令集加速：把运行期高频的指令组（2~4 条）合并成一条新 ISA
+                       复合指令，一次取指一次分派执行完 n 条 —— 既少走主循环分派（提速），
+                       又让字节码出现陌生 opcode 且操作数平铺（抗反编译/抗频次统计）。
+                       用 NOP 占位保证指令条数不变，跳转偏移与异常表无需重算。
+                       N=新建指令条数（默认 3，0=关），--no-vm-super-isa 关闭
+      --const-fold[=N] 编译时优化（v1.2.5）：把纯字面量运算在构建期算完（60*60*24 → 86400），
+                       运行期零开销、源码里看不到原始算式。N=强度 1|2|3
+                       （1=+ - * 与串拼接，2=加 / % ** 与位运算，3=全量），默认 2。
+                       必须排在 logic 之前生效；--no-const-fold 关闭。
+      --func-split[=N] 函数型代码打散（v1.2.5）：把一节 echo/print/赋值语句提取成顶层函数
+                       再原位调用。N=等级 1|2|3（1=仅 echo/print，2=加简单赋值，
+                       3=再把连续 echo/print 合并成更大节），默认 1；
+                       --func-split-max=N 单文件上限（默认 64，0=关）；--no-func-split 关闭。
       --eval           EVAL 多层加壳
       --eval-layers=   EVAL 加壳层数（默认 3）
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）
