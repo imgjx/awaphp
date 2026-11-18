@@ -158,20 +158,31 @@ final class LayerDescriptor
             'funcsplit' => [
                 'kind'  => 'token',
                 'label' => '函数型代码打散',
-                'desc'  => '把一节 PHP 代码提取成函数封装：`echo $i + $k . $str;` → '
-                    . '`function _fs9ab12c34($i, $k, $str){echo $i + $k . $str;}` + `_fs9ab12c34($i, $k, $str);`'
-                    . '（定义集中追加到文件顶层，调用留在原位）。只提取 echo / print / 简单赋值三类语句，'
-                    . '表达式必须是"无副作用"的（变量、字面量、数组下标读、算术/位/比较/逻辑、三元），'
-                    . '任何函数调用、成员访问、new、引用、自增自减、isset/empty、插值字符串、魔术常量一律拒绝；'
-                    . '参数一律值传递（引用会把未定义变量静默变成 null）。多命名空间 / bracket 命名空间 / '
-                    . '__halt_compiler 文件整文件跳过',
+                'desc'  => '把一节 PHP 代码提取成函数封装并原位调用（v1.2.6 起不再只限 echo/print）：'
+                    . '等级 2 覆盖 return、纯表达式语句（函数调用/方法调用/new）；等级 3 再覆盖'
+                    . '数组/属性写回、复合赋值、unset、自增自减（已定义变量才引用传参）。'
+                    . '未定义变量一律值传参以免吞掉 Warning；控制流/闭包/插值串/$this/超全局整条跳过。'
+                    . '多命名空间 / bracket 命名空间 / __halt_compiler 文件整文件跳过',
                 'params' => [
                     'level' => ['label' => '打散等级', 'type' => self::T_INT, 'default' => 1, 'min' => 1, 'max' => 3,
-                                'hint' => '1=仅 echo/print 2=+简单赋值 3=+连续 echo/print 合并（节更大）'],
+                                'hint' => '1=仅 echo/print 2=+return/纯表达式语句 3=+写回语句与多句合并'],
                     'max'   => ['label' => '单文件上限', 'type' => self::T_INT, 'default' => 64, 'min' => 0, 'max' => 512,
                                 'hint' => '每个文件最多提取多少个函数（0=关闭）'],
                 ],
                 'tags' => ['反分析', '结构'],
+            ],
+            'decoy' => [
+                'kind'  => 'token',
+                'label' => '多变恒真三分支诱饵',
+                'desc'  => '把真语句改写成 if/elseif/else（或 switch）三分支：真条件取自 12 种'
+                    . '「看似业务校验」的恒真式（strlen>=0、crc32&1∈{0,1}、substr 返回 string…），'
+                    . '另两个分支用形近假值且恒不可达；真分支做同理替换（变量替变量、字符串替字符串）。'
+                    . '绝不出现 ($v===$v)||($v!==$v) 这类一眼假的恒真式',
+                'params' => [
+                    'level' => ['label' => '诱饵密度', 'type' => self::T_INT, 'default' => 2, 'min' => 1, 'max' => 3,
+                                'hint' => '1=约 12% 2=约 25% 3=约 45% 的可选语句被改写'],
+                ],
+                'tags' => ['反分析', '控制流', '诱饵'],
             ],
             'logic' => [
                 'kind'  => 'token',
@@ -277,6 +288,7 @@ final class LayerDescriptor
                     'cpool'          => ['label' => '常量池加密', 'type' => self::T_BOOL, 'default' => true, 'hint' => 'PUSH_C 字面量抽入独立常量池（索引引用），池以独立密钥加密，静态分析看不到明文常量'],
                     'symbols'        => ['label' => '符号名密文', 'type' => self::T_BOOL, 'default' => true, 'hint' => '程序容器内的类名/方法名/变量名/常量名等全部加密落盘，运行期解包还原；静态提取密钥后 strings 也读不到符号名'],
                     'combo'          => ['label' => 'opcode 组合执行', 'type' => self::T_INT, 'default' => 0, 'min' => 0, 'max' => 3, 'hint' => '把单条 opcode 拆成等价多指令序列（0=关，越高越密）'],
+                    'isaSplit'       => ['label' => '等价 ISA 拆解', 'type' => self::T_INT, 'default' => 2, 'min' => 1, 'max' => 4, 'hint' => '同一语义 opcode 造 N 种功能相同的物理码并轮转使用（1=关，2~4=开，零运行开销）'],
                 ],
                 'tags' => ['VM'],
             ],

@@ -429,3 +429,32 @@ Five **independently switchable** architectural hardening directions on top of t
 - **Constant folding (`constfold` layer, `--const-fold-level=1|2|3`)**: pure literal arithmetic evaluated at build time (`60*60*24 → 86400`), honouring PHP 8 precedence and right associativity (`2+3*4=14`, `2**3**2=512`), skipping division by zero / overflow / oversized results / type mismatches. It must run **before** `logic`. Three fixed edge classes: unary minus vs `**` (`-10 ** 2` is `-(10**2)`), folding from mid-expression must not cross a lower-precedence operator on the left (`A . B | C`), and partial folding is never allowed (it truncates outer operands).
 - **Function splitting (`funcsplit` layer, `--func-split-level=1|2|3`, `--func-split-max=N`)**: extracts `echo` / `print` / `$v = EXPR;` into top-level functions with in-place calls. Arguments are always by value (by-reference would silently define undefined variables as null and swallow warnings); expressions must be side-effect free; files with multiple/bracketed namespaces or `__halt_compiler` are skipped; at level 3 multi-statement merging requires every variable to be already assigned before the group.
 - All three fall back conservatively and keep byte-identical output; whole-site builds (WordPress / ThinkPHP 8) produced artifacts that all pass `php -l`.
+
+
+---
+
+## New in v1.2.6: bytecode disassociation and interpreter morphing
+
+### Equivalent-ISA splitting (`--vm-isa-split=N`)
+
+Superinstructions (v1.2.5) merge many instructions into one; bytecode disassociation does the opposite — one semantic opcode gets N **functionally identical** physical codes, used in rotation during remap. The same `PUSH_V` therefore appears as several different opcodes in the bytecode, breaking static 1:1 mapping and instruction-frequency statistics.
+
+- Primary codes still come from 1..250; aliases come from a salt-shuffled 251..2047 pool. XOR is a bijection, so dispatch keys never collide and the serialisation protocol is unchanged.
+- Each alias gets its own case label, but labels of one semantic opcode **share a single handler body** (`case A: case B: body`) — code size barely changes and dispatch stays one hash lookup, i.e. zero runtime cost.
+- `GEN_HEAD` (generator segment-head literal check) and `NOP` are excluded, so opcode-literal-dependent logic stays intact.
+- Orthogonal to constant-pool encryption, superinstructions, flattening, state machines and bytecode junk. `high`/`max`/`ultra` presets use 2/3/4 shapes.
+
+### Interpreter morphing
+
+The generated interpreter PHP gets one more post-processing pass:
+
+1. every decimal `T_LNUMBER` becomes hexadecimal (compile-time constant, identical opcode);
+2. eligible ASCII single-quoted strings become `\xHH` double-quoted strings (strings containing `$`, `\`, non-ASCII bytes or oversized are skipped to avoid interpolation/escaping ambiguity);
+3. unreachable pseudo-logic blocks are woven between the closures (`strlen(str)<0` is always false), disguised as key-schedule / checksum construction;
+4. misleading comments (compatibility shim / legacy path) are inserted.
+
+None of these change opcode order or operands, and a given salt stays byte-for-byte reproducible.
+
+### Division of labour with 3-way decoys
+
+VM decoy cases (existing feature) and the PHP-token-level `decoy` layer (new in v1.2.6) are separate mechanisms: the former adds never-hit case labels to the dispatch table, the latter rewrites **user source statements** into three-branch structures (varied true conditions, look-alike dead branches). They stack without interfering.

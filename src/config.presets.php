@@ -52,7 +52,7 @@ $FRAMEWORK_SAFE = [
 return [
     // ===================== min：低混淆 —— 词法级变换 + 字符串简单解密，无壳无反调试 =====================
     // 定位：**能跑在任何地方、运行时代价极低**的最低档。适合三类场景：
-    //   1. 生产环境对延迟敏感（性能损耗硬约束 ≤ 1.28×：原生跑 100ms，开 min 必须 < 128ms）；
+    //   1. 生产环境对延迟敏感（实测与原生几乎同速；不再对外承诺具体倍数）；
     //   2. 交付对象只需"别让人一眼看明白"，不需要对抗逆向工程（前端模板、内部工具）；
     //   3. 作为混淆流水线第一段，后续按需叠加（散装参数可覆盖任一档）。
     // 选层原则：只收「纯词法替换 + 字符串简单解密」的层 ——
@@ -66,7 +66,7 @@ return [
     //   * 任何 shell:*（无 EVAL、无 GZ、无反调试探针、无自校验 —— 产物仍是"一个普通的 PHP 文件"）；
     //   * shell_shield（Config 里该项默认 true，必须显式关掉，否则结构指纹毒化壳仍会挂上）。
     // 运行时成本：仅每字符串一次 base64_decode + 一次 XOR（常数级，亚毫秒），文件头一条 hash 装密钥；
-    //   体积通常比原文件更小（去注释 + 压空白）；性能损耗实测稳定 ≤ 1.28×。
+    //   体积通常比原文件更小（去注释 + 压空白）；性能与原生几乎同速。
     'min' => [
         'layers' => [
             // v1.2.5：先做编译时优化（纯字面量运算在构建期算完，运行期零开销、产物更小），
@@ -128,6 +128,7 @@ return [
         'layers' => [
             ['name' => 'constfold',   'params' => ['level' => 2]],
             ['name' => 'logic',       'params' => ['intensity' => 2]],
+            ['name' => 'decoy',       'params' => ['level' => 1]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -179,7 +180,7 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 6]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true, 'junk' => 80]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true, 'junk' => 80, 'isaSplit' => 2]],
             ['name' => 'shell:eval',   'params' => ['layers' => 6]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,proc,func2,ini2', 'intensity' => 3, 'response' => 'silent', 'multipoint' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 4]],
@@ -198,6 +199,7 @@ return [
         'layers' => [
             ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3]],
+            ['name' => 'decoy',       'params' => ['level' => 2]],
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -214,7 +216,7 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 10]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 12, 'morph' => true, 'fakeFog' => 160, 'probe' => 30, 'keychain' => true, 'builtinReplace' => true, 'junk' => 160]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 12, 'morph' => true, 'fakeFog' => 160, 'probe' => 30, 'keychain' => true, 'builtinReplace' => true, 'junk' => 160, 'isaSplit' => 1]],
             ['name' => 'shell:eval',   'params' => ['layers' => 8]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,proc,trace,func2,ini2', 'intensity' => 4, 'response' => 'silent', 'multipoint' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 5]],
@@ -236,6 +238,7 @@ return [
         'layers' => [
             ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3, 'decoy' => true, 'fake_tail' => true, 'minify' => true]],
+            ['name' => 'decoy',       'params' => ['level' => 3]],
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -252,7 +255,7 @@ return [
             ['name' => 'stat',         'params' => []],
             ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 50]],
             ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true, 'combo' => 3]],
+            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true, 'combo' => 3, 'isaSplit' => 1]],
             ['name' => 'shell:eval',   'params' => ['layers' => 10]],
             ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,proc,trace,func2,ini2', 'intensity' => 4, 'response' => 'silent', 'multipoint' => true]],
             ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 6]],

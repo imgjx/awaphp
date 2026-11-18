@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.5');
+define('OBFUSCATOR_VERSION', '1.2.6');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -81,6 +81,7 @@ foreach ([
     'src/LogicTransform/LogicRewriter.php',
     'src/LogicTransform/ConstFolder.php',
     'src/LogicTransform/FunctionSplitter.php',
+    'src/LogicTransform/DecoyBranches.php',
     'src/Project/SymbolTable.php',
     'src/Project/ProjectBuilder.php',
 ] as $f) {
@@ -159,12 +160,29 @@ function obf_parse_args(array $argv): array
             $out['func_split'] = false;
             continue;
         }
+        // v1.2.6 多变恒真三分支诱饵
+        if ($a === '--decoy') {
+            $out['decoy'] = true;
+            continue;
+        }
+        if ($a === '--no-decoy') {
+            $out['decoy'] = false;
+            continue;
+        }
         if ($a === '--no-vm-combo') {
             $out['vm_combo'] = 0;
             continue;
         }
         if ($a === '--no-vm-super-isa') {
             $out['vm_super_isa'] = 0;
+            continue;
+        }
+        if ($a === '--no-vm-isa-split') {
+            $out['vm_isa_split'] = 1;
+            continue;
+        }
+        if ($a === '--vm-isa-split') {
+            $out['vm_isa_split'] = 2;
             continue;
         }
         if ($a === '--no-vm-jit') {
@@ -263,6 +281,9 @@ function obf_parse_args(array $argv): array
     if ((array_key_exists('func_split_level', $out) || array_key_exists('func_split_max', $out))
         && !array_key_exists('func_split', $out)) {
         $out['func_split'] = true;
+    }
+    if (array_key_exists('decoy_level', $out) && !array_key_exists('decoy', $out)) {
+        $out['decoy'] = true;
     }
     return $out;
 }
@@ -369,6 +390,10 @@ function obf_help(): string
                        又让字节码出现陌生 opcode 且操作数平铺（抗反编译/抗频次统计）。
                        用 NOP 占位保证指令条数不变，跳转偏移与异常表无需重算。
                        N=新建指令条数（默认 3，0=关），--no-vm-super-isa 关闭
+      --vm-isa-split[=N] VM 字节码拆解（v1.2.6）：同一个语义 opcode 造 N 种功能完全相同的
+                       物理 ISA 并【轮转实际使用】，字节码里看不出 1:1 映射。
+                       N=2|3|4（默认 2），1=关，--no-vm-isa-split 同 1。
+                       零运行开销：派发仍是一次跳转表哈希查找，handler 逐字节同构。
       --const-fold[=N] 编译时优化（v1.2.5）：把纯字面量运算在构建期算完（60*60*24 → 86400），
                        运行期零开销、源码里看不到原始算式。N=强度 1|2|3
                        （1=+ - * 与串拼接，2=加 / % ** 与位运算，3=全量），默认 2。
@@ -377,6 +402,10 @@ function obf_help(): string
                        再原位调用。N=等级 1|2|3（1=仅 echo/print，2=加简单赋值，
                        3=再把连续 echo/print 合并成更大节），默认 1；
                        --func-split-max=N 单文件上限（默认 64，0=关）；--no-func-split 关闭。
+      --decoy[=N]      多变恒真三分支诱饵（v1.2.6）：把语句改写成 if/elseif/else（或
+                       switch）三分支，真条件从 12 种「看似业务校验」的恒真式里按盐选取，
+                       另两个分支用形近假值且永不可达。N=密度 1|2|3（12%/25%/45%），
+                       默认 2；--decoy-level=N 同义；--no-decoy 关闭。
       --eval           EVAL 多层加壳
       --eval-layers=   EVAL 加壳层数（默认 3）
       --anti-debug     反调试探针（检测 phpdbg / xdebug 等）

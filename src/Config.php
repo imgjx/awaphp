@@ -131,6 +131,11 @@ final class Config
         $sisa = $this->data['vm_super_isa'] ?? 3;
         $sisa = ($sisa === true || $sisa === '' || $sisa === null) ? 3 : (int) $sisa;
         $this->data['vm_super_isa']     = max(0, min(24, $sisa));
+        // VM 字节码拆解（--vm-isa-split）：同一语义 opcode 的等价 ISA 形态数（1=关，2=双形态，
+        // 3=三形态，4=四形态；默认 2）。裸开关按 2 处理。
+        $isaSplit = $this->data['vm_isa_split'] ?? 2;
+        $isaSplit = ($isaSplit === true || $isaSplit === '' || $isaSplit === null) ? 2 : (int) $isaSplit;
+        $this->data['vm_isa_split']     = max(1, min(4, $isaSplit));
         $this->data['junk_runtime']   = $b($this->data['junk_runtime'] ?? false) ?? false;
         $this->data['junk_intensity'] = max(1, min(10, $i($this->data['junk_intensity'] ?? 1)));
         $this->data['junk_fake_b64']  = $b($this->data['junk_fake_b64'] ?? true) ?? true;
@@ -187,6 +192,9 @@ final class Config
         $this->data['func_split']       = $b($this->data['func_split'] ?? false) ?? false;
         $this->data['func_split_level'] = max(1, min(3, $i($this->data['func_split_level'] ?? 1)));
         $this->data['func_split_max']   = max(0, $i($this->data['func_split_max'] ?? 64));
+        // v1.2.6 多变恒真三分支诱饵
+        $this->data['decoy']            = $b($this->data['decoy'] ?? false) ?? false;
+        $this->data['decoy_level']      = max(1, min(3, $i($this->data['decoy_level'] ?? 2)));
 
         // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
         $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];

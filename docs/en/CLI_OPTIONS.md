@@ -189,6 +189,21 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 > `logic_shell` output is `php -l`-checked and rolls back on failure, so no unrunnable file is
 > produced. Regression: `tests/v124_layer_logic.php`; see `CHANGELOG.md` v1.2.4.
 
+## Whole-statement splitting / 3-way decoys / equivalent ISA (v1.2.6)
+
+| Switch | Meaning |
+| --- | --- |
+| `--vm-isa-split[=N]` / `--no-vm-isa-split` | **Bytecode disassociation** (default 2, 1 = off, max 4): create N functionally identical physical opcodes for one semantic opcode and use them **in rotation** in the bytecode. Each alias has its own dispatch label but shares one handler body; dispatch stays a single jump-table lookup — **zero runtime cost**. Layer key: `isaSplit` param of the `shell:vm` layer |
+| `--decoy[=N]` / `--no-decoy` | **Multi-shaped always-true 3-way decoy master switch** (v1.2.6): `=N` enables and sets density. A true statement becomes `if/elseif/else`; the true condition is picked by salt from 12 business-looking always-true checks, the other two paths use look-alike values and are unreachable. The true branch applies same-kind substitution (variable→variable, string→string). **Only echo/print are decoyed**; assignments/write-backs are skipped (substitution copies variables into locals and would drop writes). |
+| `--decoy-level=1\|2\|3` | Decoy density: 1≈12%, 2≈25% (default), 3≈45% of eligible statements. Layer key: `level` param of the `decoy` layer |
+| `--func-split-level=3` | From v1.2.6, level 3 also splits **state-changing statements**: array/property writes, compound assignments, `unset`, `++`/`--`. Only variables provably assigned before the statement are passed by reference; undefined ones stay by-value. goto labels, control-flow heads, closures, interpolation, `$this` and superglobals are skipped. |
+
+> The decoy probe is **normalised to a scalar first** (non-scalars become 0), so objects / Closures never
+> trigger a `__toString` error. Condition shapes and structural variants are salt-derived — reproducible
+> for a given salt, different across builds.
+
+---
+
 ## VM acceleration / function splitting (v1.2.5)
 
 | Switch | Description |

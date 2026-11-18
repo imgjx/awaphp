@@ -9,22 +9,28 @@
  *     _fs3f8a1c92($i, $k, $str);                                   // 调用留在原位
  *
  * 语义等价的第一原则（宁可不混淆，也不改炸）：
- *   1. **值传参（不用引用）**。引用传参会把未定义变量静默创建成 null，从而吞掉
+ *   1. **未定义变量一律值传参**。引用传参会把未定义变量静默创建成 null，从而吞掉
  *      原本的 `Warning: Undefined variable`；值传参的行为与原表达式读取完全一致。
- *   2. **只提取无副作用的表达式**：变量、数字/字符串字面量、数组下标读、算术/位/
- *      比较/逻辑运算、三元、数组字面量。任何函数调用、成员访问、`new`、引用、
- *      自增自减、赋值嵌套、`isset/empty`、`@`、插值字符串、heredoc、魔术常量
- *      一律拒绝（这些会因"搬到另一个栈帧"而改变行为）。
- *   3. **只处理三类语句**：`echo …;`、`print …;`、`$v = EXPR;`。
- *   4. **不做跨语句的变量写回**，因此提取后的代码不依赖调用者作用域。
- *   5. 函数定义统一追加到文件末尾（PHP 顶层函数在编译期注册，先调用后定义合法）。
- *      仅处理「单命名空间 / 无命名空间」文件；bracket 命名空间、多命名空间、
- *      `__halt_compiler` 一律整文件跳过。
+ *      只有「在本语句之前已明确赋值」的变量才允许引用传参写回。
+ *   2. **两种提取模式**：
+ *      - value 模式：简单赋值 / return，把右侧纯表达式变成 `return EXPR;`，调用点
+ *        写成 `$v = fn(...)` 或 `return fn(...);`；表达式必须无副作用（沿用 v1.2.5
+ *        的严格白名单）。
+ *      - stmt 模式（v1.2.6 新增）：整条语句原样搬进函数体，用引用传参承接写回。
+ *        于是函数调用、方法调用、`new`、数组/属性赋值、复合赋值、`unset`、`++`
+ *        这些"有副作用但整条搬走后顺序不变"的语句也能被打散。
+ *   3. **无论哪种模式都禁止跨栈帧会变义的结构**：控制流（break/continue/return 以外的
+ *      goto/yield/throw）、闭包与箭头函数、`use`/`global`/`static`、魔术常量、
+ *      插值字符串/heredoc、`$this`、超全局、引用赋值、`@` 抑制符。
+ *   4. 函数定义插到第一个顶层 `<?php` 之后（跳过 declare/namespace），避开混写模板。
+ *      多命名空间 / bracket 命名空间 / `__halt_compiler` 整文件跳过。
  *
  * 等级 func_split_level：
  *   1 = 只提取 `echo` / `print` 语句（默认）
- *   2 = 再加简单赋值 `$v = EXPR;`
- *   3 = 再加「连续 2~4 条 echo/print 合并成一个函数体」（节更大，打散更彻底）
+ *   2 = 再加简单赋值 `$v = EXPR;` 与 `return EXPR;`，以及**无写回的纯表达式语句**
+ *       （函数调用 / 方法调用 / new）
+ *   3 = 再加**有写回的语句**（数组/属性/复合赋值、unset、自增自减）与
+ *       「连续 2~4 条 echo/print 合并成一个函数体」
  *
  * 覆盖率相关的保守开关：
  *   func_split_max = 单文件最多提取多少个函数（默认 64，防止小文件被撑爆 / 变慢）
@@ -41,6 +47,16 @@ final class FunctionSplitter
     private int $ctr = 0;
     /** @var array<int,string> 收集的函数定义文本 */
     private array $defs = [];
+    /**
+     * 文件级命名空间（v1.2.6 修复整站 redeclare）。
+     * Salt::identifier/derive 的设计是「与文件无关，以便跨文件对齐」——那对
+     * 【被重命名后跨文件引用的符号】是对的，但 funcsplit 提取的是【本文件私有】
+     * 的顶层函数：若只用全局 salt + 每文件从 0 重置的 ctr 命名，全站每个文件的
+     * 第一个提取函数都会撞成同一个名字，整站运行必然 `Cannot redeclare function`。
+     * 这里用源文件 token 内容的摘要做命名空间：不同文件天然隔离；同一文件重复
+     * 构建仍逐字节可复现（内容相同 ⇒ 摘要相同）。
+     */
+    private string $fileNs = '';
 
     /** 表达式里允许出现的数组 token（全部是"只读、无副作用"的） */
     private const ALLOW_TOKENS = [
@@ -86,18 +102,29 @@ final class FunctionSplitter
         $this->max = max(0, (int) $cfg->get('func_split_max', 64));
         $this->ctr = 0;
         $this->defs = [];
+        // 文件级摘要：内容相同 ⇒ 命名空间相同 ⇒ 产物可复现；内容不同 ⇒ 名字隔离。
+        // 只看「有意义的 token 文本」，忽略空白/注释差异（同一份源码换注释不该改名）。
+        $sig = '';
+        foreach ($tokens as $t) {
+            if (Parser::isWhitespaceOrComment($t)) {
+                continue;
+            }
+            $sig .= Parser::text($t);
+        }
+        $this->fileNs = substr(md5($sig), 0, 12);
         $n = count($tokens);
         if ($n === 0 || $this->max === 0) {
             return $tokens;
         }
-        // 整文件跳过条件（宁可不动）
         if (!$this->fileIsSafe($tokens)) {
             return $tokens;
         }
 
-        // 1) 切出"分号结尾的简单语句"区间 [s, e]（e 含分号）。深度 0 才成立。
+        // 1) 切"分号结尾的简单语句"。只按【圆括号深度】判定语句结束：
+        //    for(...;...;...); declare(...); 里的分号 paren>0，不会误切。
+        //    不再要求花括号深度为 0 —— 函数/方法体内的语句同样可提取（v1.2.6）。
         $stmts = [];
-        $depth = 0;
+        $paren = 0;
         $start = -1;
         for ($i = 0; $i < $n; $i++) {
             $t = $tokens[$i];
@@ -105,15 +132,15 @@ final class FunctionSplitter
             if ($start < 0 && !Parser::isWhitespaceOrComment($t)) {
                 $start = $i;
             }
-            if ($txt === '(' || $txt === '[' || $txt === '{') {
-                $depth++;
+            if ($txt === '(') {
+                $paren++;
                 continue;
             }
-            if ($txt === ')' || $txt === ']' || $txt === '}') {
-                $depth = max(0, $depth - 1);
+            if ($txt === ')') {
+                $paren = max(0, $paren - 1);
                 continue;
             }
-            if ($depth === 0 && $txt === ';') {
+            if ($paren === 0 && $txt === ';') {
                 if ($start >= 0) {
                     $stmts[] = [$start, $i];
                 }
@@ -125,9 +152,10 @@ final class FunctionSplitter
         }
 
         // 2) 判定每条语句是否可提取
+        $assignAt = $this->assignMap($tokens);
         $cand = [];
         foreach ($stmts as [$s, $e]) {
-            $info = $this->analyze($tokens, $s, $e);
+            $info = $this->analyze($tokens, $s, $e, $assignAt);
             if ($info !== null) {
                 $info['s'] = $s;
                 $info['e'] = $e;
@@ -139,16 +167,15 @@ final class FunctionSplitter
         }
 
         // 3) 分组：level 3 把相邻的纯 echo/print 合并（最多 4 条）。
-        //    合并会让所有实参在函数体执行前一次性求值，从而改变「未定义变量 Warning」的
-        //    出现顺序。因此只在组内变量都明确"在本组之前已赋值"时才合并。
-        $assignAt = $this->assignMap($tokens);
+        //    合并会让所有实参在函数体执行前一次性求值，从而改变「未定义变量 Warning」
+        //    的出现顺序。因此只在组内变量都明确"在本组之前已赋值"时才合并。
         $groups = [];
         if ($this->level >= 3) {
             $cur = null;
             foreach ($cand as $c) {
                 $canMerge = $cur !== null
-                    && $cur['kind'] === 'echo'
-                    && $c['kind'] === 'echo'
+                    && $cur['kind'] === $c['kind']
+                    && in_array($c['kind'], ['echo', 'print'], true)
                     && count($cur['items']) < 4
                     && $this->adjacent($tokens, $cur['items'][count($cur['items']) - 1]['e'], $c['s'])
                     && $this->allDefinedBefore($c['vars'], $assignAt, $cur['items'][0]['s']);
@@ -157,11 +184,21 @@ final class FunctionSplitter
                     foreach ($c['vars'] as $v) {
                         $cur['vars'][$v] = $v;
                     }
+                    foreach ($c['refs'] as $v) {
+                        $cur['refs'][$v] = $v;
+                    }
                 } else {
                     if ($cur !== null) {
                         $groups[] = $cur;
                     }
-                    $cur = ['kind' => $c['kind'], 'items' => [$c], 'vars' => $this->varSet($c['vars'])];
+                    $cur = [
+                        'kind' => $c['kind'],
+                        'mode' => $c['mode'],
+                        'target' => $c['target'],
+                        'items' => [$c],
+                        'vars' => $this->varSet($c['vars']),
+                        'refs' => $this->varSet($c['refs']),
+                    ];
                 }
             }
             if ($cur !== null) {
@@ -169,7 +206,14 @@ final class FunctionSplitter
             }
         } else {
             foreach ($cand as $c) {
-                $groups[] = ['kind' => $c['kind'], 'items' => [$c], 'vars' => $this->varSet($c['vars'])];
+                $groups[] = [
+                    'kind' => $c['kind'],
+                    'mode' => $c['mode'],
+                    'target' => $c['target'],
+                    'items' => [$c],
+                    'vars' => $this->varSet($c['vars']),
+                    'refs' => $this->varSet($c['refs']),
+                ];
             }
         }
 
@@ -179,23 +223,30 @@ final class FunctionSplitter
             if (count($this->defs) >= $this->max) {
                 break;
             }
+            // 同一变量不得既值传又引用传：引用优先（stmt 模式）。
+            $refs = array_values($g['refs']);
+            $vals = array_diff(array_values($g['vars']), $refs);
             $fn = $this->newName();
-            $vars = array_values($g['vars']);
+            $params = [];
+            foreach ($vals as $v) {
+                $params[] = $v;
+            }
+            foreach ($refs as $v) {
+                $params[] = '&' . $v;
+            }
             $body = '';
             foreach ($g['items'] as $it) {
-                $body .= $it['text'];
+                $body .= $it['body'];
             }
-            if ($g['kind'] === 'assign') {
-                // 赋值语句整体替换成 return，调用点写成 $v = fn(...)
-                $body = 'return ' . $g['items'][0]['expr'] . ';';
-            }
-            $params = $vars === [] ? '' : implode(', ', $vars);
-            $this->defs[] = 'function ' . $fn . '(' . $params . '){' . $body . '}';
-            $args = $vars === [] ? '' : implode(', ', $vars);
+            $this->defs[] = 'function ' . $fn . '(' . implode(', ', $params) . '){' . $body . '}';
+            $callArgs = array_merge($vals, $refs);
+            $args = $callArgs === [] ? '' : implode(', ', $callArgs);
             $first = $g['items'][0];
             $last = $g['items'][count($g['items']) - 1];
             if ($g['kind'] === 'assign') {
-                $call = $first['target'] . ' = ' . $fn . '(' . $args . ');';
+                $call = $g['target'] . ' = ' . $fn . '(' . $args . ');';
+            } elseif ($g['kind'] === 'return') {
+                $call = 'return ' . $fn . '(' . $args . ');';
             } else {
                 $call = $fn . '(' . $args . ');';
             }
@@ -216,15 +267,15 @@ final class FunctionSplitter
         }
 
         // 5) 定义插到文件顶层的合法位置（`<?php` 之后，跳过 declare / namespace 声明）。
-        //    放在开头而不是末尾，可以彻底避开"多段 PHP/HTML 混写"时插到
-        //    短输出标签或花括号中间导致语法错、或被当 HTML 输出的问题。
         $defText = "\n" . implode("\n", $this->defs) . "\n";
         $insertAt = $this->topLevelInsertPos($out);
         if ($insertAt < 0) {
             return $tokens; // 找不到安全插入点：整文件放弃（宁可不混淆）
         }
         array_splice($out, $insertAt, 0, [$defText]);
-        $this->logger->debug(sprintf('funcsplit: 提取 %d 个函数（等级 %d）', count($this->defs), $this->level));
+        $this->logger->debug(sprintf('funcsplit: 提取 %d 个函数（等级 %d，语句型 %d）',
+            count($this->defs), $this->level,
+            count(array_filter($this->defs, static fn($d) => strpos($d, 'function ') === 0))));
         return $out;
     }
 
@@ -325,11 +376,38 @@ final class FunctionSplitter
     }
 
     /**
-     * 分析一条语句。返回 ['kind'=>'echo'|'assign', 'text'=>原文, 'vars'=>[..],
-     * 'expr'=>右侧表达式文本, 'target'=>赋值目标] 或 null。
-     * @param array<int,mixed> $tokens
+     * 语句模式绝不允许的 token：搬进另一个栈帧后语义会变，或会把函数定义切坏。
+     * 注意 T_UNSET / T_PRINT / T_ECHO / 自增自减【不在】这里 —— 它们整条搬走后
+     * 顺序不变，正是 v1.2.6 要新覆盖的目标。
      */
-    private function analyze(array $tokens, int $s, int $e): ?array
+    private const HARD_FORBID = [
+        T_FUNCTION, T_FN, T_YIELD, T_YIELD_FROM, T_GOTO, T_EXIT, T_THROW,
+        T_GLOBAL, T_STATIC, T_USE, T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM,
+        T_IF, T_ELSE, T_ELSEIF, T_WHILE, T_DO, T_FOR, T_FOREACH, T_SWITCH,
+        T_TRY, T_CATCH, T_FINALLY, T_CASE, T_DEFAULT,
+        T_DECLARE, T_NAMESPACE, T_BREAK, T_CONTINUE, T_RETURN,
+        T_INCLUDE, T_INCLUDE_ONCE, T_REQUIRE, T_REQUIRE_ONCE, T_EVAL,
+        T_ISSET, T_EMPTY, T_LIST, T_MATCH,
+        T_LINE, T_FILE, T_DIR, T_CLASS_C, T_TRAIT_C, T_METHOD_C, T_FUNC_C, T_NS_C,
+        T_START_HEREDOC, T_END_HEREDOC, T_ENCAPSED_AND_WHITESPACE, T_INLINE_HTML,
+        T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES, T_ATTRIBUTE,
+        T_OPEN_TAG, T_OPEN_TAG_WITH_ECHO, T_CLOSE_TAG, T_HALT_COMPILER,
+    ];
+
+    /** 调用后依赖"当前函数帧"的内建函数：搬走后结果会变，整条放弃。 */
+    private const FRAME_SENSITIVE_FNS = [
+        'func_get_args' => true, 'func_get_arg' => true, 'func_num_args' => true,
+        'get_defined_vars' => true, 'debug_backtrace' => true, 'debug_print_backtrace' => true,
+        'extract' => true, 'compact' => true, 'assert' => true,
+        'eval' => true, 'exit' => true, 'die' => true,
+    ];
+
+    /**
+     * 分析一条语句，返回内部描述或 null（放弃提取）。
+     * @param array<int,mixed> $tokens
+     * @param array<string,int> $assignAt
+     */
+    private function analyze(array $tokens, int $s, int $e, array $assignAt): ?array
     {
         $k = -1;
         for ($i = $s; $i <= $e; $i++) {
@@ -342,27 +420,70 @@ final class FunctionSplitter
             return null;
         }
         $head = $tokens[$k];
-        $isEcho = $head[0] === T_ECHO;
-        $isPrint = $head[0] === T_PRINT;
-        $isAssign = false;
-        $eq = -1;
-        if (!$isEcho && !$isPrint && $head[0] === T_VARIABLE && $this->level >= 2) {
+        $id = $head[0];
+
+        // return / 简单赋值 / echo/print：先走严格 value 模式（旧行为，零风险）
+        if ($id === T_RETURN && $this->level >= 2) {
+            return $this->valueAnalyze($tokens, $s, $e, $k, $assignAt);
+        }
+        if ($id === T_ECHO || $id === T_PRINT) {
+            $v = $this->valueAnalyze($tokens, $s, $e, $k, $assignAt);
+            if ($v !== null) {
+                return $v;
+            }
+            // 复杂 echo/print 不回退 stmt 模式：echo 后接函数调用时，把语句整段
+            // 塞进函数体再经后续空白压缩层处理，曾出现 `echo` 与函数名粘连成
+            // `echostr_rot13()` 的回归（S5 max）。echo/print 保持 v1.2.5 的严格路径。
+            return null;
+        }
+        if ($id === T_VARIABLE && $this->level >= 2) {
             $eq = Parser::nextSignificant($tokens, $k);
             if ($eq > 0 && $eq < $e && $tokens[$eq] === '=') {
-                // 排除 `= &$x`（引用赋值）与 `= &` 换行
                 $afterEq = Parser::nextSignificant($tokens, $eq);
                 if (!($afterEq > 0 && Parser::text($tokens[$afterEq]) === '&')) {
-                    $isAssign = true;
+                    $v = $this->valueAnalyze($tokens, $s, $e, $k, $assignAt);
+                    if ($v !== null) {
+                        return $v;
+                    }
                 }
             }
         }
-        if (!$isEcho && !$isPrint && !$isAssign) {
+        // v1.2.6：其余语句（函数调用、方法调用、数组/属性赋值、复合赋值、unset、++…）
+        // 【必须限定语句头】—— 否则 while/if/switch 这类结构的整段会被当成一条
+        // "语句"提取，函数体缺少闭合括号，生成的代码直接语法错（max 档实测踩过）。
+        if ($this->level >= 2 && in_array($id, [T_ECHO, T_PRINT, T_VARIABLE, T_STRING], true)) {
+            // goto 标签 `label: stmt;` 的首 token 也是 T_STRING：把标签一起搬走会让
+            // goto 找不到目标标签（max/ultra 实测踩到），整条跳过。
+            $nx = Parser::nextSignificant($tokens, $k);
+            if ($nx > 0 && Parser::text($tokens[$nx]) === ':') {
+                return null;
+            }
+            return $this->stmtAnalyze($tokens, $s, $e, $k, $assignAt);
+        }
+        return null;
+    }
+
+    /**
+     * value 模式：右侧必须是严格无副作用的纯表达式；调用点用返回值接住。
+     */
+    private function valueAnalyze(array $tokens, int $s, int $e, int $k, array $assignAt): ?array
+    {
+        $head = $tokens[$k];
+        $id = $head[0];
+        $isEcho = $id === T_ECHO || $id === T_PRINT;
+        $isReturn = $id === T_RETURN;
+        $isAssign = false;
+        $eq = -1;
+        if (!$isEcho && !$isReturn && $id === T_VARIABLE) {
+            $eq = Parser::nextSignificant($tokens, $k);
+            if ($eq > 0 && $eq < $e && $tokens[$eq] === '=') {
+                $isAssign = true;
+            }
+        }
+        if (!$isEcho && !$isReturn && !$isAssign) {
             return null;
         }
-
-        // 表达式区间
         $exprStart = $isAssign ? $eq + 1 : $k + 1;
-        // echo/print 的 `print` 本身在 forbid 列表里，这里从 head 之后开始检查
         $vars = [];
         for ($i = $exprStart; $i < $e; $i++) {
             if (!$this->safeExprToken($tokens[$i], $vars)) {
@@ -370,22 +491,91 @@ final class FunctionSplitter
             }
         }
         if ($vars === []) {
-            return null; // 没有变量可传参：提取意义不大，且会引入无谓调用开销
+            return null;
         }
-
-        $expr = $this->sliceText($tokens, $exprStart, $e - 1);
-        $expr = trim($expr);
+        $expr = trim($this->sliceText($tokens, $exprStart, $e - 1));
         if ($expr === '') {
             return null;
         }
-        $out = [
-            'kind' => $isAssign ? 'assign' : 'echo',
-            'text' => $this->sliceText($tokens, $s, $e),
-            'vars' => array_values($vars),
-            'expr' => $expr,
-            'target' => $isAssign ? Parser::text($head) : '',
+        if ($isAssign) {
+            $body = 'return ' . $expr . ';';
+            $kind = 'assign';
+            $target = Parser::text($head);
+        } elseif ($isReturn) {
+            $body = 'return ' . $expr . ';';
+            $kind = 'return';
+            $target = '';
+        } else {
+            $body = $this->sliceText($tokens, $s, $e);
+            $kind = 'echo';
+            $target = '';
+        }
+        return [
+            'kind' => $kind, 'mode' => 'value', 'body' => $body,
+            'vars' => array_values($vars), 'refs' => [], 'target' => $target,
         ];
-        return $out;
+    }
+
+    /**
+     * stmt 模式：整条语句原样搬进函数体，所有变量【引用传参】。
+     * 引用只在变量已明确赋值后才使用 —— 未定义变量改引用会吞掉 Warning，
+     * 那条路在 value 模式里用值传参，这里宁可整条放弃。
+     */
+    private function stmtAnalyze(array $tokens, int $s, int $e, int $k, array $assignAt): ?array
+    {
+        $vars = [];
+        $prev = -1;
+        for ($i = $k; $i < $e; $i++) {
+            $t = $tokens[$i];
+            if (Parser::isToken($t)) {
+                $id = $t[0];
+                if ($id === T_VARIABLE) {
+                    $name = (string) $t[1];
+                    if ($name === '$this' || strncmp($name, '$GLOBALS', 8) === 0
+                        || preg_match('/^\$_(SERVER|GET|POST|FILES|COOKIE|SESSION|ENV|REQUEST)$/', $name)) {
+                        return null;
+                    }
+                    $vars[$name] = $name;
+                    $prev = $i;
+                    continue;
+                }
+                if (in_array($id, self::HARD_FORBID, true)) {
+                    return null;
+                }
+                if ($id === T_STRING && $i + 1 < $e
+                    && Parser::text($tokens[Parser::nextSignificant($tokens, $i)]) === ':') {
+                    return null; // goto 标签
+                }
+                if ($id === T_STRING && isset(self::FRAME_SENSITIVE_FNS[strtolower((string) $t[1])])
+                    && Parser::nextSignificant($tokens, $i) >= 0
+                    && Parser::text($tokens[Parser::nextSignificant($tokens, $i)]) === '(') {
+                    return null;
+                }
+                continue;
+            }
+            $txt = (string) $t;
+            if ($txt === '@') {
+                return null;
+            }
+            // `= &$x` 引用赋值：函数形参再引用会形成引用链，保守跳过
+            if ($txt === '&' && $prev >= 0 && Parser::text($tokens[$prev]) === '=') {
+                return null;
+            }
+            $prev = $i;
+        }
+        if ($vars === []) {
+            return null;
+        }
+        foreach ($vars as $v) {
+            if (!isset($assignAt[$v]) || $assignAt[$v] >= $s) {
+                return null; // 未定义变量：引用会吞 Warning，放弃
+            }
+        }
+        return [
+            'kind' => 'stmt', 'mode' => 'stmt',
+            'body' => $this->sliceText($tokens, $s, $e),
+            'vars' => [], 'refs' => array_values($vars), 'target' => '',
+        ];
     }
 
     /**
@@ -543,7 +733,8 @@ final class FunctionSplitter
 
     private function newName(): string
     {
-        $h = substr(bin2hex($this->salt->derive('funcsplit|' . $this->ctr, 5)), 0, 8);
+        // fileNs 参与派生：同一文件同一 salt 可复现，不同文件不撞名（整站 redeclare 修复）。
+        $h = substr(bin2hex($this->salt->derive('funcsplit|' . $this->fileNs . '|' . $this->ctr, 6)), 0, 10);
         $this->ctr++;
         return '_fs' . $h . $this->ctr;
     }

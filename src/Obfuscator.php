@@ -262,6 +262,8 @@ final class Obfuscator
                 // VM 指令集加速（--vm-super-isa）：把高频指令组合并为新 ISA 复合指令。
                 // 0=关；默认 3 条。既提速（少走主循环分派）又干扰逆向（出现陌生 opcode）。
                 'superIsa'       => max(0, (int) $this->config->get('vm_super_isa')),
+                // VM 字节码拆解（--vm-isa-split=N）：同一语义造 N 种等价 ISA 物理码。
+                'isaSplit'       => max(1, min(4, (int) $this->config->get('vm_isa_split'))),
                 // VM JIT 友好模式（--no-vm-jit 关）：内联编码栈，利于 OPcache JIT 追踪。
                 'jit'            => (bool) $this->config->get('vm_jit'),
                 'inloop'         => (bool) $this->config->get('vm_inloop'),
@@ -973,6 +975,9 @@ final class Obfuscator
             case 'funcsplit':
                 $tokens = (new FunctionSplitter($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
+            case 'decoy':
+                $tokens = (new DecoyBranches($this->salt, $this->logger))->process($tokens, $cfg);
+                break;
             case 'logic':
                 $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
                     ->process($tokens, $cfg);
@@ -1025,6 +1030,10 @@ final class Obfuscator
                 $map['func_split']       = true;
                 $map['func_split_level'] = (int) ($params['level'] ?? 1);
                 $map['func_split_max']   = (int) ($params['max'] ?? 64);
+                break;
+            case 'decoy':
+                $map['decoy']       = true;
+                $map['decoy_level'] = (int) ($params['level'] ?? 2);
                 break;
             case 'number':
                 $map['num_enc'] = (bool) ($params['on'] ?? false);
@@ -1638,6 +1647,7 @@ final class Obfuscator
             'combo'          => max(0, (int) ($params['combo'] ?? (int) $this->config->get('vm_combo'))),
             // 指令集加速条数（0=关）
             'superIsa'       => max(0, (int) ($params['superIsa'] ?? (int) $this->config->get('vm_super_isa'))),
+            'isaSplit'       => max(1, min(4, (int) ($params['isaSplit'] ?? (int) $this->config->get('vm_isa_split')))),
             'jit'            => (bool) ($params['jit'] ?? $this->config->get('vm_jit')),
             'inloop'         => (bool) ($params['inloop'] ?? $this->config->get('vm_inloop')),
             'selfcheck'      => (bool) ($params['selfcheck'] ?? $this->selfcheck),
@@ -1851,6 +1861,15 @@ final class Obfuscator
         if ($this->config->get('logic')) {
             $logic = new LogicRewriter($this->salt, $this->logger, (int) $this->config->get('logic_intensity'));
             $tokens = $logic->process($tokens, $this->config);
+        }
+
+        // v1.2.6 多变恒真三分支诱饵：排在 logic【之后】、var【之前】。
+        // 之后：恒真条件不再被 logic 的恒等重组改写（少一层风险）；
+        // 之前：新引入的临时变量被变量重命名层一并改名。
+        // 分层路径由 decoy 层负责，散装路径由本 flag 触发。
+        if ($this->config->get('decoy')) {
+            $decoy = new DecoyBranches($this->salt, $this->logger);
+            $tokens = $decoy->process($tokens, $this->config);
         }
 
         $var = new VariableObfuscator($this->salt, $this->logger);

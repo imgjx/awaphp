@@ -69,6 +69,14 @@ final class VmRuntimeGenerator
     // v1.2.5 指令集加速：超级指令定义（superOp => [[子op, 操作数个数], ...]）。
     // 由 VmSuperIsa::plan() 在「常量池加密后、remap 前」产出，caseBody 据此内联展开子指令。
     private array $supers = [];
+    // v1.2.6 字节码拆解：同一语义 opcode 的「等价物理码」池。
+    // logical => [物理码, ...]。每条指令按出现序轮转取一个，于是字节码里
+    // 同一个语义（如 PUSH_V）会以多个不同 opcode 出现；运行期每个别名各有独立
+    // case 标签与同构 handler，但派发仍是一次 jt 哈希查找 —— 零额外开销。
+    private array $aliasCodes = [];
+    private int $isaSplit = 1;
+    // v1.2.6 解释器本体混淆：常量形态重写 + 不可达伪逻辑
+    private VmRuntimeMorpher $vmMorpher;
 
     public function __construct(?Salt $salt = null)
     {
@@ -84,6 +92,10 @@ final class VmRuntimeGenerator
         if (!class_exists(VmSuperIsa::class, false)) {
             require_once __DIR__ . '/VmSuperIsa.php';
         }
+        if (!class_exists(VmRuntimeMorpher::class, false)) {
+            require_once __DIR__ . '/VmRuntimeMorpher.php';
+        }
+        $this->vmMorpher = new VmRuntimeMorpher($this->salt);
         $this->isa = new VmIsa($this->salt);
     }
 
@@ -110,6 +122,8 @@ final class VmRuntimeGenerator
     public function buildArtifact(string $source, array $opts = []): array
     {
         $this->supers = [];
+        $this->aliasCodes = [];
+        $this->isaSplit = max(1, min(4, (int) ($opts['isaSplit'] ?? 1)));
         $flatten = $opts['flatten'] ?? false;
         $stateMachine = $opts['stateMachine'] ?? false;
         $nChunks = (int) ($opts['chunks'] ?? 3);
@@ -411,6 +425,9 @@ final class VmRuntimeGenerator
                 $mapping = $this->assignCodes($used);
             }
         }
+        // —— v1.2.6 字节码拆解：给每个语义 opcode 造若干「功能完全相同」的等价 ISA ——
+        // 必须放在最后一次 assignCodes 之后：super 指令会重分配全部物理码。
+        $this->buildAliasCodes($mapping);
         $this->remap($program, $mapping);
 
         $body = $this->emitRuntimeBody($mapping);
@@ -674,13 +691,82 @@ final class VmRuntimeGenerator
         return $mapping;
     }
 
+    /**
+     * v1.2.6 字节码拆解：为语义 opcode 造等价物理码。
+     *
+     * 原始物理码占 1..250；别名取自 251..2047 的洗牌池，与任何原始码都不冲突
+     * （XOR 是双射，故派发键也不会撞车）。别名码仍是普通 varint，序列化协议不变。
+     * 被运行期按【操作码字面量】判别的指令必须排除：目前只有 GEN_HEAD（生成器
+     * 段首标记）与 NOP（空操作占位）——给它们造别名会让字面量判别失效或纯属浪费。
+     *
+     * @param array<int,int> $mapping 逻辑 => 主物理码
+     */
+    private function buildAliasCodes(array $mapping): void
+    {
+        $this->aliasCodes = [];
+        if ($this->isaSplit < 2) {
+            return;
+        }
+        $eligible = [];
+        foreach (array_keys($mapping) as $logical) {
+            if ($logical === VmOp::GEN_HEAD || $logical === VmOp::NOP) {
+                continue;
+            }
+            $eligible[] = (int) $logical;
+        }
+        if ($eligible === []) {
+            return;
+        }
+        // 别名数随分裂强度走：2→1 个别名（共 2 形态），3→2，4→3。
+        // 上限 384 个别名码，避免超大程序把 jt / case 表撑得过长（体积与构建耗时）。
+        $extra = $this->isaSplit - 1;
+        $budget = min(384, count($eligible) * $extra);
+        $pool = $this->salt->shuffle(range(251, 2047), 'vm-isa-alias-' . $this->isaSplit);
+        $p = 0;
+        // 按 salt 洗牌分配名额，使「哪些 opcode 被拆、拆几片」逐构建不同；
+        // 但每个 eligible 至少 1 个别名，保证效果稳定可预期。
+        $order = $this->salt->shuffle($eligible, 'vm-isa-alias-order');
+        $quota = [];
+        foreach ($eligible as $logical) {
+            $quota[$logical] = 1;
+        }
+        $left = $budget - count($eligible);
+        if ($left > 0) {
+            foreach ($order as $logical) {
+                if ($left <= 0) {
+                    break;
+                }
+                if ($quota[$logical] < $extra) {
+                    $quota[$logical]++;
+                    $left--;
+                }
+            }
+        }
+        foreach ($eligible as $logical) {
+            $codes = [$mapping[$logical]];
+            for ($k = 1; $k <= $quota[$logical]; $k++) {
+                $codes[] = $pool[$p++];
+            }
+            $this->aliasCodes[$logical] = $codes;
+        }
+    }
+
     /** @param array<int,int> $mapping */
     private function remap(array &$program, array $mapping): void
     {
-        $re = function (array &$seg) use ($mapping): void {
+        $counter = 0;
+        $re = function (array &$seg) use ($mapping, &$counter): void {
             foreach ($seg as &$ins) {
                 if (is_array($ins) && isset($ins[0]) && isset($mapping[$ins[0]])) {
-                    $ins[0] = $mapping[$ins[0]];
+                    $logical = (int) $ins[0];
+                    $codes = $this->aliasCodes[$logical] ?? null;
+                    if ($codes !== null && count($codes) > 1) {
+                        // 逐条轮转：相邻的同语义指令拿到不同别名，静态统计里
+                        // 同一个 PUSH_V 看起来像好几条独立指令。
+                        $ins[0] = $codes[$counter++ % count($codes)];
+                    } else {
+                        $ins[0] = $mapping[$logical];
+                    }
                 }
             }
             unset($ins);
@@ -778,10 +864,41 @@ final class VmRuntimeGenerator
         }
         $labelSet = array_fill_keys(array_values($caseLabel), true);
 
-        // 生成 case（顺序打乱 + 诱饵）
+        // —— v1.2.6 字节码拆解：每个等价物理 opcode 一个独立 case 标签 ——
+        // 关键：同一语义的多个 case 标签【共用一份 handler 体】（`case A: case B: body`），
+        // 而不是复制多份。这样字节码里确实出现了多个功能相同的 ISA 且都在被使用，
+        // 但生成的 PHP 代码量几乎不变、I-cache 压力不变 —— 实测运行期损耗落在噪声内。
+        // 静态上看到的是 N 个不同 opcode + N 个不同 case 标签共用一段 handler。
+        $caseGroups = [];
+        foreach (array_keys($mapping) as $logical) {
+            $caseGroups[(int) $logical][] = $caseLabel[$logical];
+        }
+        foreach ($this->aliasCodes as $logical => $codes) {
+            if (!isset($caseLabel[$logical])) {
+                continue;
+            }
+            $cnt = count($codes);
+            for ($k = 1; $k < $cnt; $k++) {
+                $ac = (int) $codes[$k];
+                $eff = $ac ^ $scramble ^ $scramble2;
+                $cl = ($ac * 100003 + $this->salt->deriveInt('vm-alias-cl-' . $ac, 1, 100000)) ^ $scramble2;
+                while (isset($labelSet[$cl])) {
+                    $cl++;
+                }
+                $labelSet[$cl] = true;
+                $jt[$eff] = $cl;
+                $caseGroups[$logical][] = $cl;
+            }
+        }
+
+        // 生成 case（同一语义的多标签共用一份 handler；顺序打乱 + 诱饵）
         $cases = [];
-        foreach ($mapping as $logical => $code) {
-            $cases[] = 'case ' . $caseLabel[$logical] . ': ' . $this->caseBody($logical) . ' break;';
+        foreach ($caseGroups as $logical => $labels) {
+            $head = '';
+            foreach ($labels as $l) {
+                $head .= 'case ' . $l . ': ';
+            }
+            $cases[] = $head . $this->caseBody((int) $logical) . ' break;';
         }
         // 诱饵 case：随机标签，保证不与真实标签撞车
         $decoyLabelPool = [];
@@ -814,6 +931,8 @@ final class VmRuntimeGenerator
         // VM 高级环境自检（脱壳独立执行检测）：把「外壳绑定标记校验」注入到取指循环之前。
         // 占位符在 strtr 前替换，块内 ___PZ0___ 占位符与整段模板一同随机化。
         $runtime = str_replace('/*___SELFCHECK___*/', $this->selfCheckInit(), $runtime);
+        // v1.2.6 解释器本体混淆：不可达伪逻辑（必须在占位符替换前注入）
+        $runtime = str_replace('/*___MORPH___*/', $this->vmMorpher->fakeBlocks(), $runtime);
         $runtime = strtr($runtime, $this->placeholderMap($nm, $scramble, $jt));
         // GEN_HEAD 的【重映射后】操作码编号：RUN 入口靠它识别生成器段。
         // 必须在 remap 之后取 mapping 值——段内操作数已是随机编号，写死常量会永不命中。
@@ -854,6 +973,8 @@ final class VmRuntimeGenerator
             $runtime = str_replace('(string)$nt[$idx]', '(string)$' . $ndecVar . '((string)$nt[$idx])', $runtime);
         }
 
+        // v1.2.6：常量形态重写（十六进制 / \xHH）；全为编译期等值变换，运行期零成本。
+        $runtime = $this->vmMorpher->tokenMorph($runtime);
         return [
             'php'      => $runtime,
             'pVar'     => $nm['P'],
@@ -1149,6 +1270,7 @@ $___CALLFN___=function($idx,$args)use($___P___,$___VMCB___,$___META___,&$___CALL
 $___INC___=function($v,$d){if(is_int($v)||is_float($v)){return $v+$d;}if(is_null($v)){return $d>0?1:$v;}if(is_bool($v)){return $v;}if(is_array($v)){throw new \TypeError($d>0?'Cannot increment array':'Cannot decrement array');}if(is_string($v)){if(is_numeric($v)){return (strpbrk($v,'.eE')!==false)?(float)$v+$d:(int)$v+$d;}if($v===''){return $d>0?'1':$v;}if($d<0){return $v;}$s=$v;$carry=true;for($i=strlen($s)-1;$i>=0;$i--){$ch=$s[$i];if($ch>='a'&&$ch<'z'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='z'){$s[$i]='a';continue;}if($ch>='A'&&$ch<'Z'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='Z'){$s[$i]='A';continue;}if($ch>='0'&&$ch<'9'){$s[$i]=chr(ord($ch)+1);$carry=false;break;}if($ch==='9'){$s[$i]='0';continue;}$carry=false;break;}if($carry){$f=$v[0];$s=(($f==='Z')?'A':(($f==='z')?'a':'1')).$s;}return $s;}return $v+$d;};
 $___DIV___=function($a,$b){if($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))){if($b==0){throw new \DivisionByZeroError('Division by zero');}}return $a/$b;};
 $___MOD___=function($a,$b){if($b===null||is_bool($b)||is_int($b)||is_float($b)||(is_string($b)&&is_numeric($b))){if((int)$b===0){throw new \DivisionByZeroError('Modulo by zero');}}return $a%$b;};
+/*___MORPH___*/
 $___RUN___=function($___CODE___,&$___VARS___,$___THIS___,$___INIT___,$___ISG___=false,$___EXTAB___=null,$___NW___=false)use(&$___RUN___,$___P___,$___META___,$___IDXGET___,$___PROPGET___,$___PROPSET___,$___NEWOBJ___,$___CALLFUNC___,$___CALLMETHOD___,$___CALLFN___,$___FCC___,$___PATHGET___,$___INC___,$___DIV___,$___MOD___,$___TOSTR___,$___INSTOF___,$___CCO___,$___MO___,$___RCLS___,$___FIXREF___,$___BINDARGS___,$___BINDNATIVE___,&$___GFRAME___,&$___PAD___,&$___INCTRACK___,&$___CALLEDCLS___){
 // —— 生成器入口（段首 GEN_HEAD 标记）——
 // 该段是"含 yield 的函数/方法/闭包体"。此处【不执行】它，而是返回一个原生 Generator

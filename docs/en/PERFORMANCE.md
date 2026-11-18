@@ -273,3 +273,26 @@ php entry.php --input=app/controller --output=dist/controller --level=mid --salt
 - Practical advice: for request-path code use level 1–2; level 3 suits offline scripts and licensing/algorithm fragments where readability matters more than microseconds.
 
 **Whole-site builds (not recommended in production)** are measured in `CHANGELOG.md` v1.2.5: WordPress (1516 PHP files / 119 MB) at `min` builds in ~15 s and produces artifacts that all pass `php -l`; ThinkPHP 8 (hundreds of files) behaves the same. Nothing here changes the §1 conclusion: **the VM is the only order-of-magnitude switch**, and the v1.2.5 additions are all constant-level.
+
+
+---
+
+## 11. v1.2.6: equivalent-ISA splitting / 3-way decoys / interpreter morphing
+
+**Equivalent-ISA splitting (`--vm-isa-split=N`)** is the one genuinely zero-cost item here. 400k-iteration arithmetic loop (bare `--vm`, best of 3 per setting):
+
+| `--vm-isa-split` | Pure computation | vs. 1 | case labels |
+|---|---:|---:|---:|
+| 1 (off) | 1.95 s | 1.00× | 28 |
+| 2 (default) | 1.95 s | 1.00× | 36 |
+| 3 | 2.00 s | 1.03× | 40 |
+
+The trick is that **multiple case labels of one semantic opcode share a single handler body** (`case A: case B: body`) instead of duplicating it: the bytecode really contains several functionally identical opcodes that are all used in rotation, yet the generated PHP barely grows and the I-cache footprint is unchanged. Dispatch remains one jump-table lookup, so split=2 lands inside measurement noise. split=3/4 enlarge the table further and show ~2–3% noise-level variance; the default of 2 balances effect and cost.
+
+**Three-way decoys (`decoy` layer)** cost one `is_scalar()` plus a few pure functions (`strlen` / `crc32` / `count`) and one comparison **per rewritten statement** — typically tens of ns. The same-kind substitutions in the real branch only add a few local assignments and do not change algorithmic complexity. Build time is one linear token pass. Density is controlled by `--decoy-level` (12% / 25% / 45%); `high` / `max` / `ultra` enable it by default.
+
+**Function splitting (`funcsplit` level 3 stmt mode)** now also moves state-changing statements into top-level functions, adding one userland call (~0.1–0.3 µs) per extracted block. The v1.2.5 advice still applies: levels 1–2 for request-path code, level 3 for offline scripts and licence/algorithm fragments.
+
+**Interpreter morphing** is entirely compile-time-equivalent (decimal → hexadecimal, ASCII strings → `\xHH`) plus unreachable constant-false blocks; it changes neither the hot-path opcodes nor their order, so runtime cost is zero and build time only gains one token pass.
+
+Whole-site max-level measurements (lint only, no execution) are in `CHANGELOG.md` v1.2.6.
