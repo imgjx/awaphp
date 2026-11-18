@@ -127,6 +127,35 @@ final class Obfuscator
     private int $layerLinkSeq = 0;
 
     /**
+     * 原始输入是否含顶层 return（config/provider/service/route 等"return 数组"文件）。
+     *
+     * v1.2.7 整站 max 结论：分层管线里 shell:anti_debug/anti_hook 守卫会把顶层
+     * `return @eval(...)` 与后续 token 层（大小写扰动 / 字符串编码 / 压缩）交织，
+     * 使 eval/gz/vm 壳在自己那层输入上用 hasTopLevelReturn() 重新检测时得到假阴性 ——
+     * 于是 VM 不跳过（把顶层 return 编进 IIFE 丢掉）、eval/gz 不透传，最终
+     * `include config/app.php` 从"返回数组"退化成 int(1)，框架初始化即 TypeError。
+     *
+     * 修法：在 run()/runLayered() 入口对【原始输入】判定一次并缓存，三个编码壳统一用它：
+     *   - shellVmOnce：含顶层 return 的文件跳过 VM（VM 的 IIFE 本就吞顶层 return，早有此规）；
+     *   - eval/gz：强制返回值透传（每层以 `return @eval(...)` 收尾，逐层冒泡）。
+     * 每次 run 重算，ProjectBuilder 逐文件调用互不污染。
+     */
+    private bool $srcHasTopReturn = false;
+
+    /**
+     * 原始输入是否为带 shebang（`#!/...`）的 CLI 入口脚本。
+     *
+     * v1.2.7：`#!/usr/bin/env php` 只能出现在文件最开头、由 PHP CLI 解释器跳过；
+     * 一旦被 VM 的 PHPRUN / EVAL 壳包进 `eval()`，shebang 与其后的 `<?php` 开标签
+     * 会在 eval 内产生裸 `<` token → `unexpected token "<"`。这类文件（如 ThinkPHP
+     * 根 `think` 入口）必须跳过 VM 壳，保留 shebang 在文件首行的原生语义。
+     */
+    private bool $srcHasShebang = false;
+
+    /** v1.2.7：暂存的 shebang 首行（含换行），产物最外层拼回；非 shebang 文件为空串。 */
+    private string $shebangPrefix = '';
+
+    /**
      * 登记当前被混淆的主文件路径（供 VM include 解析用）：
      *  - baseDir = dirname(path)：运行期动态 include 的相对路径回退基准
      *  - curFile = path：__DIR__ / __FILE__ 的编译期折值来源（产物是单文件，
@@ -141,20 +170,65 @@ final class Obfuscator
     private string $srcFile = '';
 
     /**
-     * 执行完整混淆，返回最终源码字符串。
+     * 执行完整混淆，返回最终源码字符串（对外入口）。
+     *
+     * v1.2.7：shebang 文件的 shebang 行在 runInner() 里被剥离暂存，这里统一在产物
+     * 最外层拼回，保证 `#!/usr/bin/env php` 仍在文件首行（CLI 解释器依赖它）。
+     */
+    public function run(string $code): string
+    {
+        $result = $this->runInner($code);
+        if ($this->srcHasShebang && $this->shebangPrefix !== '') {
+            return $this->shebangPrefix . $result;
+        }
+        return $result;
+    }
+
+    /**
+     * 实际混淆管线（run 的内部实现）。
      *
      * 若配置含分层定义（--level 预设或自定义分层 JSON），走分层执行模型 runLayered()；
      * 否则走旧版顺序管线（保持向后兼容，ProjectBuilder 等调用方不受影响）。
      */
-    public function run(string $code): string
+    private function runInner(string $code): string
     {
+        // v1.2.7：CLI shebang 行必须在 InlineHtml::normalize 之前【剥离并暂存】——
+        // 它只能位于产物文件首行由 PHP CLI 解释器跳过；若留进 $code，后续 VM/EVAL/GZ
+        // 编码壳会把 shebang 连同其后的 `<?php` 一起塞进 eval()，在 eval 内 shebang
+        // 变成裸 `<` token → unexpected token "<"（ThinkPHP 根 think 入口实测踩坑）。
+        // 这里剥掉 shebang，让各层只处理纯 `<?php` 代码，最后在产物最外层拼回。
+        $this->srcHasShebang = false;
+        $this->shebangPrefix = '';
+        if (str_starts_with($code, '#!')) {
+            $nl = strpos($code, "\n");
+            if ($nl !== false) {
+                $this->srcHasShebang = true;
+                $this->shebangPrefix = substr($code, 0, $nl + 1); // 含换行，保持与原生一致
+                $code = substr($code, $nl + 1);
+            }
+        }
         // 高级混写：PHP/HTML 交错段先规范化为等价纯 PHP（HTML 段 -> echo 字面量）。
         // 否则 VM / EVAL 壳把整段载荷塞进 eval() 时 HTML 会被当 PHP 解析而 fatal，
         // shell:module_link 追加的内联函数定义也会落进闭合标签之后的 HTML 里破坏语法；
         // 末尾 HTML 的换行还会被 runLayered 的 rtrim 吃掉造成输出差一字节。
         // 纯 PHP 源码（无 T_INLINE_HTML / T_CLOSE_TAG / T_OPEN_TAG_WITH_ECHO）原样返回。
+        // v1.2.7：normalize 之前先记录「本文件是 PHP/HTML 混写模板」。这类文件被改写成
+        // 一串相邻 `echo '<HTML片段>';` 后，激进的 logic / decoy 变换会在外壳重 token 化时
+        // 把其中某些字面量吞掉（实测 `class="sale"`→`sale`、`(奇)`→空白，整站运行非逐字节
+        // 一致）。输出模板的这类变换无实质混淆收益，按「宁可不混淆也不可改炸」对混写文件
+        // 跳过这两层，保留其余全部混淆强度。
+        $hadInlineHtml = InlineHtml::needs($code);
         $code = InlineHtml::normalize($code);
+        $this->srcHasTopReturn = TokenScan::hasTopLevelReturn($code);
         if ($this->config->hasLayers()) {
+            if ($hadInlineHtml && $this->config->get('mixed_html_skip_aggressive', true)) {
+                $layers = $this->config->getLayers();
+                $layers = array_values(array_filter($layers, static function (array $l): bool {
+                    return !in_array($l['name'] ?? '', ['logic', 'decoy'], true);
+                }));
+                $this->config->setLayers($layers);
+                $this->logger->debug('混写模板：已跳过 logic / decoy 激进变换层（保运行逐字节一致）');
+            }
             return $this->runLayered($code);
         }
         // 换行缠绕配额：= 输入源码字节数 / divisor（默认 5），按"每一层壳"平均分摊
@@ -1101,13 +1175,14 @@ final class Obfuscator
             case 'eval':
                 $evalLayers = max(1, (int) ($params['layers'] ?? 3));
                 $es = new EvalShell($this->salt, $this->logger);
+                $fp = $this->srcHasTopReturn; // v1.2.7：原始输入的顶层 return 判据，跨层稳定透传
                 if (!$this->config->get('inline_each_layer')) {
-                    return $es->wrap($code, $evalLayers);
+                    return $es->wrap($code, $evalLayers, 0, $fp);
                 }
                 // 逐层内联：多层 EVAL 的【每一个子层】包裹后都单独做一次模块链接，
                 // 让每层壳的解码调用都被内联，而不是只有最内层有内联函数。
                 for ($ei = 0; $ei < $evalLayers; $ei++) {
-                    $code = $es->wrap($code, 1, $ei);
+                    $code = $es->wrap($code, 1, $ei, $fp);
                     $code = $this->inlineLayer($code);
                 }
                 return $code;
@@ -1115,6 +1190,7 @@ final class Obfuscator
                 return (new GzEncoder($this->logger, $this->salt))->wrap($code, [
                     'decoy'  => (bool) ($params['decoy'] ?? true),
                     'chunks' => (int) ($params['chunks'] ?? 3),
+                    'force_propagate' => $this->srcHasTopReturn,
                 ]);
             case 'anti_debug':
                 // 外壳绑定 / 脱壳检测探针（'shell' 组）：分层模式是否注入绑定标记由 shell:vm 层
@@ -1459,7 +1535,17 @@ final class Obfuscator
         // 代码包进 (function(){ ... })(); ，顶层 return 只会从该 IIFE 返回、被丢弃，include 该项目
         // 文件于是返回 1 而非数组（框架 App::bind(include provider.php) 收到 int → 致命）。这类
         // 文件不走 VM 壳，保留原样（仍经过 token 级混淆），确保顶层 return 语义正确。
-        if (TokenScan::hasTopLevelReturn($code)) {
+        if ($this->srcHasTopReturn || TokenScan::hasTopLevelReturn($code)) {
+            // v1.2.7：分层管线上层壳 + token 层会把顶层 return 编码进字符串，
+            // 本层 hasTopLevelReturn 可能假阴性。用原始输入判据兜底，确保顶层 return 文件
+            // 一律跳过 VM —— VM 把整段代码裹进 IIFE，顶层 return 只从 IIFE 返回并被丢弃，
+            // include 退化成 int(1)，框架 config/provider/service 初始化即致命。
+            return $code;
+        }
+        if ($this->srcHasShebang) {
+            // v1.2.7：CLI 入口的 shebang 只能位于文件首行由 CLI 解释器跳过。VM 的 PHPRUN
+            // 会把代码塞进 eval()，shebang 与随后的 `<?php` 在 eval 内产生裸 `<` token
+            // → unexpected token "<"。这类文件跳过 VM，shebang 保持在文件首行的原生语义。
             return $code;
         }
         // 类保留 VM：含类声明的文件走"真实类桩 + 方法体 VM"，保持框架（ThinkPHP 等）

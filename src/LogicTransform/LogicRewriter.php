@@ -129,7 +129,11 @@ final class LogicRewriter
 
             // —— 数字字面量恒等展开（仅顶层）——
             if ($transformNumbers && $this->isIntLiteral($tok)) {
-                if (!$ctx->inDeclare()) {
+                // v1.2.7：`continue 2;` / `break 3;` 的操作数必须是【整数字面量】，
+                // 展开成恒等表达式（如 (2===2?2:2)）会触发
+                // "'continue' operator with non-integer operand is no longer supported"。
+                // 这类跳转层级操作数一律保持原样。
+                if (!$this->isJumpLevelOperand($tokens, $i) && !$ctx->inDeclare()) {
                     $expr = $ctx->isConstContext()
                         ? $this->id->intExprConstSafe($tok[1], $this->constSeed)
                         : $this->id->intExpr((int) $tok[1]);
@@ -210,6 +214,12 @@ final class LogicRewriter
         if (!$this->safeOperands($tokens, $rs, $re)) {
             return null;
         }
+        // v1.2.7：`!$x = expr` 中右操作数 $x 实为短路赋值的左值（`!($x = expr)` 语义）。
+        // 改写 `!$x` → `($x)==false` 后，后面的 `= expr` 悬空 → `($x==false)=expr`
+        // 给表达式赋值，Parse error。此类写回一律放弃。
+        if ($this->nextIsAssignment($tokens, $re)) {
+            return null;
+        }
         $x = $this->tokensToSource($this->transformRange(array_slice($tokens, $rs, $re - $rs + 1), false));
         $target = '((' . $x . ') == false)';
         $repl = $this->exprTokens($target);
@@ -244,6 +254,12 @@ final class LogicRewriter
         // 左操作数若仍被某个前缀（is_int( / isset( / array( / -> / :: 等）挂住，
         // 说明抽取把调用名留在了区间外，重组会生成 count(true) 之类的错误语义。
         if ($this->leftOperandDetached($tokens, $lS)) {
+            return null;
+        }
+        // v1.2.7：`0x80 > $code %= 0x200000` 中右操作数 $code 是复合赋值左值
+        // （PHP 语义为 0x80 > ($code %= ...)）。比较改写后 `<=>` 表达式后紧跟
+        // `%= expr` 悬空 → Parse error。写回左值一律放弃比较重组。
+        if ($this->nextIsAssignment($tokens, $rE)) {
             return null;
         }
         $a = $this->tokensToSource($this->transformRange(array_slice($tokens, $lS, $lE - $lS + 1), false));
@@ -289,6 +305,14 @@ final class LogicRewriter
         // 左操作数若仍被某个前缀（is_int( / isset( / array( / -> / :: 等）挂住，
         // 说明抽取把调用名留在了区间外，重组会生成 count(true) 之类的错误语义。
         if ($this->leftOperandDetached($tokens, $lS)) {
+            return null;
+        }
+        // v1.2.7：右操作数若紧跟赋值运算符，说明它其实是「短路赋值」的左值——
+        // 典型 `$id && $attr = "..."`（语义为 `$id && ($attr = "...")`）。
+        // 本 pass 把 `$id && $attr` 改写成 `((($id)!=false)+(($attr)!=false))===2`，
+        // 但后面的 `= "..."` 落在替换区间之外，产出 `((cond)===2) = "..."` —— 给
+        // 表达式赋值，Parse error。此类写回语句一律放弃布尔重组（宁可少变换）。
+        if ($this->nextIsAssignment($tokens, $rE)) {
             return null;
         }
         $a = $this->tokensToSource($this->transformRange(array_slice($tokens, $lS, $lE - $lS + 1), false));
@@ -568,6 +592,39 @@ final class LogicRewriter
      * @param array<int,mixed> $tokens
      * @return array{0:int,1:int}|null
      */
+    /**
+     * v1.2.7：$idx 之后最近的有效 token 是否为赋值运算符（含复合赋值 / 引用赋值）。
+     * 用于识别 `$a && $b = expr` 这类「布尔右侧是写回左值」的语句，避免 BoolOp 变换
+     * 把左值抽走后留下悬空的 `= expr`。
+     * @param array<int,mixed> $tokens
+     */
+    private function nextIsAssignment(array $tokens, int $idx): bool
+    {
+        $n = count($tokens);
+        for ($j = $idx + 1; $j < $n; $j++) {
+            if ($this->isWs($tokens[$j])) {
+                continue;
+            }
+            $t = $tokens[$j];
+            if (is_string($t)) {
+                if ($t === '=' || $t === '=>') {
+                    return true;
+                }
+            } elseif (is_array($t)) {
+                if (in_array($t[0], [
+                    T_PLUS_EQUAL, T_MINUS_EQUAL, T_MUL_EQUAL, T_DIV_EQUAL, T_MOD_EQUAL,
+                    T_CONCAT_EQUAL, T_AND_EQUAL, T_OR_EQUAL, T_XOR_EQUAL, T_SL_EQUAL,
+                    T_SR_EQUAL, T_POW_EQUAL, T_COALESCE_EQUAL,
+                ], true)) {
+                    return true;
+                }
+            }
+            // 遇到的第一个有效 token 不是赋值 → 不是写回左值
+            return false;
+        }
+        return false;
+    }
+
     private function rightOperand(array $tokens, int $opIdx, int $prec): ?array
     {
         $n = count($tokens);
@@ -914,6 +971,12 @@ final class LogicRewriter
      */
     private function verifyExpr(string $srcExpr, string $targetExpr, array $operands = []): bool
     {
+        // v1.2.7：变换产出的 target 若语法非法，必须拒绝本次变换。旧实现把 @eval 的
+        // ParseError 一并吞成 null，再走「无法验证则信任恒等式」分支放行，导致
+        // `php -l` 外壳合法、内层 eval 炸的整站 fatal（三元 + 多重 || 边界）。
+        if (!$this->isExprSyntaxValid($targetExpr)) {
+            return false;
+        }
         $ev = static function (string $code) {
             try {
                 $r = @eval('return ' . $code . ';');
@@ -970,6 +1033,49 @@ final class LogicRewriter
             }
         }
         return true;
+    }
+
+    /**
+     * v1.2.7：判断 $i 处整数是否为 continue/break 的跳转层级操作数。
+     * 这类操作数必须是字面量整数，绝不能展开成表达式。
+     * @param array<int,mixed> $tokens
+     */
+    private function isJumpLevelOperand(array $tokens, int $i): bool
+    {
+        for ($j = $i - 1; $j >= 0; $j--) {
+            $t = $tokens[$j];
+            if ($this->isWs($t)) {
+                continue;
+            }
+            if (is_array($t) && in_array($t[0], [T_CONTINUE, T_BREAK], true)) {
+                return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * v1.2.7：纯语法检查表达式（不执行、无副作用）。
+     *
+     * 把表达式包进一个【永不调用】的唯一命名函数体：eval 只编译函数体（触发语法检查），
+     * 函数体内的 return 表达式不会被执行。用递增序号保证函数名唯一，避免重复声明。
+     * 这样能可靠拦截 `((...)) = expr` / 括号失配 等变换产物语法错误。
+     */
+    private function isExprSyntaxValid(string $expr): bool
+    {
+        static $seq = 0;
+        $fn = '__awa_syn_' . (++$seq);
+        $code = 'if(false){function ' . $fn . '(){return (' . $expr . ');}}';
+        try {
+            $r = @eval($code);
+            return $r !== false || error_get_last() === null
+                || stripos((string) (error_get_last()['message'] ?? ''), 'syntax error') === false;
+        } catch (\ParseError $e) {
+            return false;
+        } catch (\Throwable $e) {
+            return true; // 非语法错误（如重复声明）不影响语法有效性判断
+        }
     }
 
     private function lit($v): string

@@ -2,7 +2,7 @@
 
 [简体中文](../CLI_OPTIONS.md) · **English**
 
-> Applies to **AWAPHP** v1.2.5. This document tracks releases; the authoritative output is always `php entry.php --help`.
+> Applies to **AWAPHP** v1.2.7. This document tracks releases; the authoritative output is always `php entry.php --help`.
 
 **Usage**
 
@@ -188,6 +188,21 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 
 > `logic_shell` output is `php -l`-checked and rolls back on failure, so no unrunnable file is
 > produced. Regression: `tests/v124_layer_logic.php`; see `CHANGELOG.md` v1.2.4.
+
+## Whole-site `max` byte-identity / parallel builds / mixed-template guard (v1.2.7)
+
+| Flag / config | Description |
+| --- | --- |
+| `--jobs=N` | **Parallel project builds** (needs `pcntl`; 1 = serial default, max 256). The global symbol table is built once, then N worker processes obfuscate distinct files concurrently; 32 cores build a 525-file `max` project in ~3.5 min (vs ~12 min serial). `other/thinkphp8-build.php` accepts `--jobs=N` too |
+| `mixed_html_skip_aggressive` | **Mixed-template guard** (default `true`, set `false` to force off): PHP/HTML interleaved files (containing `T_INLINE_HTML` / `<?=`) skip the aggressive `logic` / `decoy` passes — on shell re-tokenisation those could swallow inline HTML literals (`class="sale"` → `sale`, `(奇)` → blanks). All other `max` strength is unchanged |
+| `--config=other/thinkphp8.config.php` | **Official whitelist safe build**: the config now carries the full `max` layer stack plus `whitelist.dirs` (vendor/config/route/public/runtime… copied verbatim), deeply obfuscating only business code. See THINKPHP8_GUIDE |
+
+> This release also fixes several runtime-correctness edges in the layered pipeline: top-level `return`
+> propagation through every shell, CLI shebang preservation, `class_alias` insertion under PHP 8
+> attributes, dynamic member access `$obj->{$p}`, assignment-lvalue protection, `continue N` /
+> `break N` operands, `array()` method names, `function_exists` guards for repeated includes,
+> heredoc/interpolation-safe comment injection, and `DeclareHoist` locating the open tag by token
+> rather than regex (avoiding false matches on inline short-echo tags). See `CHANGELOG.md` v1.2.7.
 
 ## Whole-statement splitting / 3-way decoys / equivalent ISA (v1.2.6)
 

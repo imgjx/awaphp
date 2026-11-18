@@ -22,6 +22,48 @@ declare(strict_types=1);
 final class DeclareHoist
 {
     /**
+     * v1.2.7：用 token_get_all 定位【真正的】首个 PHP 开标签，返回 [字节偏移, 长度]。
+     *
+     * 正则 `/<\?(php)?/i` 会把内联 HTML 里的短回显标签（如 HTML 注释内的 echo 标签）的 `<?` 当成开标签，
+     * 令守卫注入到 HTML 输出中间，破坏运行期逐字节一致。token 化后：
+     *   - 优先返回第一个 T_OPEN_TAG（`<?php` / 短开标签 `<?`，取决于 short_open_tag）；
+     *   - 若整份文件只有 `<?=`（T_OPEN_TAG_WITH_ECHO）而无 T_OPEN_TAG，则退回第一个 `<?=`，
+     *     因为守卫必须落在某段可执行 PHP 之前才不会变成页面文本。
+     * 找不到任何开标签时返回 null。
+     *
+     * @return array{int,int}|null
+     */
+    private static function firstOpenTagOffset(string $code): ?array
+    {
+        if ($code === '') {
+            return null;
+        }
+        try {
+            $tokens = token_get_all($code);
+        } catch (Throwable) {
+            // token 化失败时退回保守正则：只认 `<?php`，绝不匹配 `<?=`。
+            if (preg_match('/<\?php/i', $code, $m, PREG_OFFSET_CAPTURE)) {
+                return [(int) $m[0][1], strlen((string) $m[0][0])];
+            }
+            return null;
+        }
+        $echoFallback = null;
+        $off = 0;
+        foreach ($tokens as $t) {
+            $text = is_array($t) ? (string) $t[1] : (string) $t;
+            $id = is_array($t) ? $t[0] : null;
+            if ($id === T_OPEN_TAG) {
+                return [$off, strlen($text)];
+            }
+            if ($id === T_OPEN_TAG_WITH_ECHO && $echoFallback === null) {
+                $echoFallback = [$off, strlen($text)];
+            }
+            $off += strlen($text);
+        }
+        return $echoFallback;
+    }
+
+    /**
      * 切分源码：前缀含 PHP 开标签与前导的 declare / namespace 语句头，正文为其余部分。
      * 无开标签时前缀为空。括号式命名空间 `namespace X {` 只把"到 `{` 为止"的部分并入
      * 前缀（守卫因此落在该命名空间块内部的第一条语句位置，语义仍正确）。
@@ -30,13 +72,15 @@ final class DeclareHoist
      */
     public static function split(string $code): array
     {
-        if (!preg_match('/<\?(php)?/i', $code, $m, PREG_OFFSET_CAPTURE)) {
+        // v1.2.7：不能用正则 `/<\?(php)?/i` 找首个开标签——它会匹配【内联 HTML 注释里的
+        // 短回显标签】的 `<?`，导致守卫被插到 HTML 输出中间，运行期
+        // 逐字节不一致。改用 token_get_all 定位真正的 T_OPEN_TAG（必要时退到 T_OPEN_TAG_WITH_ECHO）。
+        $open = self::firstOpenTagOffset($code);
+        if ($open === null) {
             return ['prefix' => '', 'body' => $code];
         }
-        $openPos = (int) $m[0][1];
-        $openEnd = $openPos + strlen((string) $m[0][0]);
-        $prefix  = substr($code, 0, $openEnd);
-        $body    = substr($code, $openEnd);
+        $prefix  = substr($code, 0, $open[0] + $open[1]);
+        $body    = substr($code, $open[0] + $open[1]);
 
         $ws = '(?:[ \t\r\n]|\/\*.*?\*\/|\/\/[^\n]*(?:\n|\z)|#[^\n]*(?:\n|\z))*';
         // declare(...) ; —— 值必须是字面量，故用 [^;{}]* 限制在同一条语句内；
@@ -76,10 +120,12 @@ final class DeclareHoist
      */
     public static function reconcile(string $code): string
     {
-        if (!preg_match('/<\?(php)?/i', $code, $m, PREG_OFFSET_CAPTURE)) {
+        // v1.2.7：同 split()，用 token 定位真开标签，避免误匹配 HTML 里的 `<?=`。
+        $open = self::firstOpenTagOffset($code);
+        if ($open === null) {
             return $code;
         }
-        $openEnd = (int) $m[0][1] + strlen((string) $m[0][0]);
+        $openEnd = $open[0] + $open[1];
         $prefix  = substr($code, 0, $openEnd);   // "<?php"（含可能的尾部空白待后处理）
         $rest    = substr($code, $openEnd);
 

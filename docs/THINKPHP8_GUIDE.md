@@ -190,8 +190,10 @@ diff /tmp/orig.txt /tmp/obf.txt && echo "BASELINE SAME 26/26"
 | 个别复杂语句走 EVAL_STMT 兜底 | VM 暂不支持的语法 | 语句级降级为 `eval`，类引用自动 FQCN 化；`declare` / `namespace` / `use` 不可 eval 的头部语句不进兜底 |
 | 构建确定性 | 同 salt 同输入 → 产物逐字节一致（仅 banner 时间戳不同） | 增量重建、CI 缓存友好 |
 | 动态调用的函数 / 类不改名 | `call_user_func('f')` 等字符串引用 | 动态符号保守排除，宁可少混淆不可运行时崩 |
+| v1.2.7 官方白名单构建 | `other/thinkphp8.config.php` 已是 max + 白名单 | vendor/config/route/public 整目录原样跳过，只深混 app/；525 文件夹具逐文件独立运行 524/525 stdout 逐字节一致 |
+| 唯一剩余差异：`public/index.php` 退出码 | 独立 `include` 入口会加载整个混淆后的 app/，反篡改 / 反调试守卫在 shutdown 时静默置 rc=1 | **stdout 与原站逐字节一致**；Web SAPI 正常请求下守卫不误报。属防御壳「独立脱壳运行」的预期边界，非输出差异 |
 
-### 6.1 复杂 PHP/HTML 混写页面（v1.2.0）
+### 6.1 复杂 PHP/HTML 混写页面（v1.2.0，v1.2.7 补全）
 
 真实 TP8 视图常把 PHP 块与 HTML 交错：`<?=` 短标签、`if: endif;` 等替代语法
 跨标签、PHP 嵌进 HTML 属性与 `<script>` / `<style>`、heredoc 内 HTML、
@@ -204,6 +206,13 @@ v1.2.0 在管线入口用 `InlineHtml::normalize()` 把这类源码**等价改�
 `tp8/view/shop_dashboard.php`，由 `app/controller/Dashboard.php` 经
 `$GLOBALS['__awa_dashboard']` 注入业务数据、路由 `/shop/dashboard` 暴露，
 端到端 9/9 端点逐字节 MATCH。
+
+**v1.2.7 补强**：整站 max 逐字节比对时定位到——`logic` / `decoy` 两个激进层在外壳重 token 化
+时会吞掉 `echo '<HTML片段>'` 里的字面量（`class="sale"` → `sale`、`(奇)` → 空白）。新增
+`mixed_html_skip_aggressive`（默认开）：仅对含 `T_INLINE_HTML` 的混写文件跳过这两层，其余
+max 强度完全不变。修复后夹具中 `view/shop_dashboard.php` 等多份复杂模板逐字节一致。
+同时 `other/thinkphp8.config.php` 升级为 max + 官方白名单，`--jobs=N` 支持 32 核并行构建
+（525 文件从串行约 12 分钟降到约 3.5 分钟；白名单模式因框架目录原样拷贝仅需约 10 秒）。
 
 一键构建脚本 `other/thinkphp8-build.php` 现在会在混淆成功后**自动补齐所有缺失的
 非 `.php` 资源**（`.env`、异常页 `.tpl`、静态资源、runtime 数据库等）。此前只产出

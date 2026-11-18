@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.2.5-orange)
+![Version](https://img.shields.io/badge/version-1.2.7-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -135,6 +135,13 @@ A block of PHP is wrapped into a function: `echo $i + $k . $str;` → `function 
 - **Multi-shaped 3-way decoys** (`decoy` layer, `--decoy[=N]` / `--decoy-level=1|2|3`, densities ≈12% / 25% / 45%; on by default in `high`/`max`/`ultra`): one true statement becomes `if / elseif / else` with **three paths and two unreachable decoys**. The conditions are **not the giveaway `($v===$v)||($v!==$v)`**: a salt-picked template from 12 business-looking checks carries the decision — `strlen(...) >= 0`, `crc32(...) & 1 ∈ {0,1}`, `substr()` returning a string, `count(...)` on an array, `in_array(...,[0,1],true)`, … with two structural variants (real path first, or real path in `else`). The true branch applies "same-kind substitution" — variables are copied into fresh locals and string literals into fresh variables before use — while dead branches use look-alike values (numeric last digit +1, ASCII suffix). A probe value is normalised to a scalar first, so objects/closures never trigger a `__toString` error. **Only `echo`/`print` statements are decoyed**: assignments and write-back statements (`$a[] = $b`, `$o->p = $v`, compound assigns) are deliberately skipped — same-kind substitution copies variables into locals, which is safe for reads but would silently drop writes to the original variable (caught by whole-site runtime testing).
 - **Zero-cost bytecode disassociation** (`--vm-isa-split=N`, default 2, 1 = off, up to 4): several **functionally identical physical opcodes** are created for one semantic opcode and **actually used in rotation** across the bytecode. Static 1:1 opcode→handler mapping and instruction-frequency statistics break down. Each alias gets its own dispatch label, but aliases of the same semantic opcode **share one handler body** (`case A: case B: body`): measured 400k-iteration loop 1.95 s at split=1 vs 1.95 s at split=2 — no runtime cost (dispatch stays a single jump-table lookup), only a slightly larger table.
 - **VM interpreter morphing**: the interpreter's own PHP is post-processed — decimal constants become hexadecimal, ASCII literals become `\xHH` escapes (both compile-time constants, zero runtime cost), and unreachable "key-schedule / checksum" blocks plus misleading comments are woven between the closures. The generator stays byte-for-byte reproducible for a given salt.
+
+### ThinkPHP 8 whole-site `max` byte-identical + parallel builds (v1.2.7)
+
+- **Official whitelist safe build**: `other/thinkphp8.config.php` now runs the full `max` stack over application code while copying framework infrastructure (`vendor/`, `config/`, `route/`, `public/`, `runtime/`, …) verbatim via `whitelist.dirs`. The result keeps the framework's name-based dispatch / PSR-4 / config loading intact while deeply obfuscating business code.
+- **Whole-site runtime equivalence**: on the bundled complex ThinkPHP 8 fixture (500+ files), each file was executed in an independent process and its stdout + exit code compared byte-for-byte against the original — all business files match. A dedicated guard skips the aggressive `logic`/`decoy` passes only for PHP/HTML mixed templates (they could drop inline HTML literals), with no loss of strength elsewhere.
+- **Correctness fixes across the layered pipeline**: top-level `return` propagation through every shell, CLI shebang preservation, PHP 8 attributes in `class_alias` insertion, dynamic member access (`$obj->{$p}`), assignment-lvalue protection in boolean/comparison rewrites, `continue N` / `break N` operands, `array()` method names, repeated-include function guards, and heredoc/interpolation-safe comment injection.
+- **Parallel project builds** (`--jobs=N`, needs `pcntl`): the global symbol table is built once, then worker processes obfuscate files concurrently (32 cores → ~3.5 min for a 525-file `max` build vs ~12 min serial). Available both via `entry.php --jobs=N` and the one-click `other/thinkphp8-build.php --jobs=N`.
 
 ### Anti-LLM static analysis (Confrontation-LLM) — *just for fun*
 
@@ -292,8 +299,8 @@ php entry.php --input=app.php --output=app_obf.php --level=high \
 # OPcache-assisted compilation to Zend bytecode (some hosts such as EP enable OPcache)
 php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-salt
 
-# ThinkPHP 8 one-command build (scan project → generate whitelist → obfuscate)
-php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+# ThinkPHP 8 one-command build (max + official whitelist, parallel on 32 cores)
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026 --jobs=32
 
 # Performance benchmark (produces the table in docs/en/PERFORMANCE.md)
 php tests/perf_bench.php --runs=5 --levels=min,low,mid

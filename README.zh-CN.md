@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-1.2.5-orange)
+![Version](https://img.shields.io/badge/version-1.2.7-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -139,6 +139,13 @@
 - **多变三分支诱饵**（`decoy` 层，`--decoy[=N]` / `--decoy-level=1|2|3`，密度约 12% / 25% / 45%；`high`/`max`/`ultra` 默认开）：一条真语句变成 `if / elseif / else` 三路，**两路是不可达诱饵**。条件**不是**一眼假的 `($v===$v)||($v!==$v)`：按盐从 12 种「看似业务校验」的模板里挑 —— `strlen(...)>=0`、`crc32(...)&1∈{0,1}`、`substr()` 返回 string、`count(...)` 作用于数组、`in_array(...,[0,1],true)` …… 再叠两种结构变体（真分支在前、或真分支落在 `else`）。真分支做**同理替换**：变量先拷进新局部变量、字符串字面量先赋给新变量再用；死分支则是形近假值（数字末位 +1、ASCII 后缀）。探针值先归一成标量，对象 / 闭包不会触发 `__toString` 错误。**只对 echo/print 做诱饵**：赋值与写回语句（`$a[] = $b`、`$o->p = $v`、复合赋值）一律跳过 —— 同理替换会把变量拷进局部，对读取安全、对写回则会静默丢掉对原变量的修改（整站运行实测抓到并修复）。
 - **零损耗字节码拆解**（`--vm-isa-split=N`，默认 2，1=关，最多 4）：给同一个语义 opcode 造出多个**功能完全相同**的物理码，并在字节码里**轮转实际使用**。静态的 1:1 指令→handler 映射与指令频次统计因此失效。每个别名各有独立派发标签，但同一语义的别名**共用同一份 handler 体**（`case A: case B: body`）：40 万次循环实测 split=1 为 1.95 s、split=2 仍为 1.95 s —— 运行期零额外开销（派发仍是一次跳转表查找），只是表略大。
 - **VM 解释器本体混淆**：解释器自身的 PHP 再做一道后处理 —— 十进制常量改十六进制、ASCII 串改 `\xHH` 转义（都是编译期常量，运行期零成本），闭包之间织入不可达的「密钥调度 / 校验和」伪逻辑块与误导性注释。同盐仍可逐字节复现。
+
+### ThinkPHP 8 整站 max 逐字节一致 + 并行构建（v1.2.7）
+
+- **官方白名单安全构建**：`other/thinkphp8.config.php` 现以完整 `max` 分层混淆业务代码，框架基础设施（`vendor/`、`config/`、`route/`、`public/`、`runtime/` 等）经 `whitelist.dirs` 整目录原样跳过。结果保留框架按名调度 / PSR-4 / 配置加载不变，业务代码吃满 max 强度。
+- **整站运行等价**：对内置的复杂 ThinkPHP 8 夹具（500+ 文件）逐文件独立进程执行，stdout 与 exit code 与原生逐字节比对全部一致。仅对 PHP/HTML 混写模板额外跳过 `logic`/`decoy` 两个激进层（它们会吞掉内联 HTML 字面量），其余位置强度不减。
+- **分层管线正确性修复**：顶层 `return` 逐壳透传、CLI shebang 保留、PHP 8 attribute 下 `class_alias` 插入、动态成员访问 `$obj->{$p}`、布尔/比较改写避开赋值左值、`continue N` / `break N` 操作数、`array()` 方法名、重复 include 函数守卫、heredoc/插值安全注释注入。
+- **工程并行构建**（`--jobs=N`，需 `pcntl`）：全局符号表只建一次，随后多个 worker 进程并发混淆文件（32 核对 525 文件的 max 构建约 3.5 分钟，串行约 12 分钟）。`entry.php --jobs=N` 与一键脚本 `other/thinkphp8-build.php --jobs=N` 均可用。
 
 ### 反 LLM 静态分析（Confrontation-LLM） `仅供娱乐 / Just for fun`
 
@@ -293,8 +300,8 @@ php entry.php --input=app.php --output=app_obf.php --level=high \
 # OPcache 辅助编译为 Zend 字节码（部分虚拟主机如 EP 默认启用 OPcache）
 php entry.php --input=app.php --output=app_obf.php --vm --opcache --salt=team-salt
 
-# ThinkPHP 8 一键构建（自动扫描项目生成白名单 → 混淆）
-php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
+# ThinkPHP 8 一键构建（max + 官方白名单，32 核并行）
+php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026 --jobs=32
 
 # 性能基准（生成 docs/PERFORMANCE.md 里那张表）
 php tests/perf_bench.php --runs=5 --levels=min,low,mid

@@ -69,4 +69,4 @@ The Tool is released under the **MIT licence**; anyone may freely use, copy, mod
 
 ---
 
-*Last updated: v1.2.5*
+*Last updated: v1.2.7*

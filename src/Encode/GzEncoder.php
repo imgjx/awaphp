@@ -43,7 +43,9 @@ final class GzEncoder
         // 顶层 return（provider/event 等"return 数组"文件）：eval 会吞掉返回值，
         // include 退化为返回 1 → 框架致命。载荷有顶层 return 时壳尾改 `return @eval(...)`
         // 把 eval 返回值透传回文件顶层（语义与原生 include 一致）。
-        $propagate = TokenScan::hasTopLevelReturn($inner);
+        // v1.2.7：分层管线前置层会把顶层 return 编码进字符串致本层误判，用原始输入的
+        // force_propagate 优先（见 runLayered）。
+        $propagate = !empty($opts['force_propagate']) || TokenScan::hasTopLevelReturn($inner);
         $payload = base64_encode((string) gzdeflate($inner, 9));
 
         // ---- 分片乱序 + 拟真变量名 ----

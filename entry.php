@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.6');
+define('OBFUSCATOR_VERSION', '1.2.7');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -307,6 +307,7 @@ function obf_help(): string
                          ultra 为最高强度：真·嵌套 VM（layers=2）+ 全 P8 架构方向拉满 + 全反检测矩阵）
       --salt=         混淆盐（空=不加盐，相同盐可复现）
       --repeat=        重复加密次数（默认 1）
+      --jobs=N        工程目录模式并行 worker 数（v1.2.7，1=串行；32 核建议 32~128，需 pcntl）
 
 变量 / 函数 / 类
       --var-length=    变量名混淆后长度

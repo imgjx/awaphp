@@ -346,3 +346,19 @@ php entry.php --input=app/controller --output=dist/controller --level=mid --salt
 **解释器本体混淆** 全部是编译期等值变换（十进制 `→` 十六进制、ASCII 串 `→` `\xHH`），加上恒假的不可达伪块；对热路径的 opcode 与执行顺序没有任何改变，运行期开销为零，构建期只多一遍 token 重写。
 
 整站 max 档的实测（只做 `php -l`，不执行业务代码）见 `CHANGELOG.md` v1.2.6。
+
+## 12. v1.2.7：并行构建 + 整站 max 运行实测
+
+**并行工程构建**（`--jobs=N`，需 `pcntl`）：全局符号表在 Pass 1 只建一次，N 个 worker 进程
+用 fork 并发混淆互不重叠的文件子集，各自写独立输出、经小计文件汇总计数。实测同一台 32 核机：
+525 文件的 ThinkPHP 8 夹具，`max` 全量分层串行约 **12 分钟**，`--jobs=32` 约 **3.5 分钟**
+（约 3.4×）；官方白名单模式因 framework 目录原样拷贝、只深混 app/，约 **10 秒**完成。
+jobs≤1 或无 pcntl 时零变化退回串行。
+
+**运行期开销不变**：本版改动均为构建期正确性修复 + 并行化，不改变任何 opcode / 壳层运行逻辑。
+`mixed_html_skip_aggressive` 仅对混写模板少做两个构建期变换层，运行期产物更短而非更慢。
+
+**整站实测口径升级**：从 v1.2.6 的「只做 `php -l`」升级为「逐文件独立进程执行、stdout +
+exit code 与原生逐字节比对」。525 文件夹具 524/525 stdout 逐字节一致；唯一差异是
+`public/index.php` 独立 include 时防御壳 shutdown 静默置 rc=1（stdout 仍逐字节一致，
+Web SAPI 正常请求不误报），属已知的「脱壳独立运行」边界。详见 `CHANGELOG.md` v1.2.7。

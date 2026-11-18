@@ -34,7 +34,7 @@ final class EvalShell
      * @param int $idxOffset 层方案序号偏移：外部逐层包裹（每层间插入内联）时用，
      *        保证第 i 层拿到与一次性 wrap($code, $layers) 相同的派生方案。
      */
-    public function wrap(string $code, int $layers, int $idxOffset = 0): string
+    public function wrap(string $code, int $layers, int $idxOffset = 0, bool $forcePropagate = false): string
     {
         $layers = max(1, $layers);
         $style = new NameStyle($this->salt);
@@ -46,9 +46,11 @@ final class EvalShell
         // 框架致命。修法不是跳过壳，而是【返回值透传】：载荷有顶层 return 时，每层壳尾改写为
         // `return @eval($d);`——eval 的返回值经层层 return 透传到文件顶层，语义与原生 include
         // 完全一致，壳层保护完整保留（多层时内层的 return 位于外层 eval 内，逐层向上冒泡）。
+        // v1.2.7：分层管线前置壳层 + token 层会把顶层 return 编码进字符串，本层重新检测得到
+        // 假阴性。由 runLayered 依据原始输入给出的 $forcePropagate 优先，跨壳层稳定透传。
         $probe = preg_replace('/^\s*<\?php/i', '', $cur, 1);
         $probe = preg_replace('/\?>\s*$/', '', $probe);
-        $propagate = TokenScan::hasTopLevelReturn((string) $probe);
+        $propagate = $forcePropagate || TokenScan::hasTopLevelReturn((string) $probe);
 
         for ($i = 0; $i < $layers; $i++) {
             $inner = preg_replace('/^\s*<\?php/i', '', $cur, 1);

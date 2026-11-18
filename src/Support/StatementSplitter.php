@@ -77,7 +77,8 @@ final class StatementSplitter
                 // 开标签单独成区间（文件头序言）
                 $terminator = true;
             } elseif ($char === '{') {
-                if ($pdepth > 0 || $eDepth > 0) {
+                // v1.2.7：动态成员访问 $obj->{$expr} 的 '{' 不是语句块，按表达式括号处理
+                if ($pdepth > 0 || $eDepth > 0 || self::isMemberAccessBrace($tokens, $i)) {
                     $eDepth++;
                 } else {
                     $depth++;
@@ -176,7 +177,8 @@ final class StatementSplitter
                 // 语句块花括号只出现在 pdepth=0 的控制结构/声明之后；出现在括号内
                 // （闭包/match/匿名类体）或已处于表达式括号上下文中的，一律按表达式
                 // 括号处理——它们的 } 不是语句终结符。
-                if ($pdepth > 0 || $eDepth > 0) {
+                // v1.2.7：动态成员访问 $obj->{$expr} 的 '{' 同理（见 isMemberAccessBrace）。
+                if ($pdepth > 0 || $eDepth > 0 || self::isMemberAccessBrace($tokens, $i)) {
                     $eDepth++;
                 } else {
                     $depth++;
@@ -285,6 +287,46 @@ final class StatementSplitter
             return $j;
         }
         return -1;
+    }
+
+    /**
+     * v1.2.7：判断 $i 处的 '{' 是否为【动态成员访问】的花括号（$obj->{$expr} /
+     * $obj?->{$expr} / Class::{$expr} / $arr[x]->{$expr}），而非语句块花括号。
+     *
+     * PHP 把 `$this->{$property}` 的 '{' token 化为普通字符 '{'（不是 T_CURLY_OPEN），
+     * 旧逻辑因此把它当语句块 depth++，其 '}' 又把 depth-- 归零并 flush —— 于是
+     * `return $this->{$property};` 被切成 `return $this->{$property}`（`}` 结尾，无分号）
+     * 与紧随的空残余，分号丢失。StateMachine 包进 case 后即产出
+     * `return $this->{...}$state=...` → unexpected variable, expecting ";"。
+     *
+     * 判据：'{' 之前最近有效 token 是 -> / ?-> / ::（动态成员访问运算符）。
+     * 语句块的 '{' 之前只会是 ')'（控制头/声明）、类名、else/try/do/finally 等，
+     * 绝不会是成员访问运算符，故该判据安全。
+     *
+     * @param array<int,mixed> $tokens
+     */
+    private static function isMemberAccessBrace(array $tokens, int $i): bool
+    {
+        $prev = self::prevSig($tokens, $i);
+        if ($prev < 0) {
+            return false;
+        }
+        $t = $tokens[$prev];
+        if (is_array($t)) {
+            $objOps = [T_OBJECT_OPERATOR, T_DOUBLE_COLON];
+            if (defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+                $objOps[] = T_NULLSAFE_OBJECT_OPERATOR;
+            }
+            if (in_array($t[0], $objOps, true)) {
+                return true;
+            }
+        } elseif (is_string($t)) {
+            // PHP < 8.0 无 T_NULLSAFE_OBJECT_OPERATOR 常量时 ?-> 以字符串出现
+            if ($t === '->' || $t === '?->') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

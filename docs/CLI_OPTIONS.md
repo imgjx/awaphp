@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v1.2.5（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v1.2.7（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 英文版见 [`en/CLI_OPTIONS.md`](en/CLI_OPTIONS.md)。
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
@@ -185,6 +185,20 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 > `tests/v124_layer_logic.php`；详见 `CHANGELOG.md` v1.2.4。
 
 ---
+
+## 整站 max 逐字节一致 / 并行构建 / 混写模板保护（v1.2.7）
+
+| 开关 / 配置 | 说明 |
+| --- | --- |
+| `--jobs=N` | **工程模式并行构建**（需 `pcntl`；1=串行，默认 1，上限 256）。全局符号表只建一次，N 个 worker 进程并发混淆不同文件；32 核对 525 文件的 max 构建约 3.5 分钟（串行约 12 分钟）。`other/thinkphp8-build.php` 同步支持 `--jobs=N` |
+| `mixed_html_skip_aggressive` | **混写模板保护**（默认 `true`，可配 `false` 强制关闭）：PHP/HTML 交错文件（含 `T_INLINE_HTML` / `<?=`）自动跳过 `logic` / `decoy` 两个激进层——它们在外壳重 token 化时会吞掉内联 HTML 字面量（`class="sale"` → `sale`、`(奇)` → 空白）。其余 max 强度不变 |
+| `--config=other/thinkphp8.config.php` | **官方白名单安全构建**：配置已升级为完整 `max` 分层 + `whitelist.dirs`（vendor/config/route/public/runtime… 整目录原样跳过），只深混业务代码。THINKPHP8_GUIDE 有完整说明 |
+
+> 本版同时修复了分层管线的多处运行期正确性边界：顶层 `return` 逐壳透传、CLI shebang 保留、
+> PHP 8 attribute 下 `class_alias` 插入、动态成员访问 `$obj->{$p}`、赋值左值保护、`continue N` /
+> `break N` 操作数、`array()` 方法名、重复 include 函数 `function_exists` 守卫、heredoc/插值安全的
+> 注释注入、`DeclareHoist` 用 token 而非正则定位开标签（避免误匹配 HTML 内的短回显标签）。
+> 详见 `CHANGELOG.md` v1.2.7。
 
 ## 全语句打散 / 三分支诱饵 / 等价 ISA（v1.2.6）
 

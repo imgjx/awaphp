@@ -98,11 +98,6 @@ final class ProjectBuilder
         // 类名混淆会与 PSR-4「命名空间 + 文件名」约定冲突（改名后框架按原名找不到类），
         // 而自动加载器方案已废弃。改为【工程模式强制保留类名原名】，框架（ThinkPHP8 等）
         // 按命名空间/文件名自动加载照常工作；需要排除个别符号时用白名单（见下）。
-        $obfConfig = new Config(array_merge($this->config->all(), ['class_obf' => false]));
-        $obf = new Obfuscator($obfConfig, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
-        $ok = 0;
-        $fail = 0;
-
         // 白名单：整目录 / 整文件跳过（原样拷贝，不参与混淆）
         $wl = $this->config->get('whitelist');
         $wlDirs = $wl['dirs'] ?? [];
@@ -117,32 +112,119 @@ final class ProjectBuilder
             $this->logger->info('白名单已保留 ' . count($wlFuncs) . ' 个函数、' . count($wlClasses) . ' 个类/接口/特质原名');
         }
 
-        foreach ($files as $rel => $abs) {
-            $dest = $outDir . '/' . $rel;
-            if (!is_dir(dirname($dest))) {
-                mkdir(dirname($dest), 0755, true);
-            }
-            try {
-                if (isset($skip[$rel])) {
-                    // 白名单跳过：原样拷贝（含其声明的符号保持原名，跨文件引用不断链）
-                    copy($abs, $dest);
-                    $ok++;
-                    $this->logger->info("白名单跳过（原样拷贝）: {$rel}");
-                    continue;
+        $obfConfig = new Config(array_merge($this->config->all(), ['class_obf' => false]));
+        $ok = 0;
+        $fail = 0;
+
+        // ---- Pass 2 并行化（v1.2.7）----
+        // 全局符号表在 Pass 1 已构建完成、此后只读，可安全地在 fork 出的子进程间共享
+        // （写时复制）。每个 worker 按 rel 下标取模分到文件子集，各自独立跑 Obfuscator、
+        // 直接写自己的输出文件（路径互不相交）。父进程 wait 汇总成功/失败数并写 manifest。
+        // jobs<=1 或 pcntl 不可用时退回原来的串行路径，行为零变化。
+        $jobs = max(1, min(256, (int) $this->config->get('jobs', 1)));
+        $canFork = $jobs > 1 && function_exists('pcntl_fork');
+        if ($canFork) {
+            $rels = array_keys($files);
+            $total = count($rels);
+            $pids = [];
+            for ($w = 0; $w < $jobs; $w++) {
+                $pid = pcntl_fork();
+                if ($pid === -1) {
+                    // fork 失败：父进程直接串行兜底整个剩余集合，避免漏文件
+                    $this->logger->warn("fork 失败，退回串行构建");
+                    foreach ($rels as $ri => $rel) {
+                        $r = $this->obfuscateOne($files[$rel], $outDir . '/' . $rel, $tables = [$obfConfig, $table], $skip[$rel] ?? false, $rel);
+                        $ok += $r[0];
+                        $fail += $r[1];
+                    }
+                    return $this->finishBuild($outDir, $manifestPath, $ok, $fail, $table);
                 }
-                // 登记主文件路径：供 VM include 解析（baseDir）与 __DIR__/__FILE__ 折值
-                $obf->setSourceFile($abs);
-                $res = $obf->run((string) file_get_contents($abs));
-                file_put_contents($dest, $res);
-                $ok++;
-                $this->logger->info("已混淆: {$rel}");
-            } catch (Throwable $e) {
-                $fail++;
-                $this->logger->warn("混淆失败 {$rel}: " . $e->getMessage());
+                if ($pid === 0) {
+                    // ---- 子进程：只处理下标 % jobs === w 的文件 ----
+                    $childOk = 0;
+                    $childFail = 0;
+                    for ($ri = $w; $ri < $total; $ri += $jobs) {
+                        $rel = $rels[$ri];
+                        $r = $this->obfuscateOne($files[$rel], $outDir . '/' . $rel, [$obfConfig, $table], $skip[$rel] ?? false, $rel);
+                        $childOk += $r[0];
+                        $childFail += $r[1];
+                    }
+                    // 子进程用退出码低 8 位回传成功数上限 255；这里只需父进程知道"有无失败"，
+                    // 精确计数通过每个子进程写的小计文件汇总（避免共享内存）。
+                    $statFile = $outDir . '/.obf-worker-' . $w . '.stat';
+                    @file_put_contents($statFile, $childOk . ',' . $childFail);
+                    exit($childFail > 0 ? 1 : 0);
+                }
+                $pids[$w] = $pid;
             }
+            foreach ($pids as $pid) {
+                pcntl_waitpid($pid, $status);
+            }
+            // 汇总各 worker 的小计
+            for ($w = 0; $w < $jobs; $w++) {
+                $statFile = $outDir . '/.obf-worker-' . $w . '.stat';
+                if (is_file($statFile)) {
+                    $parts = explode(',', trim((string) file_get_contents($statFile)));
+                    $ok += (int) ($parts[0] ?? 0);
+                    $fail += (int) ($parts[1] ?? 0);
+                    @unlink($statFile);
+                }
+            }
+            $this->logger->info("并行构建完成：{$jobs} workers，成功 {$ok}，失败 {$fail}");
+            return $this->finishBuild($outDir, $manifestPath, $ok, $fail, $table);
         }
 
-        // ---- manifest 沉淀 ----
+        // ---- 串行路径（jobs<=1 / 无 pcntl）----
+        $obf = new Obfuscator($obfConfig, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
+        foreach ($files as $rel => $abs) {
+            $r = $this->obfuscateOne($abs, $outDir . '/' . $rel, $obf, $skip[$rel] ?? false, $rel);
+            $ok += $r[0];
+            $fail += $r[1];
+        }
+
+        return $this->finishBuild($outDir, $manifestPath, $ok, $fail, $table);
+    }
+
+    /**
+     * v1.2.7：混淆单个文件（串行 / 并行 worker 共用）。
+     *
+     * @param Obfuscator|array{0:Config,1:SymbolTable} $obfOrCtx 串行传 Obfuscator 实例；
+     *        并行 worker 传 [obfConfig, table] 由其自建 Obfuscator（避免共享可变状态）。
+     * @return array{int,int} [成功数, 失败数]
+     */
+    private function obfuscateOne(string $abs, string $dest, $obfOrCtx, bool $skip, string $rel): array
+    {
+        if (!is_dir(dirname($dest))) {
+            mkdir(dirname($dest), 0755, true);
+        }
+        try {
+            if ($skip) {
+                copy($abs, $dest);
+                return [1, 0];
+            }
+            if (is_array($obfOrCtx)) {
+                [$cfg, $table] = $obfOrCtx;
+                $obf = new Obfuscator($cfg, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
+            } else {
+                $obf = $obfOrCtx;
+            }
+            $obf->setSourceFile($abs);
+            $res = $obf->run((string) file_get_contents($abs));
+            file_put_contents($dest, $res);
+            return [1, 0];
+        } catch (Throwable $e) {
+            $this->logger->warn("混淆失败 {$rel}: " . $e->getMessage());
+            return [0, 1];
+        }
+    }
+
+    /**
+     * v1.2.7：写 manifest + 返回汇总（串行 / 并行路径共用）。
+     *
+     * @return array{files:int,failed:int,funcs:int,classes:int}
+     */
+    private function finishBuild(string $outDir, ?string $manifestPath, int $ok, int $fail, SymbolTable $table): array
+    {
         if ($manifestPath !== null) {
             file_put_contents($manifestPath, json_encode([
                 'version'      => 2,
@@ -155,7 +237,6 @@ final class ProjectBuilder
             ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
             $this->logger->info("manifest 已写入: {$manifestPath}");
         }
-
         return ['files' => $ok, 'failed' => $fail, 'funcs' => count($table->funcMap()), 'classes' => count($table->classMap())];
     }
 

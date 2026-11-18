@@ -1,5 +1,54 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.7 — 整站 max 逐字节一致 + 官方白名单安全构建 + 并行构建
+
+> 核心：让 VM 路径与原生 PHP 路径能做到的事物，在 ThinkPHP 8 全站 `max` 档下也基本全部做到——
+> 目标是 `php -l` 之外做到**整站 max 运行实测逐字节一致**。全程遵守：宁可不混淆，也不可改炸。
+
+### 官方白名单安全构建（工程模式默认口径）
+
+- `other/thinkphp8.config.php` 升级为**完整 max 分层 + 官方白名单**：`vendor/`/`config/`/`route/`/
+  `public/`/`runtime/`/`tests/`/`database/`/`extend/` 整目录原样跳过，只深混 `app/` 业务代码。
+- 框架核心不内混，从根本上消除了「混淆框架类 → 静态类解析失败 / 配置键被改 / 路由闭包断链」
+  一类边界：`Unable to resolve NULL driver`、`no such table`、配置加载错位等。
+- `class` 层在工程模式显式 `on:false` 保 PSR-4；`var_keep_props` / `var_keep_params` 开启保 ORM
+  字段映射、获取器、路由 / 依赖注入按名取参。
+
+### 整站 max 运行实测逐字节一致
+
+- 内置复杂 ThinkPHP 8 夹具（500+ 文件）逐文件独立进程 `include`，stdout + exit code 与原站
+  逐字节比对：**业务代码全部一致**。构建由串行约 12 分钟优化为 32 并发约 3.5 分钟。
+- **混写模板保护**：`InlineHtml::normalize()` 之后的 `logic` / `decoy` 激进层在外壳重 token 化时
+  会吞掉 `echo '<HTML片段>'` 字面量（`class="sale"` → `sale`、`(奇)` → 空白）。新增
+  `mixed_html_skip_aggressive`（默认开）：仅对含 `T_INLINE_HTML` 的文件跳过这两层，其余 max 强度不变。
+
+### 分层管线运行期正确性修复（逐条来自整站实测踩坑）
+
+- **顶层 return 透传**：`EvalShell::wrap()` / `GzEncoder::wrap()` 增 `forcePropagate`，
+  `Obfuscator` 入口缓存原始顶层 return 判据，跨壳层稳定透传；provider/event/middleware/service
+  等「顶层 return 数组」文件不再退化成 `include` 返回 `int(1)`。
+- **VM 跳过顶层 return / shebang**：VM 的 IIFE 会吞掉顶层 return、shebang 进 eval 产生裸 `<`；
+  两类文件跳过 VM，shebang 在产物最外层拼回。
+- **CLI shebang 保留**：`run()` 入口剥离 `#!` 行、返回前拼回，避免进入 eval/gz/VM 载荷。
+- **PHP 8 attribute 下 class_alias**：`ClassObfuscator::matchAnyBrace()` 补 `T_ATTRIBUTE` 深度计数，
+  避免 `\class_alias` 插在 `#[...]` 与函数声明之间导致的语法错误。
+- **动态成员访问**：`StatementSplitter` 增 `isMemberAccessBrace()` 识别 `$obj->{$p}` / `?->` / `::`
+  后的 `{` 为表达式括号；`StateMachine` / `GotoObfuscator` 的 `withTerminator()` 正确补分号。
+- **LogicRewriter**：赋值左值保护（`tryBool` / `tryUnaryNot` / `tryCompare` 避开赋值）、
+  `continue N` / `break N` 数字不做恒等展开、变换产物经无副作用语法探针校验，非法则拒绝。
+- **array() 方法名**：`TokenObfuscator::literalPass()` 的 `array()` → `[]` 跳过 function/方法 /
+  `->` / `::` / `new` 场景（曾把 `function array($v,$r)` 改成 `function [$v,$r]`）。
+- **funcsplit 重复声明**：注入具名函数加 `function_exists` 守卫，避免同进程多次 include 时 redeclare。
+- **注释注入安全**：`LlmConfrontation::inject()` 跟踪 heredoc / 双引号 / 反引号上下文，
+  不再把 `//` 注释插进 `{$var}` 插值导致输出污染；`DeclareHoist` 用 `token_get_all` 定位真开标签，
+  不再用正则误匹配 HTML 注释内的短回显标签。
+
+### 并行构建
+
+- `--jobs=N`（需 `pcntl`，默认 1，上限 256）：全局符号表只建一次，N 个 worker 用 fork 并发混淆
+  不重叠的文件子集，各自写独立输出、经小计文件汇总成功/失败数。`entry.php` 与一键脚本
+  `other/thinkphp8-build.php` 均支持；jobs<=1 或无 pcntl 时零变化退回串行。
+
 ## v1.2.6 — 全语句打散 + 多变三分支诱饵 + VM 解释器混淆 + 零损耗等价 ISA
 
 > 核心：让混淆更彻底但不改炸。函数打散不再只处理 echo/print/赋值；诱饵从「双分支 + 恒 true」

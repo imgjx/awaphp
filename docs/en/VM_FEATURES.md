@@ -458,3 +458,24 @@ None of these change opcode order or operands, and a given salt stays byte-for-b
 ### Division of labour with 3-way decoys
 
 VM decoy cases (existing feature) and the PHP-token-level `decoy` layer (new in v1.2.6) are separate mechanisms: the former adds never-hit case labels to the dispatch table, the latter rewrites **user source statements** into three-branch structures (varied true conditions, look-alike dead branches). They stack without interfering.
+
+## New in v1.2.7: VM correctness fixes for whole-site `max` (no ISA semantic change)
+
+The VM bytecode / ISA semantics are unchanged this release; the fixes are runtime-correctness edges
+where the VM shell cooperates with the layered pipeline:
+
+- **Top-level-return files skip the VM**: the VM wraps code in an IIFE, so a top-level `return`
+  returns only from the IIFE and is discarded, degrading `include` to `int(1)` and breaking
+  ThinkPHP provider / event / middleware / service "return an array" initialisation. Such files now
+  skip the VM using a stable, original-input criterion (propagated across shells).
+- **Shebang files skip the VM**: a CLI `#!/usr/bin/env php` inside eval becomes a bare `<` token;
+  the VM skips these and reattaches the shebang at the outermost level.
+- **Opaque VM payload nesting**: structures that cannot compile directly (case labels named after
+  keywords, bracketed namespaces, real class declarations) use a base64+gz payload nest — semantics
+  stay 100% native while the bytecode still requires the VM to run.
+- **Comment injection inside layered shells**: `}` / `;` inside heredoc / double-quoted interpolation
+  are no longer treated as injection boundaries, so `//` comments cannot fall into a string literal
+  and pollute runtime output.
+
+On the 525-file fixture at `max`, 524/525 files are byte-identical in stdout under standalone
+execution; see `CHANGELOG.md` v1.2.7.

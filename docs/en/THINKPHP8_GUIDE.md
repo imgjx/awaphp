@@ -192,12 +192,16 @@ The baseline covers 26 comparison points: the ThinkPHP 8 entry, multi-parameter 
 | A few complex statements fall back to EVAL_STMT | syntax the VM does not support yet | statement-level fallback to `eval`, with class references FQCN-ised automatically; non-eval-able header statements (`declare` / `namespace` / `use`) never enter the fallback |
 | Build determinism | same salt + same input → byte-identical artifact (only the banner timestamp differs) | friendly to incremental rebuilds and CI caches |
 | Dynamically called functions / classes are not renamed | string references such as `call_user_func('f')` | conservative dynamic-symbol exclusion — better less obfuscation than a runtime crash |
+| v1.2.7 official whitelist build | `other/thinkphp8.config.php` is now max + whitelist | vendor/config/route/public copied verbatim, only app/ deeply obfuscated; on a 525-file fixture 524/525 files are byte-identical in stdout under standalone execution |
+| Sole remaining diff: `public/index.php` exit code | a standalone `include` of the entry loads the whole obfuscated app/, and the anti-tamper / anti-debug guards silently set rc=1 at shutdown | **stdout is byte-identical**; guards do not misfire under normal web-SAPI requests. An expected defense-shell "de-shelled standalone" edge, not an output difference |
 
-### 6.1 Complex PHP/HTML mixed pages (v1.2.0)
+### 6.1 Complex PHP/HTML mixed pages (v1.2.0, completed in v1.2.7)
 
 Real TP8 views interleave PHP blocks with HTML: `<?=` short tags, alternative syntax (`if: endif;`) spanning tags, PHP embedded in HTML attributes and `<script>` / `<style>`, HTML inside heredoc, adjacent `?><?php` boundaries, PHP inside HTML comments. Earlier versions entering the eval / GZ / VM shells produced `unexpected token "<"`, or appended inline module function definitions into the HTML after `?>`.
 
 v1.2.0 rewrites such sources **equivalently into pure PHP** at the pipeline entry with `InlineHtml::normalize()` before any later layer sees them; all six presets produce byte-identical output for complex template pages. The test project `tests/tptest.zip` now includes a ~200-line, extremely complex mixed view `tp8/view/shop_dashboard.php`, fed with business data by `app/controller/Dashboard.php` via `$GLOBALS['__awa_dashboard']` and exposed at `/shop/dashboard`; end-to-end 9/9 endpoints match byte-for-byte.
+
+**v1.2.7 completion**: whole-site `max` byte-comparison found that the `logic` / `decoy` aggressive passes, when shells re-tokenise the payload, could swallow literals inside `echo '<HTML fragment>'` (`class="sale"` → `sale`, `(奇)` → blanks). The new `mixed_html_skip_aggressive` (on by default) skips only those two passes for files containing `T_INLINE_HTML`; all other `max` strength is unchanged. After the fix, complex templates such as `view/shop_dashboard.php` in the fixture are byte-identical. `other/thinkphp8.config.php` is upgraded to max + official whitelist, and `--jobs=N` enables 32-core parallel builds (525 files: ~12 min serial → ~3.5 min; whitelist mode ~10 s because framework dirs are copied verbatim).
 
 The one-command build script `other/thinkphp8-build.php` now **automatically copies all missing non-`.php` resources** after a successful obfuscation (`.env`, exception-page `.tpl`, static assets, the runtime database, …). Previously it only produced `.php`, so the obfuscated copy 500'd for lack of `.env` / `.tpl`; with the old script you had to copy those manually.
 

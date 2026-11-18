@@ -105,6 +105,8 @@ final class Config
         $this->data['php_version']   = in_array($this->data['php_version'], ['7.4', '8.0', '8.1', '8.2', '8.3'], true)
             ? $this->data['php_version'] : '8.1';
         $this->data['opcache']        = $b($this->data['opcache'] ?? false) ?? false;
+        // v1.2.7：工程模式并行构建的 worker 数（1=串行；>1 时用 pcntl fork 分发文件）
+        $this->data['jobs']           = max(1, min(256, $i($this->data['jobs'] ?? 1)));
 
         // 分层 / VM 层相关字段
         $this->data['vm_flatten']     = $b($this->data['vm_flatten'] ?? false) ?? false;
@@ -184,6 +186,9 @@ final class Config
         $this->data['logic_shell_intensity'] = max(1, min(3, $i($this->data['logic_shell_intensity'] ?? 2)));
         $this->data['logic_shell_maxlen']    = max(0, $i($this->data['logic_shell_maxlen'] ?? 512));
         $this->data['logic_wild']            = $b($this->data['logic_wild'] ?? false) ?? false;
+        // v1.2.7：混写模板（PHP/HTML 交错）默认跳过 logic / decoy 激进变换层以保证运行期
+        // 逐字节一致；显式设为 false 可强制开启（不推荐，边界场景会改炸输出）。
+        $this->data['mixed_html_skip_aggressive'] = $b($this->data['mixed_html_skip_aggressive'] ?? true) ?? true;
         // v1.2.5 编译时优化（常量预计算）+ 函数型代码打散。
         // 散装键路径由 pipelineOnce 直接消费；分层路径由 constfold / funcsplit 层
         // 通过 layerConfig() 注入同名键，二者共用同一组归一化。
@@ -440,5 +445,14 @@ final class Config
     public function hasLayers(): bool
     {
         return count($this->data['layers'] ?? []) > 0;
+    }
+
+    /**
+     * v1.2.7：替换当前分层列表（用于按文件特性动态裁剪，如混写模板跳过激进变换层）。
+     * @param array<int,array{name:string,params:array,inject:array}> $layers
+     */
+    public function setLayers(array $layers): void
+    {
+        $this->data['layers'] = $layers;
     }
 }

@@ -1,10 +1,15 @@
 <?php
 /**
- * ThinkPHP 8 专用混淆配置（白名单模式）
+ * ThinkPHP 8 专用混淆配置（官方白名单安全构建 · v1.2.7）
  * ============================================================
  * 适用场景：对整套 ThinkPHP 8 应用做工程模式混淆（--input 指向项目根目录，
- *           或只指向 app/ 目录）。本文件已内嵌「等价 high 的分层混淆 + 白名单
+ *           或只指向 app/ 目录）。本文件已内嵌「等价 max 的分层混淆 + 官方白名单
  *           + 框架兼容选项」，因此无需再传 --level（--config 与 --level 互斥）。
+ *
+ * v1.2.7 结论——整站 max 运行实测逐字节一致：
+ *   只深混 app/ 业务代码；vendor/config/route/public 等框架核心整目录原样跳过。
+ *   经全站数百文件实测：框架入口/配置稳定，业务代码 max 全量混淆，
+ *   逐文件独立进程 include 的 stdout 与 exit code 与原站逐字节一致。
  *
  * 用法示例：
  *   php entry.php \
@@ -31,32 +36,44 @@
  */
 
 return [
-    // ===================== 分层混淆（基于 high 预设，关闭类名混淆以兼容 PSR-4）=====================
+    // ===================== 分层混淆（max 预设，关闭类名混淆以兼容 PSR-4）=====================
+    // v1.2.7：整站 max 运行实测逐字节一致的完整分层方案。含 constfold/logic/decoy/funcsplit/
+    // statemachine 等全部 max 层；框架核心由 whitelist.dirs 整目录跳过，业务代码吃满 max。
     'layers' => [
-        ['name' => 'var',          'params' => ['length' => 16]],
-        ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
+        ['name' => 'constfold',    'params' => ['level' => 3]],
+        ['name' => 'logic',        'params' => ['intensity' => 3]],
+        ['name' => 'decoy',        'params' => ['level' => 2]],
+        ['name' => 'var',          'params' => ['length' => 20]],
+        ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
         // 类名混淆显式关闭：工程模式强制保留原名；单文件模式误用时也不改名，避免 TP 按原名找不到类。
         ['name' => 'class',        'params' => ['on' => false]],
-        ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 3, 'goto_cpx' => 8]],
+        ['name' => 'funcsplit',    'params' => ['level' => 3, 'max' => 96]],
+        ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 4, 'goto_cpx' => 12]],
+        ['name' => 'statemachine', 'params' => ['complexity' => 10, 'passes' => 2, 'traps' => 3, 'opaque' => true]],
         ['name' => 'number',       'params' => ['on' => true]],
-        ['name' => 'string',       'params' => ['xor' => true, 'length' => 6, 'split' => 4]],
-        ['name' => 'semantic',     'params' => ['strength' => 2]],
+        ['name' => 'string',       'params' => ['xor' => true, 'length' => 4, 'split' => 6]],
+        ['name' => 'semantic',     'params' => ['strength' => 3]],
         ['name' => 'anti_ast',     'params' => []], // 深度反AST：echo/print/return 常量改写为「累加器 + 恒等表达式」
-        ['name' => 'junk_runtime', 'params' => ['intensity' => 8, 'fake_b64' => true, 'fake_echo' => true]],
-        ['name' => 'dead',         'params' => ['density' => 3]],
+        ['name' => 'junk_runtime', 'params' => ['intensity' => 10, 'fake_b64' => true, 'fake_echo' => true, 'tangle' => true]],
+        ['name' => 'dead',         'params' => ['density' => 5]],
         ['name' => 'comment',      'params' => []],
         ['name' => 'stat',         'params' => []],
-        ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 6]],
+        ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 10]],
         ['name' => 'ws',           'params' => []],
-        ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true, 'junk' => 80]],
-        ['name' => 'shell:eval',   'params' => ['layers' => 6]],
-        ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi', 'intensity' => 3]],
-        ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 4]],
+        ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 12, 'morph' => true, 'fakeFog' => 160, 'probe' => 30, 'keychain' => true, 'builtinReplace' => true, 'junk' => 160, 'isaSplit' => 1]],
+        ['name' => 'shell:eval',   'params' => ['layers' => 8]],
+        ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,proc,trace,func2,ini2', 'intensity' => 4, 'response' => 'silent', 'multipoint' => true]],
+        ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 5]],
+        ['name' => 'shell:anti_strip',  'params' => ['depth' => 3, 'response' => 'silent']],
         ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
-        ['name' => 'shell:anti_tamper', 'params' => ['segments' => 6, 'shutdown' => true]],
+        ['name' => 'shell:anti_tamper', 'params' => ['segments' => 8, 'shutdown' => true, 'chain' => true, 'multipoint' => true]],
+        ['name' => 'shell:honeypot',    'params' => ['count' => 4]],
+        ['name' => 'shell:structpoison','params' => ['rounds' => 3]],
     ],
     'shell_shield' => true,
     'shell_shield_intensity' => 2,
+    'confrontation_llm' => true,
+    'confrontation_intensity' => 2,
 
     // ===================== 框架兼容关键选项 =====================
     // 保留类实例属性名：模型/实体字段映射、获取器、toArray() 序列化都依赖属性名

@@ -687,6 +687,11 @@ final class ClassObfuscator
      * 从开括号下标找配对闭括号（字符串/注释/heredoc 等数组型 token 天然跳过）。
      * 插值修正：T_CURLY_OPEN / T_DOLLAR_OPEN_CURLY_BRACES（"{$expr}" 起始）
      * 是数组 token 但其闭合是裸 '}' 字符——不计入深度会让区间提前结束。
+     * v1.2.7：T_ATTRIBUTE（"#["）同样是数组 token 而闭合却是裸 ']'；漏计会让
+     * 含 PHP8 attribute（如 #[\ReturnTypeWillChange]）的类体配对【提前归零】，
+     * 于是 class_alias 回挂语句被插到 attribute 与 function 之间，触发
+     * `unexpected fully qualified name "\class_alias", expecting "function"`。
+     * 把 T_ATTRIBUTE 一并计入深度后，'#[' 增、']' 减，配对恢复正确。
      */
     private function matchAnyBrace(array $tokens, int $open): int
     {
@@ -695,7 +700,7 @@ final class ClassObfuscator
         for ($j = $open; $j < $n; $j++) {
             $tok = $tokens[$j];
             if (is_array($tok)) {
-                if (in_array($tok[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true)) {
+                if (in_array($tok[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES, T_ATTRIBUTE], true)) {
                     $depth++;
                 }
                 continue;

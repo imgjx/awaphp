@@ -44,12 +44,35 @@ final class LlmConfrontation
         $out = '';
         $pDepth = 0;               // 圆括号深度：用于判断 ; 是否为语句结束符（排除 for/while 头）
         $changelogDone = false;
+        // v1.2.7：heredoc / 双引号 / 反引号内的插值（如 {$stats['total']}）会被 token_get_all
+        // 切成 T_CURLY_OPEN … '}'，其中的裸 '}' 与 ';' 若被当作语句边界注入 `\n// 注释\n`，
+        // 注释会变成【字符串字面量的一部分】直接输出到页面（整站 max 运行逐字节不一致的根因）。
+        // 这里与 TokenScan::safeBoundaries 对齐：字符串/插值上下文内一律不注入。
+        $inHeredoc = 0;
+        $inDq = 0;
+        $inBt = 0;
 
         for ($i = 0; $i < count($tokens); $i++) {
             $tok = $tokens[$i];
             $isArray = is_array($tok);
             $t = $isArray ? $tok[0] : null;
             $text = $isArray ? (string) $tok[1] : (string) $tok;
+
+            // 字符串/插值上下文跟踪（必须在写入 $out 之前更新，保证当前 token 也不注入）
+            if ($t === T_START_HEREDOC) {
+                $inHeredoc++;
+            } elseif ($t === T_END_HEREDOC) {
+                if ($inHeredoc > 0) {
+                    $inHeredoc--;
+                }
+            } elseif ($t === null) {
+                if ($text === '"') {
+                    $inDq = 1 - $inDq;
+                } elseif ($text === '`') {
+                    $inBt = 1 - $inBt;
+                }
+            }
+            $inString = ($inHeredoc > 0 || $inDq > 0 || $inBt > 0);
 
             // —— 文件头 CHANGELOG 伪造块（仅一次，紧跟 <?php 之后）——
             if (!$changelogDone && $t === T_OPEN_TAG) {
@@ -61,7 +84,8 @@ final class LlmConfrontation
             }
 
             // —— 函数 / 类 / 接口 / trait 声明前：注入误导性 doc 注释 ——
-            if ($t === T_FUNCTION || $t === T_CLASS || $t === T_INTERFACE || $t === T_TRAIT) {
+            //     声明关键字不可能出现在字符串插值里，但为稳妥同样加 $inString 守卫。
+            if (!$inString && ($t === T_FUNCTION || $t === T_CLASS || $t === T_INTERFACE || $t === T_TRAIT)) {
                 $p = [1 => 0.22, 2 => 0.4, 3 => 0.6][$intensity];
                 if ($rng->nextFloat() < $p) {
                     $out .= $this->misleadingDoc($rng, $intensity);
@@ -69,17 +93,20 @@ final class LlmConfrontation
             }
 
             // 圆括号深度跟踪（字符串内的括号已被 token_get_all 切分为整体，不会误增）
-            if ($text === '(') {
-                $pDepth++;
-            } elseif ($text === ')') {
-                $pDepth = max(0, $pDepth - 1);
+            if (!$inString) {
+                if ($text === '(') {
+                    $pDepth++;
+                } elseif ($text === ')') {
+                    $pDepth = max(0, $pDepth - 1);
+                }
             }
 
             $out .= $text;
 
             // —— 块结束（}）与顶层语句结束符（;，且不在 for/while/if 头内）之后：
             //     散布生僻 CJK 注释。注释带尾换行，确保后续 token 不被吞入 // 行。 ——
-            if ($text === '}' || ($text === ';' && $pDepth === 0)) {
+            //     v1.2.7：字符串/插值上下文内跳过，否则注释落入字面量污染运行输出。
+            if (!$inString && ($text === '}' || ($text === ';' && $pDepth === 0))) {
                 $pCjk = [1 => 0.05, 2 => 0.11, 3 => 0.2][$intensity];
                 if ($rng->nextFloat() < $pCjk) {
                     $out .= "\n" . $this->rareCjkLine($rng, $intensity) . "\n";

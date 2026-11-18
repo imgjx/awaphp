@@ -16,12 +16,18 @@
  *   php other/thinkphp8-build.php --project=. --dry-run    # 只扫描并打印白名单，不构建
  *   php other/thinkphp8-build.php --project=. --app-only    # 只混淆 app/（快速迭代）
  *
+ * v1.2.7 口径：默认用 max 全量分层 + 官方白名单安全构建——只深混 app/ 业务代码，
+ *   vendor/config/route/public 等框架核心整目录原样跳过。整站数百文件实测：逐文件独立
+ *   进程 include 的 stdout / exit code 与原站逐字节一致。混写模板（PHP/HTML 交错）自动
+ *   跳过 logic/decoy 两个激进层以保输出字节一致，其余 max 强度不变。
+ *
  * 参数：
  *   --project=PATH   项目根目录（含 app/ 与 think / composer.json）。默认从 CWD 逐级向上探测。
  *   --output=PATH    输出目录。默认 <project>_obf（与项目同级）。
  *   --salt=STR       混淆盐。省略则随机生成并打印（同盐可复现构建）。
- *   --config=PATH    基础配置，默认 other/thinkphp8.config.php（分层 high + 白名单 + 框架兼容项）。
+ *   --config=PATH    基础配置，默认 other/thinkphp8.config.php（max 分层 + 官方白名单 + 框架兼容项）。
  *   --scan=DIR[,DIR] 追加扫描目录（相对项目根），默认仅 app。
+ *   --jobs=N         并行构建 worker 数（v1.2.7，默认 1 串行；32 核建议 32，单文件不受益）。
  *   --app-only       只把 app/ 作为输入（输出不含 public/vendor，需自行套用）。
  *   --dry-run        只扫描 + 打印白名单，不构建。
  *   --keep-config    保留生成的临时配置（排查用）。
@@ -50,6 +56,7 @@ $opt = [
     'salt'    => null,
     'config'  => null,
     'scan'    => [],
+    'jobs'    => 1,
     'app-only' => false,
     'dry-run' => false,
     'keep-config' => false,
@@ -78,6 +85,9 @@ foreach (array_slice($argv, 1) as $arg) {
         case 'php':
             $opt[$body] = (string) $val;
             break;
+        case 'jobs':
+            $opt['jobs'] = max(1, min(256, (int) $val));
+            break;
         case 'scan':
             $opt['scan'] = array_values(array_filter(array_map('trim', explode(',', (string) $val))));
             break;
@@ -102,8 +112,9 @@ ThinkPHP 8 一键混淆构建
   --project=PATH    项目根目录（含 app/ 与 think 或 composer.json）；默认从当前目录向上探测
   --output=PATH     输出目录；默认 <project>_obf
   --salt=STR        混淆盐；省略则随机生成（同盐可复现）
-  --config=PATH     基础配置；默认 other/thinkphp8.config.php
+  --config=PATH     基础配置；默认 other/thinkphp8.config.php（max + 官方白名单）
   --scan=DIR[,DIR]  追加扫描目录（相对项目根），默认只扫 app
+  --jobs=N          并行构建 worker 数（默认 1；32 核建议 32）
   --app-only        只以 app/ 为输入（快速迭代；输出不含 public/vendor）
   --dry-run         只扫描并打印白名单，不构建
   --keep-config     保留生成的临时配置
@@ -489,6 +500,7 @@ $cmd = [
     '--output=' . $outDir,
     '--salt=' . $salt,
     '--manifest=' . rtrim($outDir, '/\\') . '/.obf-manifest.json',
+    '--jobs=' . (int) $opt['jobs'],
 ];
 
 echo "=== ThinkPHP8 一键混淆构建 ===\n";
@@ -499,6 +511,7 @@ printf("盐      : %s%s\n", $salt, $saltGenerated ? '（自动生成，请记录
 printf("扫描    : %s → %d 个 .php，%.0f ms\n", implode(', ', $scanDirs), count($files), $scanMs);
 printf("白名单  : 类 %d / 全局函数 %d / 常量 %d / 控制器方法 %d\n",
     count($classesForWl), count($symbols['functions']), count($symbols['constants']), count($symbols['methods']));
+printf("并行    : %d workers%s\n", (int) $opt['jobs'], $opt['jobs'] > 1 ? '（多核构建）' : '（串行）');
 echo "构建中...\n\n";
 
 $t1 = hrtime(true);

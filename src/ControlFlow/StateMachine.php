@@ -438,11 +438,81 @@ final class StateMachineObfuscator
     {
         $last = end($stmt);
         $lastCh = is_string($last) ? $last : (is_array($last) ? ($last[1] ?? '') : '');
-        if ($lastCh === ';' || $lastCh === '}') {
+        if ($lastCh === ';') {
+            return $stmt;
+        }
+        if ($lastCh === '}') {
+            // v1.2.7：末尾 '}' 有两种来源——
+            //  a) 语句块收尾（if(){} / function(){} / try{} 等）：本身即完整语句，不补 ';'
+            //  b) 动态成员访问的 '}'（$this->{$prop} / $obj->{$expr}）：分号已被
+            //     StatementSplitter::flush 剔除，此处 '}' 只是表达式的一部分，必须补 ';'。
+            //     旧逻辑见 '}' 就 return，导致 `return $this->{$p}` 被包进状态机 case 后
+            //     直接拼上下一条语句/转移 → `return $this->{$p}$state=...` →
+            //     unexpected variable, expecting ";"。
+            // 判据：从末尾 '}' 倒推其匹配的 '{'，看 '{' 前是否为成员访问运算符。
+            $n = count($stmt);
+            $endIdx = $n - 1;
+            if ($this->braceOpensBlock($stmt, $endIdx)) {
+                return $stmt; // 真语句块，无需分号
+            }
+            // 动态成员访问等表达式 '}'，补分号
+            $stmt[] = ';';
             return $stmt;
         }
         $stmt[] = ';';
         return $stmt;
+    }
+
+    /**
+     * 判断 $closeIdx 处的 '}' 匹配的 '{' 是否为【语句块】开括号。
+     * 若匹配的 '{' 前是 -> / ?-> / ::（动态成员访问）则为表达式括号，返回 false。
+     * @param array<int,mixed> $stmt
+     */
+    private function braceOpensBlock(array $stmt, int $closeIdx): bool
+    {
+        $depth = 0;
+        // 从后往前找匹配的 '{'（跳过嵌套的 }）
+        for ($j = $closeIdx; $j >= 0; $j--) {
+            $t = $stmt[$j];
+            if (!is_string($t)) {
+                continue;
+            }
+            if ($t === '}') {
+                $depth++;
+            } elseif ($t === '{') {
+                $depth--;
+                if ($depth === 0) {
+                    // 找到匹配的 '{'，看其前有效 token
+                    $prev = $j - 1;
+                    while ($prev >= 0) {
+                        $pt = $stmt[$prev];
+                        if (is_array($pt) && in_array($pt[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                            $prev--;
+                            continue;
+                        }
+                        break;
+                    }
+                    if ($prev < 0) {
+                        return true;
+                    }
+                    $pt = $stmt[$prev];
+                    if (is_array($pt)) {
+                        $objOps = [T_OBJECT_OPERATOR, T_DOUBLE_COLON];
+                        if (defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+                            $objOps[] = T_NULLSAFE_OBJECT_OPERATOR;
+                        }
+                        if (in_array($pt[0], $objOps, true)) {
+                            return false; // 动态成员访问
+                        }
+                    }
+                    if (is_string($pt) && ($pt === '->' || $pt === '?->')) {
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        return true;
     }
 
     /**

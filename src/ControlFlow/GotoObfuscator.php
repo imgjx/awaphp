@@ -245,7 +245,13 @@ final class GotoObfuscator
     }
 
     /**
-     * 给一条语句补齐终结符 ';'（除非其本身已以 ';' 或 '}' 结尾的块结构结束）。
+     * 给一条语句补齐终结符 ';'（除非其本身已以 ';' 或语句块 '}' 结尾）。
+     *
+     * v1.2.7：StatementSplitter::split() 会剔除每条语句的终结符 ';'。若语句是
+     * `return $this->{$prop}`（动态成员访问），剔除分号后末尾是 '}' —— 旧逻辑见
+     * '}' 就 return，不补分号，于是 GOTO 分派器把它拼成
+     * `return $this->{$prop}$state=...` → unexpected variable, expecting ";"。
+     * 区分真语句块 '}' 与动态成员访问 '}'：倒推其匹配 '{' 的前序 token。
      * @param array<int,mixed> $stmt
      * @return array<int,mixed>
      */
@@ -253,11 +259,63 @@ final class GotoObfuscator
     {
         $last = end($stmt);
         $lastCh = is_string($last) ? $last : (is_array($last) ? ($last[1] ?? '') : '');
-        if ($lastCh === ';' || $lastCh === '}') {
+        if ($lastCh === ';') {
             return $stmt;
+        }
+        if ($lastCh === '}' && $this->braceOpensBlock($stmt, count($stmt) - 1)) {
+            return $stmt; // 真语句块收尾，无需分号
         }
         $stmt[] = ';';
         return $stmt;
+    }
+
+    /**
+     * 判断 $closeIdx 处的 '}' 匹配的 '{' 是否为语句块（而非动态成员访问 $obj->{$expr}）。
+     * @param array<int,mixed> $stmt
+     */
+    private function braceOpensBlock(array $stmt, int $closeIdx): bool
+    {
+        $depth = 0;
+        for ($j = $closeIdx; $j >= 0; $j--) {
+            $t = $stmt[$j];
+            if (!is_string($t)) {
+                continue;
+            }
+            if ($t === '}') {
+                $depth++;
+            } elseif ($t === '{') {
+                $depth--;
+                if ($depth === 0) {
+                    $prev = $j - 1;
+                    while ($prev >= 0) {
+                        $pt = $stmt[$prev];
+                        if (is_array($pt) && in_array($pt[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                            $prev--;
+                            continue;
+                        }
+                        break;
+                    }
+                    if ($prev < 0) {
+                        return true;
+                    }
+                    $pt = $stmt[$prev];
+                    if (is_array($pt)) {
+                        $objOps = [T_OBJECT_OPERATOR, T_DOUBLE_COLON];
+                        if (defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+                            $objOps[] = T_NULLSAFE_OBJECT_OPERATOR;
+                        }
+                        if (in_array($pt[0], $objOps, true)) {
+                            return false;
+                        }
+                    }
+                    if (is_string($pt) && ($pt === '->' || $pt === '?->')) {
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        return true;
     }
 
     /**

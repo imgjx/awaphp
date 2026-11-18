@@ -238,7 +238,13 @@ final class FunctionSplitter
             foreach ($g['items'] as $it) {
                 $body .= $it['body'];
             }
-            $this->defs[] = 'function ' . $fn . '(' . implode(', ', $params) . '){' . $body . '}';
+            // v1.2.7：具名函数若所在文件被 include 多次（框架 config/provider/service
+            // 在初始化中可能重复 require），第二次会 `Cannot redeclare function`。
+            // 原生 PHP 文件无这些抽取函数故不炸；混淆引入的函数必须自带幂等守卫。
+            // 用 __NAMESPACE__ 拼接全名以兼容命名空间文件（function_exists 同时接受
+            // 带/不带前导反斜杠的名字，见实测）。
+            $this->defs[] = 'if(!function_exists(__NAMESPACE__ . "\\' . $fn . '")){'
+                . 'function ' . $fn . '(' . implode(', ', $params) . '){' . $body . '}}';
             $callArgs = array_merge($vals, $refs);
             $args = $callArgs === [] ? '' : implode(', ', $callArgs);
             $first = $g['items'][0];
@@ -275,7 +281,7 @@ final class FunctionSplitter
         array_splice($out, $insertAt, 0, [$defText]);
         $this->logger->debug(sprintf('funcsplit: 提取 %d 个函数（等级 %d，语句型 %d）',
             count($this->defs), $this->level,
-            count(array_filter($this->defs, static fn($d) => strpos($d, 'function ') === 0))));
+            count(array_filter($this->defs, static fn($d) => strpos($d, 'function ') === 0 || strpos($d, 'if(!function_exists') === 0))));
         return $out;
     }
 

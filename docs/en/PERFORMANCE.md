@@ -296,3 +296,22 @@ The trick is that **multiple case labels of one semantic opcode share a single h
 **Interpreter morphing** is entirely compile-time-equivalent (decimal → hexadecimal, ASCII strings → `\xHH`) plus unreachable constant-false blocks; it changes neither the hot-path opcodes nor their order, so runtime cost is zero and build time only gains one token pass.
 
 Whole-site max-level measurements (lint only, no execution) are in `CHANGELOG.md` v1.2.6.
+
+## 12. v1.2.7: parallel builds + whole-site `max` runtime measurement
+
+**Parallel project builds** (`--jobs=N`, needs `pcntl`): the global symbol table is built once in
+Pass 1, then N worker processes fork and obfuscate disjoint file subsets concurrently, writing
+independent outputs and aggregating counts via per-worker stat files. Measured on a 32-core host:
+a 525-file ThinkPHP 8 fixture at full `max` took ~**12 min** serial vs ~**3.5 min** with
+`--jobs=32` (~3.4×); official-whitelist mode finished in ~**10 s** because framework dirs are
+copied verbatim and only app/ is deeply obfuscated. jobs≤1 or no pcntl falls back to serial unchanged.
+
+**Runtime cost unchanged**: this release is build-time correctness fixes plus parallelisation; no
+opcode or shell runtime logic changed. `mixed_html_skip_aggressive` only drops two build-time
+passes for mixed templates, yielding shorter — not slower — artifacts.
+
+**Measurement upgraded**: from v1.2.6's "lint only" to "execute each file in an independent process;
+compare stdout + exit code byte-for-byte against the original". On the 525-file fixture, 524/525
+are byte-identical in stdout; the sole diff is `public/index.php`, where a standalone include makes
+the defense shell silently set rc=1 at shutdown (stdout still byte-identical, no misfire under
+normal web-SAPI requests) — a known de-shelled standalone edge. See `CHANGELOG.md` v1.2.7.

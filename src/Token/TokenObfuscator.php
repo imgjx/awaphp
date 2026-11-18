@@ -362,14 +362,31 @@ final class TokenObfuscator
             // 实现：T_ARRAY 本身不产字符，开/闭括号原位替换为 [ / ] 承接——
             // 三者（array/(/)）必须恰好映射为一对 []，多产一个 [ 即括号失衡。
             if ($type === T_ARRAY) {
-                $open = $this->nextIdx($tokens, $i);
-                if ($open >= 0 && $tokens[$open] === '(') {
-                    $close = $this->matchPair($tokens, $open, '(', ')');
-                    if ($close >= 0) {
-                        $tokens[$open] = '[';
-                        $tokens[$close] = ']';
-                        $st['literal']++;
-                        continue;
+                // v1.2.7：`array` 可作方法名/函数名（如 `function array($x)`、`->array(...)`、
+                // `Foo::array(...)`），此时它仍是 T_ARRAY token 但语义是标识符，其后的 `(`
+                // 是参数列表而非数组构造。若误当 array() 改成 []，会产出 `function [$x]`
+                // 之类的非法语法（实测 think-validate Validate.php 的 `function array()` 踩坑）。
+                // 前一个有效 token 是 function/成员访问/new/:: 时一律跳过。
+                $prev = Parser::prevSignificant($tokens, $i);
+                $nameCtx = false;
+                if ($prev >= 0 && is_array($tokens[$prev])) {
+                    $pt = $tokens[$prev][0];
+                    if ($pt === T_FUNCTION || $pt === T_NEW || $pt === T_DOUBLE_COLON
+                        || $pt === T_OBJECT_OPERATOR
+                        || (defined('T_NULLSAFE_OBJECT_OPERATOR') && $pt === T_NULLSAFE_OBJECT_OPERATOR)) {
+                        $nameCtx = true;
+                    }
+                }
+                if (!$nameCtx) {
+                    $open = $this->nextIdx($tokens, $i);
+                    if ($open >= 0 && $tokens[$open] === '(') {
+                        $close = $this->matchPair($tokens, $open, '(', ')');
+                        if ($close >= 0) {
+                            $tokens[$open] = '[';
+                            $tokens[$close] = ']';
+                            $st['literal']++;
+                            continue;
+                        }
                     }
                 }
             }

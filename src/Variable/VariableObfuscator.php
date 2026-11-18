@@ -73,6 +73,17 @@ final class VariableObfuscator
             foreach ($this->declaredProps as $p => $_) {
                 $this->excluded[$p] = true;
             }
+            // v1.2.7：跨文件静态属性引用对齐（工程模式整站 max 起不来的根因之一）。
+            // 框架里大量静态属性「声明在 A 文件、读取在 B 文件」，典型是 Composer：
+            //   autoload_static.php  声明 public static $files
+            //   autoload_real.php    读取 ComposerStaticInit…::$files（本文件无声明）
+            // 旧逻辑只把「本文件声明的属性名」加入排除集，于是声明被保留、引用被改名，
+            // 运行即 Access to undeclared static property，整站无法启动。
+            // keepProps 语义本就是「保留一切属性名」，这里把 `X::$prop` / `self::$prop`
+            // 形态的引用名一并排除，保证声明与引用跨文件始终同名。
+            foreach ($this->collectStaticPropertyRefs($tokens) as $p => $_) {
+                $this->excluded[$p] = true;
+            }
         }
         // 框架应用：保留参数名（路由/DI/命名参数按名匹配）。仅排除参数名，
         // 方法体内其它局部变量照常重命名（局部变量不跨边界，重命名安全）。
@@ -571,6 +582,33 @@ final class VariableObfuscator
                 $this->declaredProps[$tok[1]] = true;
             }
         }
+    }
+
+    /**
+     * 收集 `X::$prop` / `self::$prop` / `static::$prop` 形态的静态属性引用名。
+     *
+     * 静态属性名是跨文件的公开契约：声明可能在别的文件，`var_keep_props` 会保留声明原名，
+     * 若读取方文件把引用改名，声明与引用就对不上（Composer autoload 断链即此类）。
+     * 这里统一收集，供 keepProps 模式加入排除集。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array<string,true> 带 $ 前缀的变量名集合
+     */
+    private function collectStaticPropertyRefs(array $tokens): array
+    {
+        $out = [];
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $tok = $tokens[$i];
+            if (!is_array($tok) || $tok[0] !== T_VARIABLE) {
+                continue;
+            }
+            $prev = Parser::prevSignificant($tokens, $i);
+            if ($prev >= 0 && is_array($tokens[$prev]) && $tokens[$prev][0] === T_DOUBLE_COLON) {
+                $out[$tok[1]] = true; // 形如 $files
+            }
+        }
+        return $out;
     }
 
     /**

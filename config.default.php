@@ -118,6 +118,15 @@ return [
     // 默认关（保持既有档位行为）；ultra 档默认开，也可由 --logic-wild 独立开启。
     'logic_wild' => false,
 
+    // v1.2.7 混写模板保护（默认开）：PHP/HTML 交错文件（含 T_INLINE_HTML / 短回显标签）
+    // 跳过 logic / decoy 两个激进层——外壳重 token 化时它们会吞掉内联 HTML 字面量，
+    // 破坏整站 max 运行逐字节一致。其余 max 强度不变；置 false 可强制开启（不推荐）。
+    'mixed_html_skip_aggressive' => true,
+
+    // v1.2.7 工程模式并行构建 worker 数（需 pcntl）：1=串行（默认），上限 256。
+    // 全局符号表只建一次，N 个 worker 进程并发混淆不同文件；32 核建议 32。
+    'jobs' => 1,
+
     // 白名单：不混淆的目录 / 文件 / 符号。目录模式可整文件跳过（原样拷贝）；符号保留原名。
     // dirs/files 用相对输入目录的路径（file 为精确匹配，dir 为前缀匹配，支持 * 通配）；
     // variables 带或不带 $ 均可；functions/classes 用原名（类支持 FQCN 或短名）；
