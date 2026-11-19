@@ -359,3 +359,72 @@ templates add branch variety.
 StructPoison rounds back to 3 (ultra/aggressive 5), the VM constant pool uses the unbounded
 SHA-256 counter-mode stream, and the honeypot 1.4 s busy loop is unconditional. All levels
 byte-identical.
+
+---
+
+## 14. Locating the max-level runtime performance killer (v1.2.8 measurements)
+
+Using `tests/perf_workload.php` (pure computation: arithmetic / functions / classes / arrays /
+strings / recursion / closures / generators) as input, layer-by-layer stripping plus hard-timeout
+runs pinpoint where the max-level artifact is slow at **runtime** (not build time).
+
+### 14.1 Method
+
+- Artifact = `php entry.php --input=tests/perf_workload.php --level=max --salt=perfkill`;
+- `COMPUTE` = the workload's internal `hrtime` measurement of pure computation; `WALL` = wall clock
+  of `php artifact`;
+- Layer stripping: comment out one layer in the max preset, rebuild, compare `COMPUTE`; a parallel
+  run disables `constfold` throughout to remove LoopFold's masking effect.
+
+### 14.2 Key data
+
+| Variant | WALL | COMPUTE | Artifact size | Finding |
+|---|---:|---:|---:|---|
+| Native workload | 0.04 s | 11.6 ms | 3.6 KB | baseline |
+| max (constfold on, default) | 0.20 s | 152.6 ms | 168 KB | computation inflated **13×** |
+| max (constfold off) | — | 682.9 ms | 162 KB | folding masked it: dynamic code inflated **59×** |
+| max **without the logic layer** (all else unchanged) | 0.06 s | **15.4 ms** | 62 KB | **back near native** |
+| max without the string layer | — | 83.5 ms | 144 KB | secondary factor |
+| max without the VM layer | 0.20 s | 159.7 ms | 62 KB | no gain — VM is not the killer |
+| max with cpool KDF / VM Logic / JIT / combo / super-isa / inloop off | 0.20 s | 149–163 ms | — | no gain from any |
+
+Layer stripping (constfold off throughout, baseline 682.9 ms): logic → **25.0 ms**,
+string → 83.5 ms; stripping any other layer (junk_runtime / decoy / statemachine / semantic /
+controlflow / funcsplit / func / var / number / token) stays at 678–699 ms with no real gain.
+
+### 14.3 Conclusion: the logic layer's constant identity expansion is the real runtime killer
+
+`LogicRewriter` (intensity ≥ 1, i.e. every non-min level) rewrites **every numeric/string literal**
+inside loops into an identity expression containing runtime function calls:
+
+- number: `N → strlen(sha1('…'))*b + strlen(md5('…'))*a + strlen('…')`;
+- string: `'s' → base64_decode('…') . hex2bin('…') . str_rot13('…')`.
+
+So in `for(…){ $sum += ($i*3)%7; … }`, the literals `3` and `7` trigger an actual sha1/md5 on every
+iteration; a 200k-iteration loop becomes hundreds of thousands of hash calls — the source of the
+13× (59× without folding) inflation.
+
+**Two clarifications**:
+
+1. **Not KDF**: turning off the VM constant-pool KDF, StructPoison, and the honeypot busy loop
+   leaves compute time unchanged (149–163 ms); runtime KDF is part of the one-time decode cost
+   (~30 ms) and does not scale with loops.
+2. **Not the VM**: bytecode interpretation itself adds little here (removing the VM even yields
+   159.7 ms); VM-internal switches (JIT / combo / super-isa / inloop) barely affect compute time.
+
+**Why it usually goes unnoticed**: with `constfold` (LoopFold) on by default, the 200k loop is
+folded to a constant at build time, masking the inflation (152 ms vs 683 ms); once the code cannot
+be statically folded (input-dependent, over the iteration cap, or using non-whitelisted operators),
+the logic layer's inflation is fully exposed.
+
+**Optional mitigation (documentation only; defaults unchanged)**: for compute-heavy files that need
+runtime speed, use `--level=mid` (no intensity-3 logic / no VM) or lower/disable the logic layer;
+the trade-off is weaker obfuscation. The max default stays protection-first.
+
+### 14.5 Side finding: high-level artifact hangs (to be investigated)
+
+In the same batch, the `high` artifact produced **zero output and timed out (exit 124)** under
+`timeout 15/30`, while max/ultra/mid ran normally. This is an anomaly independent of the
+"performance killer"; it is recorded here without changes and warrants a separate investigation
+(suspected: a certain shell-layer combination in the high preset waits forever in a non-TTY /
+proc_open environment).

@@ -400,3 +400,65 @@ OOM 的 wild 仍可选），新增 4 种恒真/恒假诱饵模板增加分支多
 
 **运行时 KDF 保持原算法**：本版撤销了早前的 KDF 降级——StructPoison rounds 恢复 3
 （ultra/aggressive=5）、VM 常量池无预算 SHA-256 流、蜜罐 1.4 s 忙等无条件。各档逐字节一致。
+
+---
+
+## 14. max 档运行期性能杀手定位（v1.2.8 实测）
+
+用 `tests/perf_workload.php`（纯计算、覆盖算术/函数/类/数组/字符串/递归/闭包/生成器）作输入，
+逐层剥离 + 硬超时实测，定位 max 档产物**运行期**（不是构建期）的开销来源。
+
+### 14.1 测量方法
+
+- 产物 = `php entry.php --input=tests/perf_workload.php --level=max --salt=perfkill`；
+- `COMPUTE` = workload 内部 `hrtime` 自测的纯计算耗时，`WALL` = `php 产物` 墙钟；
+- 逐层剥离：从 max 预设中注释掉单层后重建，比较 `COMPUTE` 变化；为排除 LoopFold 掩盖效应，
+  另做一组"统一关闭 constfold"的对照。
+
+### 14.2 关键数据
+
+| 变体 | WALL | COMPUTE | 产物体积 | 结论 |
+|---|---:|---:|---:|---|
+| 原生 workload | 0.04 s | 11.6 ms | 3.6 KB | 基线 |
+| max（开 constfold，默认） | 0.20 s | 152.6 ms | 168 KB | 计算放大 **13×** |
+| max（关 constfold） | — | 682.9 ms | 162 KB | 折叠掩盖了放大：动态代码放大 **59×** |
+| max **去掉 logic 层**（其余不变） | 0.06 s | **15.4 ms** | 62 KB | **回落至接近原生** |
+| max 去掉 string 层 | — | 83.5 ms | 144 KB | 次要因素 |
+| max 去掉 VM 层 | 0.20 s | 159.7 ms | 62 KB | 无改善，VM 不是杀手 |
+| max 关 cpool KDF / VM Logic / JIT / combo / super-isa / inloop | 0.20 s | 149–163 ms | — | 均无改善 |
+
+逐层剥离（统一关 constfold，基准 682.9 ms）：logic→**25.0 ms**、string→83.5 ms，其余
+（junk_runtime / decoy / statemachine / semantic / controlflow / funcsplit / func / var /
+number / token）剥离后仍在 678–699 ms，无实质改善。
+
+### 14.3 结论：logic 层的常量恒等展开是真正的运行期杀手
+
+`LogicRewriter`（intensity≥1，即所有非 min 档）会把循环体里的**每个数字/字符串字面量**
+改写成含运行期函数调用的恒等表达式：
+
+- 数字：`N → strlen(sha1('…'))*b + strlen(md5('…'))*a + strlen('…')`；
+- 字符串：`'s' → base64_decode('…') . hex2bin('…') . str_rot13('…')`。
+
+于是 `for(…){ $sum += ($i*3)%7; … }` 里的 `3`、`7` 每次迭代都要真算一次 sha1/md5，
+20 万次循环放大成数十万次哈希调用——这就是 13×（无折叠时 59×）的来源。
+
+**澄清两点**：
+
+1. **不是 KDF**：关掉 VM 常量池 KDF、StructPoison、蜜罐忙等后计算耗时不变（149–163 ms）；
+   运行期 KDF 是一次性解码开销的一部分（约 30 ms），不随循环增长。
+2. **不是 VM**：VM 逐条解释本身在此负载下开销有限（去 VM 反而 159.7 ms）；JIT / combo /
+   super-isa / inloop 等内部开关对计算耗时几乎无影响。
+
+**为何平时感知不明显**：默认开 `constfold`（LoopFold），20 万次循环在构建期被静态折叠成常量，
+掩盖了 logic 的放大（152 ms vs 683 ms）；一旦遇到**无法静态折叠的动态代码**（依赖输入、
+超迭代上限、含非白名单运算），logic 层的放大就会完全暴露。
+
+**可选的缓解口径（仅说明，未改动默认配置）**：对计算密集且需运行期性能的文件，可用
+`--level=mid`（无 logic 强度 3 / 无 VM）或降低 logic intensity / 关闭 logic 层；代价是
+混淆强度下降。默认 max 为保护强度优先，维持现状。
+
+### 14.4 附带发现：high 档产物卡死（待查）
+
+同一批实测中，`high` 档产物在 `timeout 15/30` 下均**零输出、超时退出（exit 124）**，
+而 max/ultra/mid 正常。这是一处独立于"性能杀手"的异常，暂记录不做改动，建议后续单独排查
+（疑似 high 预设某壳层组合在无 TTY / proc_open 环境下进入等待）。
