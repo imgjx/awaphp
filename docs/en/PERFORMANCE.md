@@ -421,10 +421,20 @@ the logic layer's inflation is fully exposed.
 runtime speed, use `--level=mid` (no intensity-3 logic / no VM) or lower/disable the logic layer;
 the trade-off is weaker obfuscation. The max default stays protection-first.
 
-### 14.5 Side finding: high-level artifact hangs (to be investigated)
+### 14.5 Side finding: high-level artifact hangs — fixed in v1.2.9
 
 In the same batch, the `high` artifact produced **zero output and timed out (exit 124)** under
-`timeout 15/30`, while max/ultra/mid ran normally. This is an anomaly independent of the
-"performance killer"; it is recorded here without changes and warrants a separate investigation
-(suspected: a certain shell-layer combination in the high preset waits forever in a non-TTY /
-proc_open environment).
+`timeout 15/30`, while max/ultra/mid ran normally. v1.2.9 located and fixed it:
+
+- **Symptom**: process in `RN` state spinning CPU; gdb backtrace stopped in `php_var_serialize()` —
+  the VM dispatch loop repeatedly serialized on push, spinning forever. Layer stripping showed only
+  removing `shell:vm` restored normal execution.
+- **Root cause**: the layers **before** `shell:vm` in `high` differed from `max` (no `decoy` /
+  `statemachine`, `goto` depth 3), feeding the VM compiler a different token shape. Loops were compiled
+  into bad relative jumps toward a negative PC (e.g. `[1394,-77]`). Under some salts the dispatch loop
+  spun forever; under others it silently miscomputed loop accumulators (e.g. `S=0` instead of `S=29992`).
+- **Fix**: `high`'s pre-VM layers are now **identical to `max`** (including `decoy`, `statemachine`,
+  `goto=4`), taking the same verified VM compilation path. Tier differences remain only in VM
+  parameters (chunks 8 / probe 12 / fog 80 / isaSplit 2) and downstream shell counts, so high stays
+  weaker than max. Historically bad salts (perfkill / v129high / abc123 / x) and multiple workloads are
+  all byte-identical now; `tests/v129_features.php` covers this regression.

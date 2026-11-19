@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.2.8-orange)
+![Version](https://img.shields.io/badge/version-1.2.9-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -135,6 +135,11 @@ A block of PHP is wrapped into a function: `echo $i + $k . $str;` → `function 
 - **Multi-shaped 3-way decoys** (`decoy` layer, `--decoy[=N]` / `--decoy-level=1|2|3`, densities ≈12% / 25% / 45%; on by default in `high`/`max`/`ultra`): one true statement becomes `if / elseif / else` with **three paths and two unreachable decoys**. The conditions are **not the giveaway `($v===$v)||($v!==$v)`**: a salt-picked template from 12 business-looking checks carries the decision — `strlen(...) >= 0`, `crc32(...) & 1 ∈ {0,1}`, `substr()` returning a string, `count(...)` on an array, `in_array(...,[0,1],true)`, … with two structural variants (real path first, or real path in `else`). The true branch applies "same-kind substitution" — variables are copied into fresh locals and string literals into fresh variables before use — while dead branches use look-alike values (numeric last digit +1, ASCII suffix). A probe value is normalised to a scalar first, so objects/closures never trigger a `__toString` error. **Only `echo`/`print` statements are decoyed**: assignments and write-back statements (`$a[] = $b`, `$o->p = $v`, compound assigns) are deliberately skipped — same-kind substitution copies variables into locals, which is safe for reads but would silently drop writes to the original variable (caught by whole-site runtime testing).
 - **Zero-cost bytecode disassociation** (`--vm-isa-split=N`, default 2, 1 = off, up to 4): several **functionally identical physical opcodes** are created for one semantic opcode and **actually used in rotation** across the bytecode. Static 1:1 opcode→handler mapping and instruction-frequency statistics break down. Each alias gets its own dispatch label, but aliases of the same semantic opcode **share one handler body** (`case A: case B: body`): measured 400k-iteration loop 1.95 s at split=1 vs 1.95 s at split=2 — no runtime cost (dispatch stays a single jump-table lookup), only a slightly larger table.
 - **VM interpreter morphing**: the interpreter's own PHP is post-processed — decimal constants become hexadecimal, ASCII literals become `\xHH` escapes (both compile-time constants, zero runtime cost), and unreachable "key-schedule / checksum" blocks plus misleading comments are woven between the closures. The generator stays byte-for-byte reproducible for a given salt.
+
+### Environment-shaped decoy predicates + high-tier VM dead-loop fix (v1.2.9)
+
+- **Environment-shaped constant predicates**: decoy conditions now include PHP-version thresholds (`PHP_VERSION_ID > N0000`, N∈1..4), debug-extension probes that double as anti-debugging (an `extension_loaded()` check on a salt-derived non-existent name, always false → real branch always taken), calendar checks (`(int)date('Y') > N`, N∈1990..2025), and other "predictable reality" forms (`PHP_INT_SIZE >= 4`, `strlen(PHP_VERSION) > 0`, `PHP_EOL !== ''`, `defined('PHP_VERSION')`, …). They read as runtime environment validation to a static analyzer but are provably constant and independent of the host — byte-identical output across all levels and salts.
+- **high-tier VM dead-loop / miscompute fixed**: the layers before `shell:vm` in `high` are now aligned with `max`; high no longer emits bad relative jumps that spun the dispatch loop or silently miscomputed loop accumulators. Tier strength is preserved (VM params and shell depth still differ from max).
 
 ### Zero-eval build safety + Logic-first pruning + VM interpreter morphing (v1.2.8)
 

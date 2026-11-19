@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-1.2.8-orange)
+![Version](https://img.shields.io/badge/version-1.2.9-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -139,6 +139,11 @@
 - **多变三分支诱饵**（`decoy` 层，`--decoy[=N]` / `--decoy-level=1|2|3`，密度约 12% / 25% / 45%；`high`/`max`/`ultra` 默认开）：一条真语句变成 `if / elseif / else` 三路，**两路是不可达诱饵**。条件**不是**一眼假的 `($v===$v)||($v!==$v)`：按盐从 12 种「看似业务校验」的模板里挑 —— `strlen(...)>=0`、`crc32(...)&1∈{0,1}`、`substr()` 返回 string、`count(...)` 作用于数组、`in_array(...,[0,1],true)` …… 再叠两种结构变体（真分支在前、或真分支落在 `else`）。真分支做**同理替换**：变量先拷进新局部变量、字符串字面量先赋给新变量再用；死分支则是形近假值（数字末位 +1、ASCII 后缀）。探针值先归一成标量，对象 / 闭包不会触发 `__toString` 错误。**只对 echo/print 做诱饵**：赋值与写回语句（`$a[] = $b`、`$o->p = $v`、复合赋值）一律跳过 —— 同理替换会把变量拷进局部，对读取安全、对写回则会静默丢掉对原变量的修改（整站运行实测抓到并修复）。
 - **零损耗字节码拆解**（`--vm-isa-split=N`，默认 2，1=关，最多 4）：给同一个语义 opcode 造出多个**功能完全相同**的物理码，并在字节码里**轮转实际使用**。静态的 1:1 指令→handler 映射与指令频次统计因此失效。每个别名各有独立派发标签，但同一语义的别名**共用同一份 handler 体**（`case A: case B: body`）：40 万次循环实测 split=1 为 1.95 s、split=2 仍为 1.95 s —— 运行期零额外开销（派发仍是一次跳转表查找），只是表略大。
 - **VM 解释器本体混淆**：解释器自身的 PHP 再做一道后处理 —— 十进制常量改十六进制、ASCII 串改 `\xHH` 转义（都是编译期常量，运行期零成本），闭包之间织入不可达的「密钥调度 / 校验和」伪逻辑块与误导性注释。同盐仍可逐字节复现。
+
+### 环境拟态恒真条件 + high 档 VM 死循环修复（v1.2.9）
+
+- **环境拟态恒真条件**：诱饵分支条件新增 PHP 版本阈值（`PHP_VERSION_ID > N0000`，N∈1..4）、debug 扩展探测（对 salt 派生的不存在扩展名做 `extension_loaded()`，恒假 → 恒走真分支，同时呈反调试外观）、日历判断（`(int)date('Y') > N`，N∈1990..2025），以及其它"可预测现实式"（`PHP_INT_SIZE >= 4`、`strlen(PHP_VERSION) > 0`、`PHP_EOL !== ''`、`defined('PHP_VERSION')` 等）。静态分析看着像运行时环境校验，实则恒真恒假、与运行机无关 —— 各档各盐输出逐字节一致。
+- **high 档 VM 死循环 / 静默错算修复**：`high` 在 `shell:vm` 之前的各层现与 `max` 对齐，不再产生坏的相对跳转使 dispatch 循环空转或把循环累加值算错。档位强度仍保留（VM 参数与壳层数仍弱于 max）。
 
 ### 零 eval 构建安全 + Logic 前置剪枝 + VM 解释器混淆（v1.2.8）
 

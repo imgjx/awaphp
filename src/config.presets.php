@@ -161,24 +161,32 @@ return [
     ] + $FRAMEWORK_SAFE,
 
     // ===================== high：VM 状态机 + 全 P8 架构方向 + 深层 GOTO + 语义变换 + 全反检测（含蜜罐/结构毒化） =====================
+    // v1.2.9 修复：high 的 shell:vm 之前各层【必须与 max 完全一致】（含 decoy / statemachine /
+    // controlflow 的 goto=4）。此前 high 缺 decoy+statemachine、goto 仅 3，导致送入 VM 编译器的
+    // token 流形态与 max 不同：含循环的代码被编成跳向负 PC 的相对跳转（如 [1394,-77]），运行期
+    // 在 dispatch 内死循环（perfkill salt）或对特定 salt 静默算错累加值（abc123/v129high）。
+    // 前置层对齐后，high 与 max 走同一条已验证的 VM 编译路径；档位差异仅保留在 VM 参数
+    // （chunks 8 / probe 12 / fog 80 / isaSplit 2）与后续编码壳层数，保护强度仍弱于 max。
     'high' => [
         'layers' => [
-            ['name' => 'constfold',   'params' => ['level' => 2]],
-            ['name' => 'logic',       'params' => ['intensity' => 2]],
-            ['name' => 'var',          'params' => ['length' => 16]],
-            ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
+            ['name' => 'constfold',   'params' => ['level' => 3]],
+            ['name' => 'logic',       'params' => ['intensity' => 3]],
+            ['name' => 'decoy',       'params' => ['level' => 2]],
+            ['name' => 'var',          'params' => ['length' => 20]],
+            ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
-            ['name' => 'funcsplit',    'params' => ['level' => 2, 'max' => 96]],
-            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 3, 'goto_cpx' => 8]],
+            ['name' => 'funcsplit',    'params' => ['level' => 3, 'max' => 96]],
+            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 4, 'goto_cpx' => 12]],
+            ['name' => 'statemachine', 'params' => ['complexity' => 10, 'passes' => 2, 'traps' => 3, 'opaque' => true]],
             ['name' => 'number',       'params' => ['on' => true]],
-            ['name' => 'string',       'params' => ['xor' => true, 'length' => 6, 'split' => 4]],
-            ['name' => 'semantic',     'params' => ['strength' => 2]],
+            ['name' => 'string',       'params' => ['xor' => true, 'length' => 4, 'split' => 6]],
+            ['name' => 'semantic',     'params' => ['strength' => 3]],
             ['name' => 'anti_ast',     'params' => []],
-            ['name' => 'junk_runtime', 'params' => ['intensity' => 8, 'fake_b64' => true, 'fake_echo' => true]],
-            ['name' => 'dead',         'params' => ['density' => 3]],
+            ['name' => 'junk_runtime', 'params' => ['intensity' => 10, 'fake_b64' => true, 'fake_echo' => true, 'tangle' => true]],
+            ['name' => 'dead',         'params' => ['density' => 5]],
             ['name' => 'comment',      'params' => []],
             ['name' => 'stat',         'params' => []],
-            ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 6]],
+            ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 10]],
             ['name' => 'ws',           'params' => []],
             ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 8, 'morph' => true, 'fakeFog' => 80, 'probe' => 12, 'keychain' => true, 'builtinReplace' => true, 'junk' => 80, 'isaSplit' => 2]],
             ['name' => 'shell:eval',   'params' => ['layers' => 6]],

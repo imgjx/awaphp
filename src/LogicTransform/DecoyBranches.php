@@ -342,6 +342,29 @@ final class DecoyBranches
             ['crc32((string)(' . $probeVar . ' ?? \'\'))|0', $d . '===intval(' . $d . ')', $d . '!==intval(' . $d . ')'],
             ['(int)(' . $probeVar . ' ?? 0)+0', $d . '<PHP_INT_MAX', $d . '===PHP_INT_MAX'],
             ['strlen((string)(' . $probeVar . ' ?? \'\'))^0', $d . '>=0&&' . $d . '<1000000000', $d . '<0'],
+            // ————————————————————————————————————————————————————————————————
+            // v1.2.9：新一类「看似环境/业务校验」的恒真条件——把运行时环境探测伪装成
+            // 业务前置校验，静态分析者看到的是一堆现实世界断言，实则恒真/恒假。
+            // 所有阈值均由 $rng（salt 派生、可复现）生成，恒真性由表达式结构保证，
+            // 与运行机实际 PHP 版本 / 日期 / 已装扩展无关——绝不依赖本机具体值。
+            // ————————————————————————————————————————————————————————————————
+            // 1) PHP 版本是否 > N（N∈1..4 的版本线，如 30000=3.0.0）：现代 PHP 恒真。
+            ['PHP_VERSION_ID', $d . '>' . ($rng->nextInt(1, 4) * 10000), $d . '<10000'],
+            // 2) 是否有 debug 扩展（逻辑变化同时反调试）：用一个 salt 派生、几乎不可能真实
+            //    存在的扩展名——extension_loaded 对未加载扩展恒返回 false，故 $d===0 恒真。
+            //    静态上是"检测调试扩展"的反调试形态，运行期恒走真分支（零语义影响）。
+            ['(int)extension_loaded(\'awa_dbg_' . substr(md5((string) $rng->nextInt(0, 0x7fffffff)), 0, 10) . '\')', $d . '===0', $d . '===1'],
+            // 3) 时间是否在 1990~2025 的某一天之后：(int)date('Y') 恒 > 该年份。
+            ['(int)date(\'Y\')', $d . '>' . $rng->nextInt(1990, 2025), $d . '<1980'],
+            // 4) 各种"可预测"的现实恒真式——看着像环境断言，实则永真。
+            ['PHP_INT_SIZE', $d . '>=4', $d . '<4'],
+            ['strlen(PHP_VERSION)', $d . '>0', $d . '===0'],
+            ['(int)(PHP_EOL!==\'\')', $d . '===1', $d . '===0'],
+            ['(int)defined(\'PHP_VERSION\')', $d . '===1', $d . '===0'],
+            ['(int)is_int(PHP_INT_MAX)', $d . '===1', $d . '===0'],
+            // 5) debug 反调试变体（恒真结构与运行环境无关）：extension_loaded 的形态，
+            //    但套一层 is_bool——无论是否装了 xdebug，extension_loaded 恒返回 bool。
+            ['(int)is_bool(extension_loaded(\'xdebug\'))', $d . '===1', $d . '===0'],
         ];
         $pick = $forms[$rng->nextInt(0, count($forms) - 1)];
         $pre = $safePre . $d . '=' . $pick[0] . ';';

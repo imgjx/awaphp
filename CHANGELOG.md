@@ -1,5 +1,45 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.9 — Environment-shaped decoy predicates + high-tier VM dead-loop fix
+
+> Two focused changes: (1) the decoy-branch condition library gains a new family of **environment-shaped
+> constant-true/false predicates** — PHP-version thresholds, debug-extension probes (obfuscation that is
+> also anti-debugging), calendar-year checks and other "predictable real-world" assertions. They look like
+> runtime business/environment validation to a static analyzer but are provably constant, so output stays
+> byte-identical. (2) a **high-tier VM dead-loop / silent-miscompute bug is fixed**: the layers before
+> `shell:vm` are now aligned with the `max` tier, so high feeds the VM compiler the same verified token
+> stream and no longer emits bad relative jumps.
+
+### New environment-shaped decoy predicates (Logic / DecoyBranches)
+
+- Added constant-true/false forms derived from salt-reproducible randomness:
+  - **PHP version** `PHP_VERSION_ID > N0000` with `N ∈ 1..4` (modern PHP is always greater);
+  - **debug-extension probe** `extension_loaded('<salt-derived non-existent name>') === false` — reads as
+    an anti-debugging check, is always false, so the real branch is always taken (zero semantic impact);
+  - **calendar check** `(int)date('Y') > N` with `N ∈ 1990..2025`;
+  - **predictable reality checks** `PHP_INT_SIZE >= 4`, `strlen(PHP_VERSION) > 0`, `PHP_EOL !== ''`,
+    `defined('PHP_VERSION')`, `is_int(PHP_INT_MAX)`, `is_bool(extension_loaded('xdebug'))`.
+- Every predicate's truth value is guaranteed by expression structure and is **independent of the actual
+  runtime environment** (no reliance on the host's PHP version, date or installed extensions) — all
+  thresholds are salt-derived and reproducible. Verified byte-identical across mid/max/ultra/aggressive
+  and multiple salts.
+
+### high-tier VM dead-loop / miscompute fix
+
+- Root cause: before `shell:vm`, the `high` tier used a different layer set than `max` (no `decoy` /
+  `statemachine`, `goto` depth 3). That fed the VM compiler a token shape which produced bad relative
+  jumps (e.g. `[1394,-77]` jumping to a negative PC), so the dispatch loop spun on `serialize()` forever
+  (dead-loop under some salts) or silently computed wrong loop accumulators (others).
+- Fix: the pre-VM layers of `high` are now **identical to `max`** (including `decoy`, `statemachine` and
+  `goto=4`). Tier differences are preserved only in VM parameters (chunks 8 / probe 12 / fog 80 /
+  isaSplit 2) and downstream shell counts, so high stays weaker than max. Verified across perfkill /
+  v129high / abc123 / x salts and multiple workloads.
+
+### Version & docs
+
+- Version bumped to 1.2.9; added `tests/v129_features.php` (16 checks); README (EN/ZH), DISCLAIMER,
+  CHANGELOG updated. All suites green (55/54/50/24/16).
+
 ## v1.2.8 — Zero build-time `eval`, Logic-first pruning, VM-interpreter Logic morphing
 
 > Core: strengthen anti-reverse-engineering **without** turning the online obfuscation service into a

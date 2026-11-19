@@ -457,8 +457,18 @@ number / token）剥离后仍在 678–699 ms，无实质改善。
 `--level=mid`（无 logic 强度 3 / 无 VM）或降低 logic intensity / 关闭 logic 层；代价是
 混淆强度下降。默认 max 为保护强度优先，维持现状。
 
-### 14.4 附带发现：high 档产物卡死（待查）
+### 14.4 附带发现：high 档产物卡死 —— 已在 v1.2.9 修复
 
 同一批实测中，`high` 档产物在 `timeout 15/30` 下均**零输出、超时退出（exit 124）**，
-而 max/ultra/mid 正常。这是一处独立于"性能杀手"的异常，暂记录不做改动，建议后续单独排查
-（疑似 high 预设某壳层组合在无 TTY / proc_open 环境下进入等待）。
+而 max/ultra/mid 正常。v1.2.9 已定位并修复：
+
+- **现象**：进程 `RN` 态 CPU 空转，gdb 抓栈停在 `php_var_serialize()` —— VM dispatch 循环
+  反复压栈序列化，形成死循环；逐层剥离显示只有去掉 `shell:vm` 才恢复正常。
+- **根因**：`high` 在 `shell:vm` **之前**的层与 `max` 不同（缺 `decoy`/`statemachine`、`goto`
+  仅 3），送入 VM 编译器的 token 流形态不同，含循环的代码被编成跳向负 PC 的坏相对跳转
+  （如 `[1394,-77]`）。部分 salt 下 dispatch 空转死循环，另一些 salt 下静默算错循环累加值
+  （如 `S=0` 而非 `S=29992`）。
+- **修复**：`high` 的 VM 前置层现在与 `max` **完全一致**（含 `decoy`、`statemachine`、`goto=4`），
+  走同一条已验证的 VM 编译路径；档位差异仅保留在 VM 参数（chunks 8 / probe 12 / fog 80 /
+  isaSplit 2）与后续编码壳层数，high 强度仍弱于 max。perfkill / v129high / abc123 / x 等
+  历史坏 salt 与多个负载全部逐字节一致，`tests/v129_features.php` 覆盖此回归。
