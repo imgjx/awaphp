@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.10');
+define('OBFUSCATOR_VERSION', '1.2.11');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -309,7 +309,11 @@ function obf_parse_args(array $argv): array
 
 function obf_help(): string
 {
-    return <<<HELP
+    // v1.2.11：原来用 heredoc（<<<HELP）输出，`{OBFUSCATOR_NAME}` / `{OBFUSCATOR_VERSION}`
+    // 在 heredoc 里并不插值 → 用户看到的标题一直是这两个花括号字面量；同时正文里的
+    // `$x=…` 示例被当成变量插值，每次 --help 都抛一条 Undefined variable 警告。
+    // 改成 nowdoc + 显式 strtr 替换：正文一律按字面量输出（示例里的 $x / $db 原样显示）。
+    return strtr(<<<'HELP'
 {OBFUSCATOR_NAME} v{OBFUSCATOR_VERSION}
 用法: php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 
@@ -417,7 +421,9 @@ function obf_help(): string
       --vm-super-isa[=N] VM 指令集加速：把运行期高频的指令组（2~4 条）合并成一条新 ISA
                        复合指令，一次取指一次分派执行完 n 条 —— 既少走主循环分派（提速），
                        又让字节码出现陌生 opcode 且操作数平铺（抗反编译/抗频次统计）。
-                       用 NOP 占位保证指令条数不变，跳转偏移与异常表无需重算。
+                       v1.2.11 起被吸收的子指令【真删除】（不再用 NOP 占位），段随之变短，
+                       跳转偏移与异常表 pc 由构建期同步重算 —— 字节码更短，
+                       静态分析也看不到成簇的 NOP。
                        N=新建指令条数（默认 3，0=关），--no-vm-super-isa 关闭
       --vm-isa-split[=N] VM 字节码拆解（v1.2.6）：同一个语义 opcode 造 N 种功能完全相同的
                        物理 ISA 并【轮转实际使用】，字节码里看不出 1:1 映射。
@@ -511,7 +517,7 @@ function obf_help(): string
                        密文载荷；0=不限（不推荐，会膨胀并可能破坏结构指纹）。
       --whitelist-dirs=      不混淆的目录（逗号分隔，相对输入目录；支持 * 通配），整目录原样拷贝
       --whitelist-files=     不混淆的文件（逗号分隔，精确相对路径，如 config/app.php）
-      --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 \$db,\$cfg）
+      --whitelist-vars=      不重命名的变量名（逗号分隔，带不带 $ 均可，如 $db,$cfg）
       --whitelist-funcs=     不重命名的函数名（逗号分隔，如 helper,format_money）
       --whitelist-classes=   不重命名的类名（逗号分隔，FQCN 或短名，如 App\\Service\\Order）
       --whitelist-consts=    不重命名的常量名（逗号分隔）
@@ -533,7 +539,10 @@ function obf_help(): string
       --silence        静默
   -h, --help           显示本帮助
       --info           显示工具信息
-HELP;
+HELP, [
+        '{OBFUSCATOR_NAME}'    => OBFUSCATOR_NAME,
+        '{OBFUSCATOR_VERSION}' => OBFUSCATOR_VERSION,
+    ]);
 }
 
 // ============ 主流程 ============

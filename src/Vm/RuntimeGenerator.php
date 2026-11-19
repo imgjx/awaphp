@@ -414,9 +414,13 @@ final class VmRuntimeGenerator
         if ($this->cpool) {
             $poolEnc = $this->cpoolEncrypt($this->extractConstPool($program));
         }
-        // —— 指令集加速（v1.2.5，见 src/Vm/VmSuperIsa.php）——
-        // 把高频指令组折叠成一条新 ISA 指令：[superOp, 子指令操作数平铺]，并用 NOP 占位
-        // 保持段的指令条数不变（跳转偏移 / 异常表 pc 区间 / GEN_HEAD 索引全部无需重算）。
+        // —— 指令集加速（v1.2.5 引入，v1.2.11 改为真删占位）——
+        // 把高频指令组折叠成一条新 ISA 指令：[superOp, 子指令操作数平铺]，被吸收的
+        // 子指令**从段里删除**，段随之变短。VmSuperIsa 同步重算段内所有相对跳转偏移
+        // 与异常表 exTab 的三个绝对 pc（跳转目标 / 异常表端点作为"不可跨越"位置，
+        // 合并绝不横跨它们，因此映射一定精确）。
+        // 必须是最后一个改段结构的步骤：其后只剩 remap（改 opcode 编号）与打包，
+        // 二者都不依赖索引，故收缩段长不会让任何位置信息失真。
         // 必须放在常量池加密【之后】：此时 PUSH_C 的操作数已是池索引，超级指令直接沿用，
         // 不必让常量池抽取逻辑认识超指令结构。新增 opcode 需要重新分配编号，故重跑一次
         // collectUsed/assignCodes（remap 尚未执行，重分配完全安全）。
@@ -702,7 +706,8 @@ final class VmRuntimeGenerator
      * 原始物理码占 1..250；别名取自 251..2047 的洗牌池，与任何原始码都不冲突
      * （XOR 是双射，故派发键也不会撞车）。别名码仍是普通 varint，序列化协议不变。
      * 被运行期按【操作码字面量】判别的指令必须排除：目前只有 GEN_HEAD（生成器
-     * 段首标记）与 NOP（空操作占位）——给它们造别名会让字面量判别失效或纯属浪费。
+     * 段首标记）——给它们造别名会让字面量判别失效或纯属浪费。
+     * （v1.2.11 起超级指令不再用 NOP 占位，NOP 已无生成点，仍一并排除以兼容旧产物。）
      *
      * @param array<int,int> $mapping 逻辑 => 主物理码
      */
@@ -1472,7 +1477,11 @@ TPL;
      * 超级指令的 case 体：把各子指令的 handler 依次内联拼接。
      *
      * 子 handler 里的 `$___INS___[k]` 要整体右移到本超级指令的操作数区
-     *（操作数是"子指令操作数平铺"），末尾再 `$___PC___ += n-1` 跳过占位 NOP。
+     *（操作数是"子指令操作数平铺"）。
+     *
+     * v1.2.11：被吸收的子指令已从段里**真删除**（不再用 NOP 占位），段随之变短、
+     * 跳转与异常表由 VmSuperIsa 同步重算。因此这里不再需要 `$___PC___ += n-1`
+     * 跳过占位——下一条要执行的指令就在本超级指令的紧邻位置，pc 自然 +1 即可。
      */
     private function superBody(int $logical): string
     {
@@ -1499,17 +1508,38 @@ TPL;
             }
             $base += $argc;
         }
-        $n = count($meta);
-        if ($n > 1) {
-            $code .= '$___PC___+=' . ($n - 1) . ';';
-        }
         return $code;
+    }
+
+    /**
+     * PHPRUN 的 global 语义桥：把不透明载荷里的顶层变量预先绑成 $GLOBALS 的引用。
+     *
+     * 为什么必须有这段：PHPRUN 的 eval() 跑在解释器闭包内，载荷里的顶层赋值落在
+     * 「闭包局部变量」上，而不是真实全局符号表。载荷里的函数如果用 `global $x`
+     * 或 `$GLOBALS['x']` 访问同一个变量，就只能读到未定义的 null —— 表现为
+     * 「函数里的全局变量全是空值」，且没有任何报错（v1.2.10 及以前一直存在）。
+     *
+     * 触发场景：shell:vm 遇到无法直接编译的源码（如 statemachine 层产出的
+     * `case(表达式)` 标签、命名空间块、真实类声明）时整体改走不透明载荷执行 ——
+     * high/max/ultra 档因此会踩到。直接编译路径不经过 PHPRUN，GLOBAL_REF 正常。
+     *
+     * 修法：只针对载荷里【真正声明为全局】的名字建引用 ——
+     *   - `global $a, $b;` 里的名字；
+     *   - `$GLOBALS['k']` 里的字面量键名。
+     * 只绑这些名字，既修好语义，又不会把载荷里成千上万个局部变量灌进 $GLOBALS。
+     */
+    private function phprunGlobalBind(): string
+    {
+        return <<<'PHP'
+$___GNAMES___=[];$___GFLAG___=0;foreach(token_get_all("<?php ".$___TCODE2___) as $___GTK___){if(is_array($___GTK___)){if($___GTK___[0]===T_GLOBAL){$___GFLAG___=1;continue;}if($___GFLAG___===1){if($___GTK___[0]===T_VARIABLE){$___GNAMES___[substr($___GTK___[1],1)]=1;}continue;}if($___GTK___[0]===T_VARIABLE&&$___GTK___[1]==='$GLOBALS'){$___GFLAG___=2;continue;}if($___GFLAG___===2&&$___GTK___[0]===T_CONSTANT_ENCAPSED_STRING){$___GNAMES___[trim($___GTK___[1],'\'"')]=1;$___GFLAG___=0;}}else{if($___GTK___===';'||$___GTK___===']'){$___GFLAG___=0;}}}foreach($___GNAMES___ as $___GN___=>$___GD___){if($___GN___===''||$___GN___==='this'||$___GN___==='GLOBALS'){continue;}if(!array_key_exists($___GN___,$GLOBALS)){$GLOBALS[$___GN___]=null;}${$___GN___}=&$GLOBALS[$___GN___];}
+PHP;
     }
 
     /** 各逻辑操作码对应的 case 体（占位符需带 $ 前缀，最终被替换为随机名） */
     private function caseBody(int $logical): string
     {
-        // v1.2.5 指令集加速：超级指令 → 内联展开各子指令 handler，并跳过占位 NOP。
+        // v1.2.5 指令集加速：超级指令 → 内联展开各子指令 handler。
+        // v1.2.11：NOP 占位已取消（合并后直接删除被吸收的指令），此分支仅作历史兼容。
         if ($logical === VmOp::NOP) {
             return ''; // 占位空操作（不改变任何状态）
         }
@@ -1661,7 +1691,7 @@ TPL;
             case VmOp::UNSET_:    return '$___TNK___=$___INS___[2];$___TKEYS___=[];for($___TI___=0;$___TI___<$___TNK___;$___TI___++){$___TKEYS___[]=$___MCPOP___();}$___TKEYS___=array_reverse($___TKEYS___);if($___INS___[1]===\'$GLOBALS\'){if($___TNK___===1){unset($GLOBALS[$___TKEYS___[0]]);}}elseif($___TNK___===0){unset($___VARS___[$___INS___[1]]);}else{$___TREF___=&$___VARS___[$___INS___[1]];$___TOK___=true;for($___TI___=0;$___TI___<$___TNK___-1;$___TI___++){$___TK___=$___TKEYS___[$___TI___];if(is_array($___TREF___)&&isset($___TREF___[$___TK___])){$___TREF___=&$___TREF___[$___TK___];}elseif(is_object($___TREF___)){$___TREF___=&$___TREF___->$___TK___;}else{$___TOK___=false;break;}}if($___TOK___){$___TLK___=$___TKEYS___[$___TNK___-1];if(is_array($___TREF___)){unset($___TREF___[$___TLK___]);}elseif(is_object($___TREF___)){unset($___TREF___->$___TLK___);}}}';
             case VmOp::EXIT_:     return '$___TV___=$___MCPOP___();if(is_int($___TV___)){exit($___TV___);}if(is_string($___TV___)){echo $___TV___;}exit(0);';
             case VmOp::EXIT_VOID: return 'exit(0);';
-            case VmOp::PHPRUN:    return '$___TARGC___=$___INS___[1];$___TCODE2___=null;for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TCODE2___=$___MCPOP___();}if(is_array($___VARS___)){extract($___VARS___);}eval($___TCODE2___);';
+            case VmOp::PHPRUN:    return '$___TARGC___=$___INS___[1];$___TCODE2___=null;for($___TI___=0;$___TI___<$___TARGC___;$___TI___++){$___TCODE2___=$___MCPOP___();}if(is_array($___VARS___)){extract($___VARS___);}' . $this->phprunGlobalBind() . 'eval($___TCODE2___);';
             // include（构建期内嵌）：嵌入段与当前帧【共享变量表】（PHP 包含作用域语义：
             // 被包含文件能看到 includer 的变量，其新变量在返回后也对 includer 可见）。
             // once=1 且同一 embed 已执行过 → 直接压 true 跳过。

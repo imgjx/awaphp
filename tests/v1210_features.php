@@ -185,8 +185,11 @@ foreach (['x', 'v129high', 'abc123', 'perfkill', 'zz9'] as $salt) {
 
 $c1 = $tmp . '/c_on.php';
 $c2 = $tmp . '/c_off.php';
-case_run($entry, $src, $c1, ['--config=' . $cNoShell]);
-case_run($entry, $src, $c2, ['--config=' . $cNoPrune]);
+// 固定盐：积木数量与盐绑定（Logic 的随机计数、随机串长度都随盐变），
+// 不传 --salt 时两次构建各用各的随机盐，比值会随机漂到 80% 线下方（曾误报）。
+$cFixSalt = ['--salt=pruneblocks'];
+case_run($entry, $src, $c1, array_merge(['--config=' . $cNoShell], $cFixSalt));
+case_run($entry, $src, $c2, array_merge(['--config=' . $cNoPrune], $cFixSalt));
 $b1 = logic_blocks($c1);
 $b2 = logic_blocks($c2);
 // 注意：不能要求数量完全相等。剪枝折掉了用户代码里的常量，会改变后续 Logic 内部

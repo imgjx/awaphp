@@ -563,6 +563,16 @@ trait VmStmtTrait
             }
             return;
         }
+        // 裸块语句 `{ ... }`：PHP 里它只是语句分组，不引入新作用域（变量照旧落到
+        // 同一帧）。logic 层的临时变量缠结与 state machine 的转移块都会生成这种
+        // 形状，不认就整段退成 EVAL_STMT：轻则丢掉这一段的 VM 保护，重则（当块内
+        // 调用本文件生成的 VM 函数时）运行期 "undefined function"。
+        if (is_string($t) && $t === '{') {
+            $c->next();
+            $inner = $c->untilMatchBrace(); // 连同收尾的 '}' 一并消费
+            $this->compileBlock($this->trimWs($inner), $code);
+            return;
+        }
         if (is_array($t) && $t[0] === T_ECHO) {
             $c->next();
             $this->compileEcho($c, $code);

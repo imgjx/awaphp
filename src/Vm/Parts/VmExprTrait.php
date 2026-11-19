@@ -1149,8 +1149,13 @@ trait VmExprTrait
     {
         $this->parseEq($c, $code);
         while (!$c->eof()) {
-            // 注意：位运算 & 在表达式中会被 tokenizer 记为 T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG
-            if ($c->is('&') || $c->is(T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG)) {
+            // 位运算 & 的 token 形态取决于右操作数：PHP 8.1+ 里 `$a & $b` 是
+            // T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG（后跟变量），`$a & 0xff` 是
+            // T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG，8.0- 两者都是裸 '&'。
+            // 三种形态都必须认，只认 NOT_FOLLOWED 会让 `$x = $a & $b;` 解析出残余
+            // token → 整条语句退成 eval（v1.2.10 及以前）。
+            $tk = $c->peek();
+            if ($c->is('&') || $this->isAmpNotFollowedByVar($tk) || $this->isAmpFollowedByVar($tk)) {
                 $c->next();
                 $this->parseEq($c, $code);
                 $code[] = [VmOp::BW_AND];
@@ -2192,6 +2197,16 @@ trait VmExprTrait
                     // 取值才是对源语义的忠实保真（include 相对定位也依赖它）。
                     $c->next();
                     $code[] = [VmOp::PUSH_C, $t[0] === T_DIR ? $this->srcDir : $this->srcFile];
+                    return;
+                case T_NS_C:
+                    // __NAMESPACE__：编译期折值为当前命名空间（全局命名空间为空串）。
+                    // 必须支持：funcsplit / 类保留等层生成的"函数声明守卫"就是
+                    // `if(!function_exists(__NAMESPACE__ . '\f')){function f(){...}}`。
+                    // 一旦这里不支持，整条声明会退到 EVAL_STMT 原生声明 —— 该函数此后
+                    // 收到的是 VM 对象（stdClass + META），内部 $obj->m() 直接
+                    // "Call to undefined method stdClass::m()" 致命（v1.2.10 及以前）。
+                    $c->next();
+                    $code[] = [VmOp::PUSH_C, $this->curNs];
                     return;
                 case T_MATCH:
                     $this->parseMatch($c, $code);

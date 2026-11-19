@@ -12,16 +12,21 @@
  *
  * —— 正确性设计（宁可不合并，也不改炸）——
  *
- * a) **NOP 占位，指令索引恒定不变**。合并后写回的是
- *        [superOp, 子指令1操作数…, 子指令2操作数…]，紧接着补 (n-1) 条 [NOP]。
- *    段的指令**条数完全不变**，因此：
- *      - 所有相对跳转偏移（`patch()` 写入的 `target = idx+1+offset`）无需重算；
- *      - 异常表 exTab 的绝对 pc 区间无需重算；
- *      - 生成器段首标记 GEN_HEAD 的索引不变。
- *    super handler 末尾做 `$___PC___ += n-1` 跳过占位 NOP，从而真正省掉迭代。
+ * a) **真删占位，重算位置**（v1.2.11）。合并后写回 `[superOp, 子指令1操作数…, …]` 一条指令，
+ *    被吸收的 (n-1) 条**从段里删掉**，段的指令条数随之变短。因此必须同步重算：
+ *      - 段内所有相对跳转（JMP / JZ / JNZ / DISPATCH）的偏移；
+ *      - 异常表 exTab 的 [tryStart, tryEnd, handlerPc] 三个绝对 pc。
+ *    做法是先建立「旧索引 → 新索引」映射（含段尾哨兵 `map[total] = newTotal`），
+ *    再把每条跳转按 `新目标 − (新索引 + 1)` 重写。异常表的三个端点与跳转目标一并
+ *    进入"不可跨越"集合，合并绝不会横跨它们，因此端点必有精确映射。
  *
- * b) **跳转不得落入区间内部**。若某个跳转目标落在 [i+1, i+n-1]，说明有代码从中间
- *    开始执行这段指令，合并会漏掉前半部分。此类位置一律跳过。
+ *    v1.2.5 ~ v1.2.10 的旧实现是「用 NOP 占位、段的指令条数不变」，好处是零重算，
+ *    代价是字节码里留下大量 NOP——它们占打包体积、占运行期数组内存，而且
+ *    "成簇的 NOP"本身就是超级指令的显眼指纹（静态工具一眼看出这里被合并过）。
+ *    改成真删之后，产物更小、字节码里也不再出现 NOP 簇。
+ *
+ * b) **跳转不得落入区间内部**。若某个跳转目标（或异常表端点）落在 [i+1, i+n-1]，
+ *    说明有代码从中间开始执行这段指令，合并会漏掉前半部分。此类位置一律跳过。
  *
  * c) **只合并"无控制流副作用"的指令**。白名单里全是纯栈操作 / 算术 / 位 / 比较 /
  *    输出 / 转型，其 handler 都是单条语句，不含 `break`/`continue`/`return`、
@@ -30,8 +35,9 @@
  *
  * d) 段内出现 `JMP_B`（跳转表绝对跳转，目标不在本段线性可推）时整段放弃。
  *
- * 调用时机：**常量池加密之后、remap 之前**。此时 PUSH_C 的操作数已是常量池索引，
- * 超级指令直接携带索引即可，无须让常量池抽取逻辑认识超指令结构。
+ * 调用时机：**常量池加密之后、remap 之前**，且必须是最后一个改动段结构的步骤——
+ * 它之后只剩"改 opcode 编号"的 remap 与打包，二者都不依赖索引。此时 PUSH_C 的
+ * 操作数已是常量池索引，超级指令直接携带索引即可，无须让常量池抽取逻辑认识超指令结构。
  */
 
 declare(strict_types=1);
@@ -122,7 +128,7 @@ final class VmSuperIsa
             return;
         }
 
-        // 2) 选前 max 条：长模式优先（一次省更多迭代），同长度按 频次×节省 降序；
+        // 2) 选前 max 条：长模式优先（一次省更多指令），同长度按 频次×节省 降序；
         //    并剔除已被选中长模式"完全包含"的短模式——否则短模式永远匹配不到，白占名额。
         $cand = [];
         foreach ($freq as $key => $c) {
@@ -165,98 +171,15 @@ final class VmSuperIsa
             return count($b) <=> count($a);
         });
 
-        // 3) 分配逻辑编号并逐段替换
+        // 3) 分配逻辑编号并逐段改写（段会真变短，跳转/异常表就地重算）
         $opOf = [];
         $next = self::SUPER_BASE;
         foreach ($chosen as $key => $subOps) {
             $opOf[$key] = $next++;
         }
         $applied = [];
-        $this->eachSeg($program, function (array &$seg) use ($opOf, $chosen, &$applied): void {
-            if ($seg === []) {
-                return;
-            }
-            // 段内出现 JMP_B：整段放弃（目标不可线性推算）
-            foreach ($seg as $ins) {
-                if (is_array($ins) && isset(self::SEG_SKIP[(int) ($ins[0] ?? 0)])) {
-                    return;
-                }
-            }
-            // 跳转目标集合
-            $targets = [];
-            $total = count($seg);
-            foreach ($seg as $i => $ins) {
-                if (!is_array($ins)) {
-                    continue;
-                }
-                $op = (int) ($ins[0] ?? 0);
-                if (isset(self::JUMPS[$op])) {
-                    $off = (int) ($ins[1] ?? 0);
-                    $t = $i + 1 + $off;
-                    if ($t >= 0 && $t < $total) {
-                        $targets[$t] = true;
-                    }
-                }
-            }
-            $out = $seg;
-            $i = 0;
-            for ($i = 0; $i < $total; $i++) {
-                if (!is_array($out[$i])) {
-                    continue;
-                }
-                $matched = null;
-                foreach ($chosen as $key => $subOps) {
-                    $len = count($subOps);
-                    if ($i + $len > $total) {
-                        continue;
-                    }
-                    // 匹配失败快速退出
-                    $ok = true;
-                    for ($k = 0; $k < $len; $k++) {
-                        $cur = $out[$i + $k];
-                        if (!is_array($cur) || (int) ($cur[0] ?? 0) !== $subOps[$k]) {
-                            $ok = false;
-                            break;
-                        }
-                    }
-                    if (!$ok) {
-                        continue;
-                    }
-                    // 区间内部不得有跳转目标
-                    for ($k = 1; $k < $len; $k++) {
-                        if (isset($targets[$i + $k])) {
-                            $ok = false;
-                            break 2;
-                        }
-                    }
-                    $matched = $key;
-                    break;
-                }
-                if ($matched === null) {
-                    continue;
-                }
-                $subOps = $chosen[$matched];
-                $len = count($subOps);
-                $args = [];
-                $meta = [];
-                for ($k = 0; $k < $len; $k++) {
-                    $cur = $out[$i + $k];
-                    $argc = count($cur) - 1;
-                    $meta[] = [$subOps[$k], $argc];
-                    for ($a = 1; $a <= $argc; $a++) {
-                        $args[] = $cur[$a] ?? null;
-                    }
-                }
-                $superOp = $opOf[$matched];
-                $this->defs[$superOp] = $meta;
-                $out[$i] = array_merge([$superOp], $args);
-                for ($k = 1; $k < $len; $k++) {
-                    $out[$i + $k] = [VmOp::NOP];
-                }
-                $applied[$superOp] = true;
-                $i += $len - 1;
-            }
-            $seg = $out;
+        $this->eachSegWithET($program, function (array &$seg, ?array &$et) use ($opOf, $chosen, &$applied): void {
+            $this->rewriteSeg($seg, $et, $opOf, $chosen, $applied);
         });
 
         // 4) 丢弃没有实际写入的超级指令定义
@@ -268,22 +191,234 @@ final class VmSuperIsa
     }
 
     /**
-     * 遍历所有可能含有指令的段。
+     * 收缩单个段：能合并的指令组折成一条超级指令，被吸收的指令直接删除，
+     * 随后按「旧索引 → 新索引」映射重算所有相对跳转与异常表绝对 pc。
+     *
+     * @param array<int,mixed> $seg 段（就地改写）
+     * @param array<int,array>|null $et 该段异常表（就地改写；无则 null）
+     * @param array<string,int> $opOf 模式 key => 超级指令编号
+     * @param array<string,array<int,int>> $chosen 模式 key => 子操作码序列
+     * @param array<int,bool> $applied 实际用到的超级指令编号
+     */
+    private function rewriteSeg(array &$seg, ?array &$et, array $opOf, array $chosen, array &$applied): void
+    {
+        $total = count($seg);
+        if ($total === 0) {
+            return;
+        }
+        // 段内出现 JMP_B：整段放弃（目标不可线性推算）
+        foreach ($seg as $ins) {
+            if (is_array($ins) && isset(self::SEG_SKIP[(int) ($ins[0] ?? 0)])) {
+                return;
+            }
+        }
+
+        // "不可跨越"的旧索引：跳转目标 + 异常表三个端点 + 段尾哨兵。
+        // 合并区间内一旦出现这些位置就跳过——否则被吸收的指令可能是别人的入口。
+        $lock = [$total => true];
+        foreach ($seg as $i => $ins) {
+            if (!is_array($ins)) {
+                continue;
+            }
+            $op = (int) ($ins[0] ?? 0);
+            if (!isset(self::JUMPS[$op])) {
+                continue;
+            }
+            $t = $i + 1 + (int) ($ins[1] ?? 0);
+            if ($t < 0) {
+                $t = 0;
+            }
+            if ($t > $total) {
+                $t = $total;
+            }
+            $lock[$t] = true;
+        }
+        if ($et !== null) {
+            foreach ($et as $e) {
+                foreach ([0, 1, 2] as $f) {
+                    if (!isset($e[$f])) {
+                        continue;
+                    }
+                    $p = (int) $e[$f];
+                    if ($p < 0) {
+                        $p = 0;
+                    }
+                    if ($p > $total) {
+                        $p = $total;
+                    }
+                    $lock[$p] = true;
+                }
+            }
+        }
+
+        $new = [];
+        /** @var array<int,int> $map 旧索引 => 新索引 */
+        $map = [];
+        /** @var array<int,int> $srcOld 新索引 => 旧索引（重算跳转时回取旧偏移） */
+        $srcOld = [];
+        $i = 0;
+        while ($i < $total) {
+            $ins = $seg[$i];
+            $matched = null;
+            if (is_array($ins)) {
+                foreach ($chosen as $key => $subOps) {
+                    $len = count($subOps);
+                    if ($i + $len > $total) {
+                        continue;
+                    }
+                    // 匹配失败快速退出
+                    $ok = true;
+                    for ($k = 0; $k < $len; $k++) {
+                        $cur = $seg[$i + $k];
+                        if (!is_array($cur) || (int) ($cur[0] ?? 0) !== $subOps[$k]) {
+                            $ok = false;
+                            break;
+                        }
+                    }
+                    if (!$ok) {
+                        continue;
+                    }
+                    // 区间内部不得有跳转目标 / 异常表端点
+                    for ($k = 1; $k < $len; $k++) {
+                        if (isset($lock[$i + $k])) {
+                            $ok = false;
+                            break;
+                        }
+                    }
+                    if (!$ok) {
+                        continue;
+                    }
+                    $matched = $key;
+                    break;
+                }
+            }
+            if ($matched === null) {
+                $slot = count($new);
+                $new[] = $ins;
+                $map[$i] = $slot;
+                $srcOld[$slot] = $i;
+                $i++;
+                continue;
+            }
+            $subOps = $chosen[$matched];
+            $len = count($subOps);
+            $args = [];
+            $meta = [];
+            for ($k = 0; $k < $len; $k++) {
+                $cur = $seg[$i + $k];
+                $argc = count($cur) - 1;
+                $meta[] = [$subOps[$k], $argc];
+                for ($a = 1; $a <= $argc; $a++) {
+                    $args[] = $cur[$a] ?? null;
+                }
+            }
+            $superOp = $opOf[$matched];
+            $this->defs[$superOp] = $meta;
+            $slot = count($new);
+            $new[] = array_merge([$superOp], $args);
+            $srcOld[$slot] = $i;
+            $map[$i] = $slot;
+            // 被吸收的指令在映射里指向超级指令本身（它们不会是任何跳转目标——
+            // 上面的 $lock 已保证；这里给个确定值只为映射表完整）
+            for ($k = 1; $k < $len; $k++) {
+                $map[$i + $k] = $slot;
+            }
+            $applied[$superOp] = true;
+            $i += $len;
+        }
+        $map[$total] = count($new);
+
+        // —— 重算相对跳转：offsets 是"从下一条指令算起"的位移 ——
+        foreach ($new as $ni => $ins) {
+            if (!is_array($ins)) {
+                continue;
+            }
+            $op = (int) ($ins[0] ?? 0);
+            if (!isset(self::JUMPS[$op])) {
+                continue;
+            }
+            $oi = $srcOld[$ni] ?? null;
+            if ($oi === null || !isset($seg[$oi])) {
+                continue;
+            }
+            $t = $oi + 1 + (int) ($seg[$oi][1] ?? 0);
+            if ($t < 0) {
+                $t = 0;
+            }
+            if ($t > $total) {
+                $t = $total;
+            }
+            $new[$ni][1] = ($map[$t] ?? count($new)) - ($ni + 1);
+        }
+
+        // —— 重算异常表：三个字段都是绝对 pc ——
+        if ($et !== null && $et !== []) {
+            foreach ($et as $ei => $e) {
+                foreach ([0, 1, 2] as $f) {
+                    if (!isset($e[$f])) {
+                        continue;
+                    }
+                    $p = (int) $e[$f];
+                    if ($p < 0) {
+                        $p = 0;
+                    }
+                    if ($p > $total) {
+                        $p = $total;
+                    }
+                    $et[$ei][$f] = $map[$p] ?? count($new);
+                }
+            }
+        }
+
+        $seg = $new;
+    }
+
+    /**
+     * 遍历所有可能含有指令的段（只给段，不带异常表；用于频次统计）。
      * @param array<string,mixed> $program
      */
     private function eachSeg(array &$program, callable $fn): void
     {
+        $this->eachSegWithET($program, static function (array &$seg, ?array &$et) use ($fn): void {
+            $fn($seg);
+        });
+    }
+
+    /**
+     * 遍历所有段，并把该段的异常表（引用）一并交给回调。
+     * main ↔ mainET；funcs[name] ↔ funcET[name]；embeds[i] ↔ embedET[i]；
+     * classes[c].methods[m] ↔ classET[c][m]；props/consts/funcParams/classParams 无异常表。
+     *
+     * @param array<string,mixed> $program
+     * @param callable(array<int,mixed>&, array<int,array>|null&):void $fn
+     */
+    private function eachSegWithET(array &$program, callable $fn): void
+    {
         if (isset($program['main']) && is_array($program['main'])) {
-            $fn($program['main']);
+            if (!isset($program['mainET']) || !is_array($program['mainET'])) {
+                $program['mainET'] = [];
+            }
+            $et = &$program['mainET'];
+            $fn($program['main'], $et);
+            unset($et);
         }
-        foreach (['funcs', 'embeds'] as $key) {
-            if (empty($program[$key]) || !is_array($program[$key])) {
+        foreach (['funcs' => 'funcET', 'embeds' => 'embedET'] as $segKey => $etKey) {
+            if (empty($program[$segKey]) || !is_array($program[$segKey])) {
                 continue;
             }
-            foreach ($program[$key] as &$seg) {
-                if (is_array($seg)) {
-                    $fn($seg);
+            foreach ($program[$segKey] as $k => &$seg) {
+                if (!is_array($seg)) {
+                    continue;
                 }
+                if (!isset($program[$etKey]) || !is_array($program[$etKey])) {
+                    $program[$etKey] = [];
+                }
+                if (!isset($program[$etKey][$k]) || !is_array($program[$etKey][$k])) {
+                    $program[$etKey][$k] = [];
+                }
+                $et = &$program[$etKey][$k];
+                $fn($seg, $et);
+                unset($et);
             }
             unset($seg);
         }
@@ -291,7 +426,8 @@ final class VmSuperIsa
             foreach ($program['funcParams'] as &$spec) {
                 foreach ($spec as &$p) {
                     if (is_array($p[1] ?? null)) {
-                        $fn($p[1]);
+                        $null = null;
+                        $fn($p[1], $null);
                     }
                 }
                 unset($p);
@@ -303,7 +439,8 @@ final class VmSuperIsa
                 foreach ($specs as &$spec) {
                     foreach ($spec as &$p) {
                         if (is_array($p[1] ?? null)) {
-                            $fn($p[1]);
+                            $null = null;
+                            $fn($p[1], $null);
                         }
                     }
                     unset($p);
@@ -315,26 +452,40 @@ final class VmSuperIsa
         if (empty($program['classes']) || !is_array($program['classes'])) {
             return;
         }
-        foreach ($program['classes'] as &$cls) {
+        foreach ($program['classes'] as $cn => &$cls) {
             foreach (['props', 'consts'] as $k2) {
                 if (empty($cls[$k2]) || !is_array($cls[$k2])) {
                     continue;
                 }
                 foreach ($cls[$k2] as &$def) {
                     if (is_array($def)) {
-                        $fn($def);
+                        $null = null;
+                        $fn($def, $null);
                     }
                 }
                 unset($def);
             }
-            if (!empty($cls['methods']) && is_array($cls['methods'])) {
-                foreach ($cls['methods'] as &$mseg) {
-                    if (is_array($mseg)) {
-                        $fn($mseg);
-                    }
-                }
-                unset($mseg);
+            if (empty($cls['methods']) || !is_array($cls['methods'])) {
+                continue;
             }
+            foreach ($cls['methods'] as $mn => &$mseg) {
+                if (!is_array($mseg)) {
+                    continue;
+                }
+                if (!isset($program['classET']) || !is_array($program['classET'])) {
+                    $program['classET'] = [];
+                }
+                if (!isset($program['classET'][$cn]) || !is_array($program['classET'][$cn])) {
+                    $program['classET'][$cn] = [];
+                }
+                if (!isset($program['classET'][$cn][$mn]) || !is_array($program['classET'][$cn][$mn])) {
+                    $program['classET'][$cn][$mn] = [];
+                }
+                $et = &$program['classET'][$cn][$mn];
+                $fn($mseg, $et);
+                unset($et);
+            }
+            unset($mseg);
         }
         unset($cls);
     }

@@ -1,5 +1,74 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.11 — Super instructions drop their `NOP` padding
+
+> One structural change, four silent VM correctness fixes, and one display bug fix.
+>
+> **(1) Super-instruction merging deletes the absorbed instructions instead of padding with `NOP`s.**
+> Since v1.2.5 a merge wrote `[superOp, operands…]` and filled the remaining slots with `NOP`, so a
+> segment's instruction count — and therefore every jump offset and exception-table `pc` — stayed
+> untouched. That made the transform trivially safe, but it left one `NOP` per absorbed instruction in
+> the bytecode: dead array elements after unpacking, and a dense `NOP` run that is itself a
+> conspicuous "this range was merged" fingerprint for a static analyser.
+> Merging now **removes** the absorbed instructions and recomputes, at build time, every relative jump
+> offset in the segment (`JMP` / `JZ` / `JNZ` / `DISPATCH`) plus the exception table's
+> `[tryStart, tryEnd, handlerPc]`. Jump targets and exception-table endpoints are collected first as
+> **un-crossable** positions — a merge range that would span one is abandoned — so every endpoint has
+> an exact mapping and nothing can silently start executing mid-group. Measured on
+> `tests/perf_workload_vm.php` @ `salt=perf-bench-v1` (5 runs, median; PHP 8.5.12 CLI, OPcache off):
+>
+> | Metric | v1.2.10 | v1.2.11 | Change |
+> |---|---:|---:|---|
+> | Bytecode instructions (`high`) | 565 | 454 | −19.6% |
+> | Peak memory after unpack (`high` / `max`) | 3.96 / 4.73 MB | 4.63 / 5.43 MB | +16.8% / +14.7% |
+> | Pure compute (`high`) | 16.88 ms | 17.17 ms | +1.7% |
+> | Cold start (`high`) | 63.3 ms | 62.7 ms | within noise |
+> | Artifact size, gz+cipher (`high` / `max`) | 74,243 / 86,047 B | 74,375 / 87,407 B | +0.18% / +1.58% |
+>
+> The instruction drop is the `NOP` removal itself. The memory/runtime increase is **not** — it is the
+> price of the VM fixes in (2): statements that used to degrade to `EVAL_STMT` (one string constant
+> handed to native `eval`) are now really compiled into bytecode (dozens of opcode arrays), and PHP
+> arrays cost far more than a string. Trading ~15% unpack memory and 1–2% runtime for **semantically
+> correct `global` / object calls / bitwise ops** is the right side of that trade; `--no-vm-super-isa`
+> still disables the super-instruction layer entirely.
+>
+> **(2) Four pre-existing VM semantic bugs fixed** (all present since ≤ v1.2.10, all silent — the
+> artifact produced wrong output with no warning, in `high` / `max` / `ultra`):
+> - **Opaque payload lost global scope.** When `shell:vm` cannot compile the source directly
+>   (`case(expression)` labels from the state-machine layer, namespace blocks, real class declarations)
+>   it runs the whole file as an encrypted payload via `PHPRUN` → `eval`. That `eval` executes inside
+>   the interpreter closure, so the payload's top-level assignments landed in **closure locals**, not
+>   `$GLOBALS` — a function doing `global $x` saw `null`. `PHPRUN` now scans the payload for
+>   `global $a, $b;` / `$GLOBALS['k']` and pre-binds exactly those names as references into `$GLOBALS`.
+> - **Bitwise `&` never compiled.** PHP 8.1+ tokenizes `$a & $b` as
+>   `T_AMPERSAND_FOLLOWED_BY_VAR_OR_VARARG`; the parser only accepted the `NOT_FOLLOWED` form, so
+>   `$x = $a & $b;` left residual tokens → the whole statement fell back to `eval`.
+> - **Bare block `{ ... }` unsupported.** The `logic` layer emits such groups when tangling temporaries
+>   (`{$t = …; $_x = $t + 1;}`); they now compile as a statement group (bare blocks introduce no scope).
+> - **`__NAMESPACE__` unsupported.** `funcsplit`'s idempotency guard is
+>   `if(!function_exists(__NAMESPACE__ . "\f")){function f(){...}}`; the statement degraded to
+>   `EVAL_STMT`, which declared `f` **natively** — and a native function that receives a VM object
+>   (`stdClass` + META) dies with `Call to undefined method stdClass::m()`.
+> - Companion: `funcsplit` no longer extracts statements containing `->` / `?->` / `::`, for the same
+>   reason — extracted functions are native, VM classes are not real classes.
+>
+> Net effect: `tests/preset_e2e.php` (six presets × three fixtures × build / lint / run /
+> byte-compare) used to fail **at random** — the same code broke under a different salt. It is now
+> stable at 72/72 across repeated runs.
+>
+> **(3) `--help` printed its own template.** `obf_help()` returned a heredoc, and `{OBFUSCATOR_NAME}` /
+> `{OBFUSCATOR_VERSION}` are not interpolated in a heredoc — so the header literally read
+> `{OBFUSCATOR_NAME} v{OBFUSCATOR_VERSION}`. The same heredoc also interpolated the `$x=…` example in
+> the `--anti-ast` text, throwing an `Undefined variable $x` warning on every `--help`. It is now a
+> nowdoc with an explicit `strtr` substitution: the header shows the real name/version and the body
+> prints verbatim.
+>
+> Regression: `run_tests` 55/0, `v125` 54/0, `v126` 50/0, `v128` 24/0, `v129` 16/0, `v1210` 20/0,
+> `v1211` 19/0 (new), `preset_e2e` 72/0 × repeated runs, plus a 3 presets × 3 fixtures × 6 salts
+> byte-compare matrix (54/54). The `v1210` Logic-block check was also pinned to a fixed salt — it
+> compared two builds that each got a *random* salt, so the ratio drifted under its 80% threshold and
+> produced false alarms.
+
 ## v1.2.10 — Pruning repositioned as a perf layer, stronger Logic
 
 > Two changes plus two latent bug fixes.

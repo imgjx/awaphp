@@ -3,7 +3,7 @@
 [简体中文](../PERFORMANCE.md) · **English**
 
 > Goal: turn "how much does obfuscation cost" from a feeling into **reproducible numbers**, plus preset-selection advice.
-> The data below is mostly measured on **v1.1.1**, extended with **v1.1.3**'s JIT-friendly mode, **v1.1.4**'s in-VM anti-debug, **v1.1.5**'s advanced VM environment self-check, **v1.1.6**'s native state-machine layer and probe syntax self-check cost, **v1.1.7**'s `low` preset without the state machine and its adjusted anti-LLM comment density, **v1.1.8**'s VM symbol ciphertext cost (§4), and **v1.2.5**'s super instructions / constant folding / function splitting (§10).
+> The data below is mostly measured on **v1.1.1**, extended with **v1.1.3**'s JIT-friendly mode, **v1.1.4**'s in-VM anti-debug, **v1.1.5**'s advanced VM environment self-check, **v1.1.6**'s native state-machine layer and probe syntax self-check cost, **v1.1.7**'s `low` preset without the state machine and its adjusted anti-LLM comment density, **v1.1.8**'s VM symbol ciphertext cost (§4), **v1.2.5**'s super instructions / constant folding / function splitting (§10), and **v1.2.11**'s removal of super-instruction `NOP` padding (§15).
 > Local CLI, single-core container, PHP 8.5.12, OPcache off (the JIT comparison says otherwise). Reproduction commands are in §2.
 
 ---
@@ -262,7 +262,16 @@ php entry.php --input=app/controller --output=dist/controller --level=mid --salt
 | 8 | 1.94 s | 0.99× | ✓ |
 | 16 | 1.97 s | 1.01× | ✓ |
 
-**The gain is at the measurement-noise level (±2%)**: what is saved is one main-loop iteration per sub-instruction (array read + two XORs + jump-table lookup + `switch` dispatch, tens of ns), while the composite handler still performs each sub-instruction's operand decoding and stack access — and that is where the VM actually spends its time. So the point is not "speed" but **anti-analysis at zero cost**: unfamiliar opcodes appear and instruction-frequency statistics fail, while merging adds no runtime cost and no size (the `NOP` padding keeps segment lengths unchanged). Hence on by default (3). Build time only adds one n-gram pass and per-segment replacement — measured 0.27 s → 0.29 s on `mixed_advanced.php`.
+**The gain is at the measurement-noise level (±2%)**: what is saved is one main-loop iteration per sub-instruction (array read + two XORs + jump-table lookup + `switch` dispatch, tens of ns), while the composite handler still performs each sub-instruction's operand decoding and stack access — and that is where the VM actually spends its time. So the point is not "speed" but **anti-analysis at zero cost**: unfamiliar opcodes appear and instruction-frequency statistics fail, while merging adds no runtime cost. Hence on by default (3). Build time only adds one n-gram pass and per-segment replacement — measured 0.27 s → 0.29 s on `mixed_advanced.php`.
+
+> **v1.2.11: `NOP` padding removed — the absorbed instructions are now deleted outright.** From
+> v1.2.5 through v1.2.10 the merged slots were padded with `NOP`s, which kept segment lengths (and
+> therefore every jump offset and exception-table `pc` range) unchanged, at the cost of leaving a
+> dense run of `NOP`s in the bytecode — itself a conspicuous "this range was merged" fingerprint —
+> plus dead array elements after unpacking. v1.2.11 deletes the absorbed sub-instructions and
+> recomputes, at build time, every relative jump offset in the segment plus the exception table's
+> `[tryStart, tryEnd, handlerPc]` (jump targets and exception-table endpoints are marked
+> un-crossable, so a merge never spans one and every endpoint has an exact mapping). Measurements in §15.
 
 **Constant folding (`constfold`)** only affects **build time**: a pure literal expression is evaluated once with `eval`-free arithmetic and replaced by its literal. Artifacts get **smaller** (fewer tokens), build time increases by milliseconds, and runtime cost is **negative** (the computation no longer happens at all). On `min` this comes for free, which is why the preset includes it.
 
@@ -438,3 +447,83 @@ In the same batch, the `high` artifact produced **zero output and timed out (exi
   parameters (chunks 8 / probe 12 / fog 80 / isaSplit 2) and downstream shell counts, so high stays
   weaker than max. Historically bad salts (perfkill / v129high / abc123 / x) and multiple workloads are
   all byte-identical now; `tests/v129_features.php` covers this regression.
+
+---
+
+## 15. v1.2.11: super instructions without `NOP` padding (delete + recompute)
+
+**What changed.** Since v1.2.5 the merge padded absorbed slots with `NOP`s so that a segment's
+instruction count and indices stayed identical — no jump offsets or exception-table `pc` ranges had
+to be recomputed. Simple and low-risk, but it left one `NOP` per absorbed instruction in the
+bytecode. v1.2.11 deletes them and recomputes at build time:
+
+- every relative jump (`JMP` / `JZ` / `JNZ` / `DISPATCH`) offset in the segment;
+- `[tryStart, tryEnd, handlerPc]` for every exception-table entry.
+
+Jump targets and exception-table endpoints are collected first as un-crossable positions; any merge
+range that would span one is abandoned, so each endpoint always has an exact new index.
+
+**Conditions**: `tests/perf_workload_vm.php` (3.2 KB — arithmetic loops, functions, class methods,
+arrays, string hashing, recursion, closures, generators), `--salt=perf-bench-v1`, PHP 8.5.12 CLI,
+OPcache off, 5 runs per variant (median), artifact checksum must match native. Peak memory is
+`memory_get_peak_usage(false)` (exact); with `true` PHP rounds to allocation blocks, so both
+variants report the same 6 MB bucket and the difference is invisible.
+
+| Metric | v1.2.10 | v1.2.11 | Change |
+|---|---:|---:|---|
+| Total bytecode instructions (`high`) | 565 | 454 | **−111 (−19.6%)** |
+| Peak memory after unpack (`high`) | 3,961,416 B | 4,625,640 B | +664,224 B (+16.8%) |
+| Peak memory after unpack (`max`) | 4,733,264 B | 5,431,272 B | +698,008 B (+14.7%) |
+| Pure compute time (`high`) | 16.88 ms | 17.17 ms | +0.29 ms (+1.7%) |
+| Cold start (`high`) | 63.3 ms | 62.7 ms | within noise |
+| Artifact size (`high`, gz + chunk cipher) | 74,243 B | 74,375 B | +132 B (+0.18%) |
+| Artifact size (`max`) | 86,047 B | 87,407 B | +1,360 B (+1.58%) |
+
+**How to read it** (two changes in this release pull in opposite directions — don't bill the
+memory to `NOP`):
+
+- **The 19.6% instruction drop is purely the `NOP` removal.** No padding slots, no dense `NOP`
+  runs — the "merged here" fingerprint that static analysis could spot is gone.
+- **The +15–17% memory and +1.7% time come from the VM fallback fixes shipped in the same version**
+  (§15.1), not from `NOP`. Before the fix those statements degraded to `EVAL_STMT`: one string
+  constant handed to native `eval`. After the fix they are really compiled into bytecode — dozens of
+  opcode arrays — and PHP arrays cost far more than a string. So unpacked resident memory grows and
+  interpretation is a touch slower than native `eval`.
+- In other words, **removing `NOP` is still a net win** (fewer instructions, cleaner bytecode),
+  while "compiling more statements into the VM" spends memory and 1–2% runtime to buy **semantic
+  correctness** — those statements used to silently mis-handle `global`, object method calls and
+  bitwise operators, or crash outright (§15.1).
+- **gz size grows 0.2%–1.6%**: `NOP` is a two-byte, highly repetitive pattern (`[199][0]`) that gzip
+  nearly eliminates; removing it raises the entropy of neighbouring bytes. If distribution size is
+  critical, `--no-vm-super-isa` disables the layer (and loses the super-instruction speed-up and
+  opcode-frequency resistance with it).
+
+### 15.1 Four VM semantic bugs fixed in the same release
+
+All of them existed in **v1.2.10 and earlier** and hit `high` / `max` / `ultra` with the symptom
+"output silently differs from native":
+
+| Bug | Trigger | Fix |
+|---|---|---|
+| Top-level variables in the opaque payload never reach `$GLOBALS` | when `shell:vm` cannot compile the source directly (`case(expression)` labels, namespace blocks, …) it runs the whole file as a payload via `eval`; a function using `global $x` inside it only sees `null` | before `PHPRUN`, scan the payload for `global $a, $b;` and `$GLOBALS['k']` and pre-bind those names as **references** to `$GLOBALS` |
+| Bitwise `&` fails to compile | `$x = $a & $b;` — only `T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG` was accepted, but a variable right operand tokenizes differently | accept all three `&` forms |
+| Bare block statement `{ ... }` unsupported | the `logic` layer emits such groups when tangling temporaries | compile it as a statement group (PHP bare blocks introduce no scope) |
+| `__NAMESPACE__` unsupported | `funcsplit`'s idempotency guard `if(!function_exists(__NAMESPACE__ . "\f")){...}` | fold it at build time to the current namespace (empty string in the global namespace) |
+
+Plus one companion change: `funcsplit` no longer extracts statements containing `->`, `?->` or `::`.
+Extracted functions are **native** PHP functions, while under VM presets user classes are
+`stdClass + META` proxies at runtime — moving such a statement into a native function turns
+`$obj->m()` into `Call to undefined method stdClass::m()`.
+
+**Why the memory is worth it**: `tests/preset_e2e.php` (six presets × three fixtures × build / lint /
+run / byte-compare) used to fail **at random** — the same code broke with a different salt, in
+`high`, `max` or `ultra`. After the fixes it has been 72/72 across repeated runs.
+
+**Correctness coverage**: `tests/v1211_features.php` (19 checks) — white-box assertions (segment
+shrinks, no `NOP` left, a jump target at a group head lands on the super instruction, a jump target
+inside a group prevents that group from merging, exception table maps exactly to `[0, 3, 5]`) plus
+real artifacts (loops / `goto` / nested `try-catch-finally` / closures / class methods / generators,
+`high` + `max` × 3 salts, byte-identical to native) plus targeted cases for the four bugs in
+§15.1 (`global` + in-block function + bitwise `&` + bare block, `high`/`max`/`ultra` × the salts
+a3/a5 that used to always fail).
+

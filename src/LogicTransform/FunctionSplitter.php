@@ -548,6 +548,15 @@ final class FunctionSplitter
                 if (in_array($id, self::HARD_FORBID, true)) {
                     return null;
                 }
+                // 对象/静态成员访问（-> / ?-> / ::）：抽出来的函数是【原生 PHP 函数】，
+                // 而带 VM 的档位里用户类运行期是 stdClass + META 代理（方法不在真实
+                // 类上）。语句一旦被搬进原生函数，`$obj->m()` 就是
+                // "Call to undefined method stdClass::m()"，`C::m()` 则是 Class not found。
+                // 这类语句留在原地由 VM 编译才安全（v1.2.10 及以前踩过）。
+                if ($id === T_OBJECT_OPERATOR || $id === T_DOUBLE_COLON
+                    || (defined('T_NULLSAFE_OBJECT_OPERATOR') && $id === T_NULLSAFE_OBJECT_OPERATOR)) {
+                    return null;
+                }
                 if ($id === T_STRING && $i + 1 < $e
                     && Parser::text($tokens[Parser::nextSignificant($tokens, $i)]) === ':') {
                     return null; // goto 标签
