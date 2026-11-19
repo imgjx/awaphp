@@ -94,13 +94,13 @@ final class IdentityExpr
         $r = $v % 40;
         $parts = [];
         if ($b > 0) {
-            $parts[] = "strlen(sha1('" . $this->randStr(7) . "'))*" . $b;
+            $parts[] = $this->maskInt("strlen(sha1('" . $this->randStr(7) . "'))*" . $b);
         }
         if ($r > 0) {
             $a = intdiv($r, 32);
             $rr = $r % 32;
             if ($a > 0) {
-                $parts[] = "strlen(md5('" . $this->randStr(7) . "'))*" . $a;
+                $parts[] = $this->maskInt("strlen(md5('" . $this->randStr(7) . "'))*" . $a);
             }
             if ($rr > 0) {
                 $parts[] = "strlen('" . $this->randStr($rr) . "')";
@@ -109,11 +109,75 @@ final class IdentityExpr
         if ($parts === []) {
             $parts[] = '(' . $v . ')';
         }
-        // 结尾再叠加一个恒 0 的随机扰动项，打乱「几项相加」的固定形状（如 strlen('')*0）。
+        // 结尾再叠加一个恒 0 的随机扰动项，打乱「几项相加」的固定形状
         if ($v > 0) {
-            $parts[] = "(strlen('" . $this->randStr(3) . "')*0)";
+            $parts[] = $this->zeroNoise();
         }
         return '(' . implode(' + ', $parts) . ')';
+    }
+
+    /**
+     * v1.2.10：给已算出的整数子项套一层「零成本恒等形态」，打散固定的乘加形状，
+     * 让同一段代码里的恒等式不再长得一模一样（静态模式匹配失效）。
+     * 全部是位运算/加法恒等——运行期等效一条 CPU 指令，且不改变整数类型与值。
+     */
+    private function maskInt(string $e): string
+    {
+        $k = $this->ctr % 5;
+        $this->ctr++;
+        if ($k === 1) {
+            return '((' . $e . ')^0)';
+        }
+        if ($k === 2) {
+            return '((' . $e . ')|0)';
+        }
+        if ($k === 3) {
+            return '(0+(' . $e . '))';
+        }
+        if ($k === 4) {
+            return '((' . $e . ')-0)';
+        }
+        return '(' . $e . ')';
+    }
+
+    /**
+     * v1.2.10：恒 0 噪声项，形态轮换（值恒为 0，运行期零/极低成本）。
+     *
+     * 其中 `(in_array(1,[])?0:0)` 落在 **ConstEval 白名单之外的形态**（白名单只认纯函数名，
+     * 没有 in_array、不认数组字面量、也不支持三元），因此像剪枝层那样"遍历 token 求值再折回
+     * 字面量"的工具无法整条求值，也就折不掉 Logic 注入的恒等式——这是"Logic 产物难以被
+     * 解析加速"的纵深防线之一。注意形态必须只由 VM 编译器认识的 token 组成，否则带 VM 的
+     * 档位会把整段代码打到"不透明载荷"分支（曾经的 `PHP_INT_SIZE-PHP_INT_SIZE` 就是这样
+     * 踩雷的：裸常量名不被 VM 建模，实测编译出坏跳转）。
+     */
+    private function zeroNoise(): string
+    {
+        $k = $this->ctr % 6;
+        $this->ctr++;
+        if ($k === 1) {
+            return '(strlen(\'' . $this->randStr(3) . '\')*0)';
+        }
+        if ($k === 2) {
+            // 恒 0，且静态求值器无法整条求值 —— ConstEval 的白名单里没有 in_array，
+            // 也不支持三元/数组字面量，于是"把恒等式折回字面量"的工具在这里卡住，
+            // Logic 注入的式子得以保留。
+            // 注：不能用 `PHP_INT_SIZE-PHP_INT_SIZE` —— 那是裸常量名，VM 编译器不认识，
+            // 带 VM 的档位会因此把整段代码打到"不透明载荷"分支，实测会编译出坏跳转。
+            return '(in_array(1,[])?0:0)';
+        }
+        if ($k === 3) {
+            // 必须同一个字符相减才恒为 0——先取一次，别调用两次 randStr
+            $ch = $this->randStr(1);
+            return "(ord('" . $ch . "')-ord('" . $ch . "'))";
+        }
+        if ($k === 4) {
+            $q = (string) ($this->ctr % 97);
+            return '((' . $q . ')^(' . $q . '))';
+        }
+        if ($k === 5) {
+            return "(0*strlen('" . $this->randStr(4) . "'))";
+        }
+        return '(0)';
     }
 
     /**
@@ -279,10 +343,17 @@ final class IdentityExpr
         return array_values(array_filter($out, static fn ($x) => $x !== ''));
     }
 
-    /** 单段编码：base64 / hex2bin / str_rot13；wild 档再加入 strrev / 双层 base64 / 组合编码 */
+    /**
+     * 单段编码：base64 / hex2bin / str_rot13 / strrev / strrev+base64 双层；
+     * wild 档再追加双层 base64 与组合编码（rot13 套 base64）。
+     *
+     * v1.2.10：把 strrev 与「strrev+base64」从 wild 档提升到全档——非 wild 的编码库
+     * 从 3 种变 5 种，同一文件里连续字符串不再出现"清一色 base64"的可识别特征，
+     * 且全部仍是 PHP 原生函数、解码成本与原来同量级（不加重运行期负担）。
+     */
     private function encodeSeg(string $seg): string
     {
-        $k = $this->ctr % ($this->wild ? 6 : 3);
+        $k = $this->ctr % ($this->wild ? 6 : 5);
         $this->ctr++;
         if ($k === 1) {
             return "hex2bin('" . bin2hex($seg) . "')";
@@ -292,14 +363,19 @@ final class IdentityExpr
             // 运行期由 PHP 单引号解析还原，再 str_rot13 还原原文。
             return "str_rot13('" . addcslashes(str_rot13($seg), "\\'") . "')";
         }
-        if ($k === 3 && $this->wild) {
-            // strrev 反转：把段的字节序倒过来存，运行期再反转还原。
+        if ($k === 3) {
+            // strrev 反转：把段的字节序倒过来存，运行期再反转还原（两次反转 = 恒等）。
             return "strrev('" . addcslashes(strrev($seg), "\\'") . "')";
         }
         if ($k === 4 && $this->wild) {
             // 双层 base64：base64_encode 两次，运行期 base64_decode 两次。
             $dbl = base64_encode(base64_encode($seg));
             return "base64_decode(base64_decode('" . $dbl . "'))";
+        }
+        if ($k === 4) {
+            // v1.2.10 全档新增：先反转再 base64，运行期先解码再反转。
+            // 密文不是合法的"原文 base64"，静态解码工具直接解出乱码。
+            return "strrev(base64_decode('" . base64_encode(strrev($seg)) . "'))";
         }
         if ($k === 5 && $this->wild) {
             // 组合编码：先 rot13 再 base64，运行期先 base64_decode 再 rot13。

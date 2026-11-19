@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.9');
+define('OBFUSCATOR_VERSION', '1.2.10');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -361,8 +361,11 @@ function obf_help(): string
       --copyright=     版权注释注入文本
       --no-banner      关闭文件头"混淆引擎名+版本号"注入
       --no-loop-fold   v1.2.8：关闭构建期纯计算循环折叠（默认开，零 eval 符号执行，20 万次循环被构建期算完）
-      --aggressive-prune  v1.2.8：激进恒等式压缩 + 死分支剪枝（默认关），置于 Logic 之前只压缩用户代码、
-                       不折叠 Logic 注入的恒等式；或用 --level=aggressive 一键开启（ultra 全部保护 + 本层）
+      --aggressive-prune  v1.2.10：激进恒等式压缩 + 死分支剪枝（性能层，加速用户自己的脚本）。
+                        【硬规则】永远排在 logic 之前——折叠的是用户自己写的恒等式/死分支，
+                        logic 随后注入的恒等式对它不可见，因此不会被它解析加速。
+                        已内置两道兜底：层序被写反则整层空转 + Logic 积木指纹检测。
+                        推荐直接用 --level=aggressive（预设已内置）
 
 高级（第三阶段）
       --cfg=          控制流混淆：low|medium|high

@@ -19,8 +19,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；`.php` 文件需 `return` 一个数组，可直接用 PHP 表达式与注释，便于维护） |
-| `--level=` | 等级预设：`min\|low\|mid\|high\|max\|ultra`（一键切换完整方案）。强度递进：**`min` = 低混淆（只做词法级替换，无任何壳，运行时零开销）→ `low` = 大部分混淆 → `mid` = 几乎所有混淆**（这三档都不含 VM），`high` / `max` / `ultra` 自 `high` 起启用 VM。六档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
-| `-min -low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
+| `--level=` | 等级预设：`min\|low\|mid\|high\|max\|ultra\|aggressive`（一键切换完整方案）。强度递进：**`min` = 低混淆（只做词法级替换，无任何壳，运行时零开销）→ `low` = 大部分混淆 → `mid` = 几乎所有混淆**（这三档都不含 VM），`high` / `max` / `ultra` / `aggressive` 启用 VM。各档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
+| `-min -low -mid -high -max -ultra -aggressive` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |
 
@@ -191,7 +191,7 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | 开关 / 配置 | 说明 |
 | --- | --- |
 | `--no-loop-fold` | **关闭构建期纯计算循环折叠**（默认开）。`loop_fold` 由 `ConstEval`（token 级符号执行、调用 PHP 原生运算符，**零 eval**）把字面量边界、纯局部算术的确定性循环（典型 20 万次 `for`）在构建期算完并替换为结果字面量，运行时零迭代。用真实 eval 求值用户上传 token = 免费 webshell 注入器，该注入面已移除。20 万次循环实测约 12 ms → 约 8.5 ms（比原生更快），输出逐字节一致。严格白名单 + 迭代上限 + 双校验，任何不确定循环原样保留 |
-| `--aggressive-prune` | **激进恒等式压缩 + 死分支剪枝**（默认关），**前置于 Logic 层**：只折叠用户自己的恒等式/死分支，绝不折叠混淆器注入的恒等式（不给攻击者送工具）。仅性能敏感场景显式开启 |
+| `--aggressive-prune` | **激进恒等式压缩 + 死分支剪枝**（性能层，`aggressive` 档默认开）：折叠的是**用户自己写的**恒等式与死分支，让产物运行期不再重算，产物更小。**硬钉在 logic 之前**——预设里写反也会被重排，因为排在 Logic 之后的剪枝会把混淆器自己注入的恒等式折回字面量（保护自残）。两道兜底：管线报告本层跑在 `logic` 之后即整层空转；token 流已带 Logic 积木指纹（成规模的 sha1+md5、或 base64_decode/hex2bin/str_rot13 组合）时也整层空转 |
 | `--level=aggressive` | **aggressive 性能优先档**：ultra 全部保护 + `aggressive_prune` 层，端到端逐字节一致 |
 | `--no-vm-runtime-logic` | **关闭 VM 解释器 Logic 混淆**（默认开）。开启时解释器整数字面量改成编译期位运算恒等式 `N → ((Ka) ^ (Kb))`，opcode 数字从解释器源码消失，零运行成本；关闭退回 v1.2.6 十六进制形态。`break`/`continue` 层级操作数自动跳过 |
 | `struct_poison rounds` | StructPoison 的 KDF 轮数保持原算法（默认 3、ultra/aggressive 5），本版撤销早前降级 |

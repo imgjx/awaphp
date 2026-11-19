@@ -1,29 +1,30 @@
 <?php
 /**
- * 激进恒等式压缩 + 死分支剪枝（AggressivePruner，v1.2.8）
+ * 激进恒等式压缩 + 死分支剪枝（AggressivePruner，v1.2.8 引入，v1.2.10 重新定位）
  *
- * 这是【可选的性能优先层】，默认关闭（见 config.default.php 的 aggressive_prune）。
- * 它把为反 AST 注入的恒等式在产物里"动态压缩"回裸值/直达分支，代价是削弱反 AST
- * 强度——因此绝不进入 min~ultra 任何既有档，只在 --aggressive-prune 或
- * --level=aggressive 时启用。执行位置：logic / anti_ast 注入之后、var 改名之前。
+ * 【定位】这是一个**性能层**：把用户自己写的恒等式（`strlen(md5('x'))`、`$x^0`、
+ * `($a|0)` 这类构建期可求值的纯字面量表达式）在产物里折叠回裸值，把用户自己写的
+ * 恒真/恒假分支剪成直达路径——目标是让用户脚本跑得更快，产物更小。
  *
- * 两个 pass：
- *   A 恒等式折叠：把由 IdentityExpr 生成、且参数全为字面量的纯函数调用
- *     （strlen(md5('x')) / base64_decode / hex2bin / str_rot13 / strrev / ord /
- *     hexdec / bindec / abs / crc32 / str_repeat / substr / strtoupper...）用【ConstEval
- *     静态符号执行】求值并替换为结果字面量（v1.2.8 彻底弃用 eval，杜绝在线服务器
- *     webshell 注入）；纯字面量算术再复用 ConstFolder。内层先行、
- *     多遍迭代，直到无变化。
- *   B 死分支剪枝：把恒真/恒假条件（$x===$x、$x!==$x、fold 后为字面量的比较/逻辑
- *     表达式）判定为 true/false，剪掉不可达分支；死支含 function/class/标签/goto
- *     等编译期声明时保留整段（避免破坏声明）。
+ * 【必须排在 logic 之前】它只看用户原始代码。Logic 层之后注入的恒等式对它完全不可见，
+ * 因此"Logic 的成果不会被它解析加速"是**结构保证**，不是靠约定。为防自定义 config
+ * 把顺序写反，运行期还有两道兜底：
+ *   1. Obfuscator 传入 setOrderSafe(false) 时整层空转（分层管线里 logic 已跑过即传 false）；
+ *   2. 内容指纹：token 流里已出现 Logic 的积木特征（sha1/md5 大量成对、base64_decode +
+ *      hex2bin + str_rot13 组合）时，视为已被 Logic 处理，整层空转。
  *
- * 安全（绝不改炸）：
+ * 【两个 pass】
+ *   A 恒等式折叠：把参数全为字面量的纯函数调用用【ConstEval 静态符号执行】求值并替换为
+ *     结果字面量（v1.2.8 起彻底零 eval，杜绝在线混淆服务器上的 webshell 注入面）；
+ *     纯字面量算术再复用 ConstFolder。内层先行、多遍迭代，直到无变化。
+ *   B 死分支剪枝：把可静态判定的恒真/恒假条件剪掉不可达分支；死支含 function/class/
+ *     标签/goto 等编译期声明时保留整段（避免破坏声明）。
+ *
+ * 【安全（绝不改炸）】
  *   - 只处理"参数全为字面量或已折叠字面量"的纯函数，碰变量/成员访问/赋值一律跳过；
  *   - 每处求值走 ConstEval（白名单 token + PHP 原生运算符，零 eval），同一表达式
  *     求值两次严格比对（=== 含类型），无法求值或不一致即整处原样保留；
- *   - 只回写标量字面量（int/float/string），数组/对象/资源一律放弃；
- *   - 死支剪枝前扫描声明类 token，含声明则整段保留。
+ *   - 只回写标量字面量（int/float/string），数组/对象/资源一律放弃。
  */
 
 declare(strict_types=1);
@@ -36,6 +37,11 @@ final class AggressivePruner
     private Logger $logger;
     private int $folded = 0;
     private int $pruned = 0;
+    /**
+     * v1.2.10：层序是否安全（本层是否确实排在 logic 之前）。
+     * false 时整层空转——宁可少加速，也不把 Logic 注入的恒等式折掉。
+     */
+    private bool $orderSafe = true;
 
     /**
      * 允许在构建期求值的纯函数（无副作用、结果只由参数决定）。
@@ -51,9 +57,21 @@ final class AggressivePruner
         'trim' => true, 'ltrim' => true, 'rtrim' => true, 'str_pad' => true,
     ];
 
+    /** Logic 层注入的积木函数名（用于"已被 Logic 处理过"的内容指纹） */
+    private const LOGIC_FNS = [
+        'sha1' => true, 'md5' => true, 'base64_decode' => true,
+        'hex2bin' => true, 'str_rot13' => true,
+    ];
+
     public function __construct(Logger $logger)
     {
         $this->logger = $logger;
+    }
+
+    /** v1.2.10：由调用方告知层序是否安全（本层是否在 logic 之前） */
+    public function setOrderSafe(bool $on): void
+    {
+        $this->orderSafe = $on;
     }
 
     /**
@@ -65,6 +83,18 @@ final class AggressivePruner
         $this->folded = 0;
         $this->pruned = 0;
         if (!$cfg->get('aggressive_prune', false)) {
+            return $tokens;
+        }
+        // 兜底 1：层序不安全（本层被排在 logic 之后）→ 整层空转。
+        // 这种情况下继续折叠会把 Logic 注入的恒等式全折回字面量，等于白做 Logic。
+        if (!$this->orderSafe) {
+            $this->logger->debug('aggressive-prune: 跳过（本层必须在 logic 之前，否则会折叠 Logic 注入的恒等式）');
+            return $tokens;
+        }
+        // 兜底 2：内容指纹——token 流里已布满 Logic 的积木组合，视为已被 Logic 处理过。
+        // 阈值取 3，避免用户自己代码里恰好有一两处 md5/sha1 时被误判。
+        if ($this->looksLikeLogicOutput($tokens)) {
+            $this->logger->debug('aggressive-prune: 跳过（检测到 Logic 层积木特征，拒绝解析其注入的恒等式）');
             return $tokens;
         }
 
@@ -99,6 +129,41 @@ final class AggressivePruner
             ));
         }
         return $tokens;
+    }
+
+    /**
+     * 内容指纹：判断 token 流是否已经含有 Logic 层注入的积木组合。
+     * Logic 的整数积木固定同时用 sha1 与 md5（`strlen(sha1(...))*n + strlen(md5(...))*m`），
+     * 字符串积木用 base64_decode / hex2bin / str_rot13 的组合，且会**大量**出现。
+     * 单份用户代码里三者齐备且数量可观的情形极罕见，命中即按"已被 Logic 处理"处理。
+     *
+     * @param array<int,mixed> $tokens
+     */
+    private function looksLikeLogicOutput(array $tokens): bool
+    {
+        $cnt = ['sha1' => 0, 'md5' => 0, 'base64_decode' => 0, 'hex2bin' => 0, 'str_rot13' => 0];
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!Parser::isToken($t) || $t[0] !== T_STRING) {
+                continue;
+            }
+            $name = (string) $t[1];
+            if (!isset(self::LOGIC_FNS[$name])) {
+                continue;
+            }
+            $open = $this->nextSignificant($tokens, $i + 1);
+            if ($open !== null && is_string($tokens[$open]) && $tokens[$open] === '(') {
+                $cnt[$name]++;
+            }
+        }
+        if ($cnt['sha1'] >= 3 && $cnt['md5'] >= 3) {
+            return true;
+        }
+        $strMix = ($cnt['base64_decode'] > 0 ? 1 : 0)
+            + ($cnt['hex2bin'] > 0 ? 1 : 0)
+            + ($cnt['str_rot13'] > 0 ? 1 : 0);
+        return $strMix >= 2 && ($cnt['base64_decode'] + $cnt['hex2bin'] + $cnt['str_rot13']) >= 3;
     }
 
     // ========================== Pass A：纯函数调用折叠 ==========================

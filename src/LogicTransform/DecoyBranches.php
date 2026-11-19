@@ -227,7 +227,7 @@ final class DecoyBranches
                 return null;
             }
         }
-        $expr = trim($this->slice($tokens, $exprStart, $e - 1));
+        $expr = $this->trimExpr($this->slice($tokens, $exprStart, $e - 1));
         if ($expr === '' || ($vars === [] && $strs === [])) {
             return null; // 没有任何可同理替换的元素，不值得打散
         }
@@ -239,6 +239,30 @@ final class DecoyBranches
             'strs' => $strs,
             'target' => $head === 'assign' ? Parser::text($tokens[$k]) : '',
         ];
+    }
+
+    /**
+     * 表达式切片收尾：常规 trim，但若末尾落在 `//` / `#` 行注释里，必须补回一个换行。
+     *
+     * 背景（v1.2.10 实测 awa / max 档在特定盐下必现）：互斥注释层会把 `// …` 注释投到
+     * **语句内部**（如 echo 的参数之间）。表达式切片后 trim() 会把注释的结尾换行一并削掉，
+     * 调用方随后追加的 `;` / `}` 就落进了注释里 —— 产物变成 `…// 注释;}else{…`，
+     * 整个分支被注释吞掉，运行期 Parse error（`php -l` 只看外层解码器，发现不了）。
+     * 在表达式之后补换行永远合法（纯空白），因此这里宁可多补一个。
+     */
+    private function trimExpr(string $expr): string
+    {
+        $expr = trim($expr);
+        if ($expr === '') {
+            return $expr;
+        }
+        $nl = strrpos($expr, "\n");
+        $lastLine = $nl === false ? $expr : substr($expr, $nl + 1);
+        // 末行含行注释起始标记（`//` 或 `#`）→ 注释会吞到行尾，保留换行
+        if (preg_match('~//~', $lastLine) === 1 || preg_match('~(^|\s)#~', $lastLine) === 1) {
+            return $expr . "\n";
+        }
+        return $expr;
     }
 
     /** 同理替换：变量→新变量，字符串→新字符串变量；两者都在真分支内先赋值。 */
@@ -277,8 +301,10 @@ final class DecoyBranches
     private function decoyBranch(array $info, array $names, int $variant): string
     {
         $expr = $info['expr'];
+        // v1.2.10：三套诱饵各用不同后缀，避免 variant 1/3 撞名（`&1` 都会得到 'q'）
+        $sfx = $variant === 2 ? 'z' : ($variant === 3 ? 'w' : 'q');
         foreach ($info['vars'] as $i => $v) {
-            $fake = ($names['v' . ($i + 1)] ?? $v) . (($variant & 1) ? 'q' : 'z');
+            $fake = ($names['v' . ($i + 1)] ?? $v) . $sfx;
             $expr = preg_replace('/\Q' . $v . '\E\b/', $fake, $expr) ?? $expr;
         }
         foreach ($info['strs'] as $lit) {
@@ -365,6 +391,18 @@ final class DecoyBranches
             // 5) debug 反调试变体（恒真结构与运行环境无关）：extension_loaded 的形态，
             //    但套一层 is_bool——无论是否装了 xdebug，extension_loaded 恒返回 bool。
             ['(int)is_bool(extension_loaded(\'xdebug\'))', $d . '===1', $d . '===0'],
+            // ————————————————————————————————————————————————————————————————
+            // v1.2.10：再扩一批「看着像类型/平台校验」的恒真式。全部由 PHP 语言语义
+            // 保证为恒真（括号内表达式本身恒真），与用户数据、运行机环境都无关。
+            // ————————————————————————————————————————————————————————————————
+            // 6) 强制字符串化后必然是 string —— 静态看像类型断言，实则恒真。
+            ['(int)is_string((string)(' . $probeVar . ' ?? \'\'))', $d . '===1', $d . '===0'],
+            // 7) 指针宽度必然 > 0（4 或 8）—— 平台自检外观。
+            ['(int)(PHP_INT_SIZE>0)', $d . '===1', $d . '===0'],
+            // 8) 字符串长度必然 >= 0 —— 边界自检外观。
+            ['(int)(strlen((string)(' . $probeVar . ' ?? \'\'))>=0)', $d . '===1', $d . '===0'],
+            // 9) 指针宽度必属 {4,8} —— 架构白名单外观。
+            ['(int)in_array(PHP_INT_SIZE,[4,8],true)', $d . '===1', $d . '===0'],
         ];
         $pick = $forms[$rng->nextInt(0, count($forms) - 1)];
         $pre = $safePre . $d . '=' . $pick[0] . ';';
@@ -389,7 +427,21 @@ final class DecoyBranches
         // 结构 B：真分支落在 else，前面两个 elseif 都是恒假条件。
         // 与结构 A 组合后，静态上既有"真条件在前"也有"真条件在最后"的多分支形态；
         // 全程只有 if —— 不使用 switch，避免与 token 层的 case 标签改写互相破坏。
-        if ($rng->nextInt(0, 1) === 1) {
+        //
+        // v1.2.10：再加结构 C（四分支）——真分支埋在最后一个 else，前面三个分支
+        // 分别是"恒假 / 另一恒假 / 恒假派生"，并用第三套形近变量/字符串做诱饵。
+        // 作用：单条语句的分支数从 3 提到 4，静态上"最后那个 else 才是真逻辑"不再
+        // 是可靠的定位经验；三份诱饵互为参照，读反一处就会推出错误的等价式。
+        $shape = $rng->nextInt(0, 2);
+        if ($shape === 2) {
+            $d3 = $this->decoyBranch($info, $names, 3);
+            $f2 = $this->otherFalse($rng, $names['p'], $names);
+            $f3 = $this->otherFalse($rng, $names['p'], $names);
+            return '{' . $pre . 'if(' . $cond['false'] . '){' . $d1 . '}'
+                . 'elseif(' . $f2 . '){' . $d2 . '}'
+                . 'elseif(' . $f3 . '){' . $d3 . '}else{' . $real . '}}';
+        }
+        if ($shape === 1) {
             $f2 = $this->otherFalse($rng, $names['p'], $names);
             return '{' . $pre . 'if(' . $cond['false'] . '){' . $d1 . '}'
                 . 'elseif(' . $f2 . '){' . $d2 . '}else{' . $real . '}}';
@@ -398,18 +450,32 @@ final class DecoyBranches
             . 'elseif(' . $cond['false'] . '){' . $d1 . '}else{' . $d2 . '}}';
     }
 
-    /** 从另一套恒假模板取条件，让结构 B 的两个 elseif 条件不重复。 */
+    /**
+     * 另一个「结构上恒假」的条件（用于多分支诱饵的 elseif，保证相邻分支条件不重复）。
+     *
+     * v1.2.10 修正：旧池子里有 `$d===2` / `$d<0` 这类依赖 $d 具体取值的判据，而 $d 是
+     * 用户数据的函数（`(int)($userVar)` 完全可能等于 -2 或 2），一旦偶然成立就会走进
+     * 诱饵分支、输出假值 → 破坏语义。这里改成**只依赖类型/结构**的恒假式：
+     * 对 $d 的任何可能取值（int / float / string / array）都恒为 false。
+     */
     private function otherFalse(ConfrontRng $rng, string $probeVar, array $names): string
     {
         $d = $names['d'];
         $pool = [
-            'strlen((string)(' . $probeVar . ' ?? \'\'))===-1',
-            $d . '<0',
+            // 空集成员测试：任何值都不在空数组里 → 恒假，且与值无关
+            'in_array(' . $d . ', [], true)',
+            // $d 由派生式产生，必为标量/数组，绝不是 null
+            $d . '===null',
+            'is_null(' . $d . ')',
+            // 计数不可能为负
             'count((array)(' . $probeVar . ' ?? null))<0',
-            $d . '===false',
-            $d . '===2',
-            'in_array(' . $d . ',[],true)',
-            'is_array(trim((string)(' . $probeVar . ' ?? \'\')))',
+            // 长度不可能为 -1
+            'strlen((string)(' . $probeVar . ' ?? \'\'))===-1',
+            'strlen((string)(' . $probeVar . ' ?? \'\'))<0',
+            // 先要求 $d 是数组、再要求计数为负 → 短路恒假
+            '(is_array(' . $d . ')&&count(' . $d . ')<0)',
+            // 短路结构：前半恒假
+            '(strlen((string)(' . $probeVar . ' ?? \'\'))<0&&is_scalar(' . $d . '))',
         ];
         return $pool[$rng->nextInt(0, count($pool) - 1)];
     }

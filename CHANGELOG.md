@@ -1,5 +1,60 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.10 — Pruning repositioned as a perf layer, stronger Logic
+
+> Two changes plus two latent bug fixes.
+>
+> **(1) `aggressive_prune` is now a *performance* layer, not a Logic safeguard.** Its job is to make the
+> user's own script faster: constant identities and dead branches written *by the user* are folded away at
+> build time so the artifact does not recompute them at runtime. It is now **hard-pinned before `logic`**
+> — whatever the preset says, the layer is stripped out and re-inserted ahead of `logic`, so everything
+> Logic injects afterwards is invisible to it. "Logic cannot be parsed/accelerated by the pruner" is
+> therefore a *structural* guarantee, backed by two runtime fallbacks: the layer goes idle when the
+> pipeline reports it ran after `logic`, and it goes idle when the token stream already carries Logic's
+> building-block fingerprint (`sha1`+`md5` in bulk, or a `base64_decode`/`hex2bin`/`str_rot13` mix).
+>
+> **(2) Logic strengthened without adding runtime cost.**
+> - Integer identities: each computed sub-term now gets a random zero-cost mask (`^0`, `|0`, `0+(…)`, `-0`),
+>   and the trailing zero-noise term rotates through 6 shapes instead of always `strlen('…')*0`.
+>   One of them is `(in_array(1,[])?0:0)` — **outside a static token evaluator's whitelist**, so a
+>   "fold everything back to literals" tool cannot evaluate the whole identity (defence in depth for the
+>   point above), yet still built only from tokens the VM compiler understands. (A first attempt used
+>   `PHP_INT_SIZE-PHP_INT_SIZE`, which is fold-free at runtime but is a *bare constant name* the VM
+>   compiler does not model — it pushed whole files down the opaque-payload path and produced broken
+>   jumps, so it was replaced.)
+> - String identities: the per-segment encoder library grows from 3 to 5 (`strrev`, `strrev∘base64_decode`
+>   promoted out of the `wild` tier), so consecutive strings no longer look like a uniform base64 blob.
+> - Decoy predicates: 4 more environment-shaped constant-true forms (`is_string((string)…)`,
+>   `PHP_INT_SIZE>0`, `strlen(...)>=0`, `in_array(PHP_INT_SIZE,[4,8],true)`).
+> - Decoy branches: a **four-branch** shape joins the existing two (real branch buried in the final `else`
+>   behind three decoys, each using a distinct look-alike variable suffix).
+> - Fixed a latent semantic hazard: `otherFalse()` used to emit `$d===2` / `$d<0`, where `$d` is a function
+>   of *user data* and can legitimately equal `2` or be negative — a decoy branch could then execute and
+>   print fake values. All candidates are now structurally false for every possible `$d`
+>   (`in_array($d,[],true)`, `$d===null`, `count(...)<0`, …).
+>
+> **Fixes.**
+> - `DecoyBranches` dropped the trailing newline of a `//` line comment when it sliced an expression for
+>   the decoy rewrite. The mutual-comment layer legitimately plants `// …` notes *inside* statements
+>   (e.g. between `echo` arguments); after `trim()` the `;`/`}` appended by the rewrite landed inside the
+>   comment, swallowing whole branches — the artifact died with `syntax error, unexpected …` only at
+>   runtime, several `eval()` levels deep (invisible to `php -l`). The slice now keeps a terminating
+>   newline whenever its last line carries a line comment.
+> - `AntiHookEval` with `strict=false` emitted `if(...){function f(){return false;}` — one closing
+>   brace short, producing `Unclosed '{'` parse errors. Every shipped preset uses `strict=true`, so the
+>   bug had never surfaced; any custom config that sets `strict=false` got an unparsable artifact.
+>
+> Regression: `run_tests` 55/0, `v125` 54/0, `v126` 50/0, `v128` 24/0, `v129` 16/0, `v1210` 20/0.
+>
+> **Known issue (pre-existing, not introduced here).** `ultra` / `aggressive` produce an empty artifact
+> that spins at 100% CPU for some salt values (e.g. `abc123`, `smoke`). Confirmed identical on the
+> v1.2.9 baseline, i.e. it predates this release. Root cause is in the VM's `stateMachine` /
+> `flatten` bytecode segment rewrite: under certain salts the rewritten segment re-enters its own
+> dispatch loop (PC oscillating between the dispatch head and a tail handler) instead of terminating.
+> Workaround: pick another salt — `x`, `v129high`, `perfkill`, `zz9`, `q7` are all verified clean.
+
+
+
 ## v1.2.9 — Environment-shaped decoy predicates + high-tier VM dead-loop fix
 
 > Two focused changes: (1) the decoy-branch condition library gains a new family of **environment-shaped

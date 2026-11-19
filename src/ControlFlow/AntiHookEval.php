@@ -75,7 +75,10 @@ final class AntiHookEval
                   . "if(defined('PHP_SAPI')&&PHP_SAPI==='phpdbg')\$r=true;"
                   . "if(function_exists('phpdbg_break_file'))\$r=true;"
                   . "return \$r;}}"
-                : "return false;}")
+                // v1.2.10 修复：这里原来是 "return false;}"，只闭合了 if 而漏掉 function 的
+                // 右括号 → 生成 `if(...){function fn(){return false;}` → PHP 解析报
+                // "Unclosed '{'"。既往所有预设都用 strict=true 走上一分支，故一直没暴露。
+                : "return false;}}")
             // eval 完整性探针：写入随机变量
             . "\$" . $probeVar . "=null;"
             . "@eval('\$" . $probeVar . "=\"" . $expect . "\";');"

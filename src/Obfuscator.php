@@ -498,34 +498,31 @@ final class Obfuscator
                 }
             }
         }
-        // v1.2.8：--aggressive-prune 只加速【用户自己的代码】，绝不折叠 Logic 层注入的
-        // 恒等式——否则等于给攻击者送"去混淆 toolkit"。因此显式开启但预设未含该层时，
-        // 把它插到【logic 之前】（constfold 之后）：此时只看到用户原始恒等式/死分支，
-        // Logic 的恒等式在它之后才生成，天然隔离。新产生的字面量仍会被后续 logic/number/
-        // string/token 层继续混淆。
+        // v1.2.10：--aggressive-prune 的作用是【加速用户自己的脚本】：把用户自己写的恒等式
+        // 与死分支在构建期折叠/剪掉，产物运行期不再重算。它必须排在 logic 之前——
+        //   * 之前：只看到用户原始代码，折叠的是用户自己的恒等式 → 真加速；
+        //   * 之后：会把 Logic 注入的恒等式一并折掉 → Logic 白做（保护自残）。
+        // 因此这里做【硬归位】：无论预设里有没有该层、排在哪个位置，一律先摘除再插到
+        // logic 之前（constfold 之后）。这样 logic 注入的恒等式对剪枝层不可见，
+        // 天然无法被它解析加速。
+        $rawLayers = array_values(array_filter(
+            $rawLayers,
+            static fn (array $l): bool => ($l['name'] ?? '') !== 'aggressive_prune'
+        ));
         if ($this->config->get('aggressive_prune')) {
-            $hasAp = false;
-            foreach ($rawLayers as $l) {
-                if (($l['name'] ?? '') === 'aggressive_prune') {
-                    $hasAp = true;
+            $apLayer = ['name' => 'aggressive_prune', 'params' => []];
+            $at = null;
+            foreach ($rawLayers as $idx => $l) {
+                if (($l['name'] ?? '') === 'logic') {
+                    $at = $idx;
                     break;
                 }
             }
-            if (!$hasAp) {
-                $apLayer = ['name' => 'aggressive_prune', 'params' => []];
-                $at = null;
-                foreach ($rawLayers as $idx => $l) {
-                    if (($l['name'] ?? '') === 'logic') {
-                        $at = $idx;
-                        break;
-                    }
-                }
-                if ($at === null) {
-                    // 无 logic 层（如纯 min 预设）：追加到末尾（由 orderShellLayers 归位）
-                    $rawLayers[] = $apLayer;
-                } else {
-                    array_splice($rawLayers, $at, 0, [$apLayer]);
-                }
+            if ($at === null) {
+                // 无 logic 层（如纯 min 预设）：追加到末尾（由 orderShellLayers 归位）
+                $rawLayers[] = $apLayer;
+            } else {
+                array_splice($rawLayers, $at, 0, [$apLayer]);
             }
         }
         $layers = $this->orderShellLayers($rawLayers);
@@ -548,6 +545,8 @@ final class Obfuscator
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
         $bindingInjected = false;
+        // v1.2.10：进入分层管线前复位——logic 尚未运行，aggressive_prune 处于安全层序
+        $this->logicDone = false;
 
         // 文件头 banner 必须位于【毒化壳之内】：毒化壳的指纹对象是除载荷外的完整最终
         // 文件，若 banner 在壳之后追加，构建期骨架与运行期 __FILE__ 永久不等 → 全量毒化。
@@ -578,6 +577,11 @@ final class Obfuscator
                 $bannerDone = true;
             }
             $current = $this->applyLayer($layer, $tokens, $current);
+            // v1.2.10：logic 已经跑过 → 之后再遇到 aggressive_prune 一律拒绝折叠。
+            // （层序已在上面硬归位，这里是运行期兜底，防止自定义 config 绕过。）
+            if (($layer['name'] ?? '') === 'logic') {
+                $this->logicDone = true;
+            }
             // 外壳绑定标记（VM 高级环境自检的外侧锚点）：必须紧随 shell:vm 之后注入。
             // 位置约束三条同时成立：
             //   1) 在 VM 产物【之外】—— 落在其 <?php 之后、VM 闭包之前，运行期先 define 再跑 VM；
@@ -884,6 +888,12 @@ final class Obfuscator
     private bool $mcActive = true;
     /** 是否启用外壳绑定 / 脱壳检测（vm + vm_selfcheck 同时开启时为真） */
     private bool $selfcheck = false;
+    /**
+     * v1.2.10：分层管线里 logic 层是否已经跑过。
+     * 用于给 aggressive_prune 传"层序安全"信号——只在 logic 之前运行才允许折叠，
+     * 保证 Logic 注入的恒等式永远不会被剪枝层解析加速（保护自残）。
+     */
+    private bool $logicDone = false;
 
     /**
      * 互斥注释（Confrontation 家族）：把"互相打脸"的成对注释投进【壳内部】。
@@ -1082,7 +1092,10 @@ final class Obfuscator
                 if (!class_exists(AggressivePruner::class, false)) {
                     require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
                 }
-                $tokens = (new AggressivePruner($this->logger))->process($tokens, $cfg);
+                // v1.2.10：只允许在 logic 之前运行。logic 已跑过则整层空转（保护自残防线）。
+                $ap = new AggressivePruner($this->logger);
+                $ap->setOrderSafe(!$this->logicDone);
+                $tokens = $ap->process($tokens, $cfg);
                 break;
             case 'funcsplit':
                 $tokens = (new FunctionSplitter($this->salt, $this->logger))->process($tokens, $cfg);
@@ -1985,13 +1998,16 @@ final class Obfuscator
             $tokens = $cf->process($tokens, $this->config);
         }
 
-        // v1.2.8 激进恒等式压缩 + 死分支剪枝：置于 logic 之前——只加速用户自己的代码，
-        // 绝不折叠 Logic 层注入的恒等式（否则 = 给攻击者送去混淆 toolkit）。
+        // v1.2.10 激进恒等式压缩 + 死分支剪枝：置于 logic 之前——它的用途是【加速用户脚本】
+        // （用户自己写的恒等式/死分支在构建期折掉，运行期不再重算），而不是"给 Logic 打补丁"。
+        // 由于排在 logic 之前，Logic 随后注入的恒等式对它完全不可见，天然无法被它解析加速。
         if ($this->config->get('aggressive_prune')) {
             if (!class_exists(AggressivePruner::class, false)) {
                 require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
             }
-            $tokens = (new AggressivePruner($this->logger))->process($tokens, $this->config);
+            $ap = new AggressivePruner($this->logger);
+            $ap->setOrderSafe(true); // 本路径顺序由代码保证：constfold → prune → logic
+            $tokens = $ap->process($tokens, $this->config);
         }
 
         // 超激进逻辑变换：必须置于变量重命名之前，使新引入的临时变量被 var 层
