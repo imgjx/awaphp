@@ -66,7 +66,7 @@ $__perf_t1 = hrtime(true);
 fwrite(STDERR, sprintf(
     "COMPUTE %.3f\nPEAK %d\n",
     ($__perf_t1 - $__perf_t0) / 1e6,
-    memory_get_peak_usage(true)
+    memory_get_peak_usage(false)   // 精确字节数；true 会按分配块取整，区分不出几 MB 以内的差异
 ));
 
 echo sprintf('%d|%d|%d|%d|%d', $sum, $acc, $counter->value(), count($nums), $fib), "\n";

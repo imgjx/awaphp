@@ -1393,7 +1393,16 @@ final class Obfuscator
         // 逐层内联（inline_each_layer）：每层壳新增的解码逻辑也要把函数调用内联成
         // 模块函数。必须给每层分配独立前缀，否则同一个 __mod_xxx 被多层重复定义会
         // 运行期 "Cannot redeclare function" 致命。前缀由层序号 + salt 派生，同 salt 可复现。
-        $prefix = $tag === null ? '' : '__ml' . $tag . '_';
+        //
+        // 还必须带上**文件**唯一段：模块源码是原样追加到每个产物文件末尾的，若前缀
+        // 只由层标签决定，整站混淆时 common.php / provider.php / 每个 controller 都会
+        // 定义同一个 `__mlmodule_link___mod_sha1`——同一请求 include 到第二个文件就
+        // `Cannot redeclare function`（TP8 实测 HTTP 500）。加上文件派生段后每个产物
+        // 自带一套私有名字，跨文件互不干扰；同 salt 同路径可复现。
+        $fileTag = $this->srcFile === ''
+            ? ''
+            : substr($this->salt->deriveHex('module-file|' . $this->srcFile, 3), 0, 6);
+        $prefix = $fileTag === '' ? '' : '__ml' . ($tag ?? '') . $fileTag . '_';
 
         // 传递式收集所有需内联的模块原生源码（含模块间静态 include 递归扁平化）
         $inline = [];   // specName => 原生源码

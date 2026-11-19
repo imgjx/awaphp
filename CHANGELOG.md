@@ -1,5 +1,39 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.12 — Multi-file builds stop colliding, performance doc rewritten
+
+> **(1) `Cannot redeclare function __mod_sha1()` in multi-file builds — fixed.**
+> The `logic` layer rewrites literals into identities built from `__mod_sha1()` / `__mod_strlen()`,
+> and `module_link` inlines those modules as **native global functions** appended to every artifact.
+> The inlined names were derived only from the *layer* tag, so every obfuscated file in a project
+> defined the same `__mod_sha1` — the second `include` in one request died with
+> `PHP Fatal error: Cannot redeclare function __mod_sha1()` (HTTP 500). Reproduced on the ThinkPHP 8
+> demo: `low` / `mid` / `high` all returned 500 before the fix, byte-identical output after it.
+>
+> Inlined names now carry a **file-derived segment** (`__ml<layer><filehash>_<name>`), so each
+> artifact owns a private copy; same source + same salt still reproduces byte-identically.
+>
+> **(2) `docs/PERFORMANCE.md` rewritten around a single current baseline.** Every historical
+> section (v1.1.x / v1.2.5–v1.2.10 measurements, per-release narratives) is gone. What remains is
+> measured on v1.2.11: the ThinkPHP 8 whole-site numbers for all six presets, the pure-compute
+> microbenchmark, a controlled super-instruction on/off experiment, per-switch attribution, and the
+> `logic`-in-hot-loop cost that dominates `low` / `mid`.
+>
+> **(3) `--vm-super-isa` help text no longer implies a speed-up.** Measurements in both v1.2.10 and
+> v1.2.11 show the on/off difference inside the noise band (±1.5 ms wall on 15 runs): the composite
+> handler still decodes each sub-instruction, so the saved dispatches are offset. It is
+> **anti-analysis at zero cost**, and the help text now says exactly that.
+>
+> **(4) `tests/perf_workload_vm.php` reports exact peak memory** (`memory_get_peak_usage(false)`).
+> With `true` PHP rounds to allocation blocks and both versions report the same 6 MB bucket, which
+> hid every difference below a few megabytes.
+>
+> Measured (TP8, 25 files, `php -S`, median of 5): `min` 1.4×, `low` 9.2×, `mid` 25×, `high` 52×,
+> `max` 73×, `ultra` 212× on `/shop/calc` (native 3.36 ms). Pure compute (`high`, 1.31 ms native):
+> 12.9×. Super instructions on/off: within noise in both versions; the +17% unpack memory between
+> v1.2.10 and v1.2.11 persists with super instructions disabled, so it belongs to the VM semantic
+> fixes in v1.2.11, not to the `NOP` removal.
+
 ## v1.2.11 — Super instructions drop their `NOP` padding
 
 > One structural change, four silent VM correctness fixes, and one display bug fix.
@@ -15,22 +49,30 @@
 > `[tryStart, tryEnd, handlerPc]`. Jump targets and exception-table endpoints are collected first as
 > **un-crossable** positions — a merge range that would span one is abandoned — so every endpoint has
 > an exact mapping and nothing can silently start executing mid-group. Measured on
-> `tests/perf_workload_vm.php` @ `salt=perf-bench-v1` (5 runs, median; PHP 8.5.12 CLI, OPcache off):
+> `tests/perf_workload_vm.php` @ `salt=perf-bench-v1` (median of 15 interleaved runs; PHP 8.5.12 CLI, OPcache off):
 >
 > | Metric | v1.2.10 | v1.2.11 | Change |
 > |---|---:|---:|---|
-> | Bytecode instructions (`high`) | 565 | 454 | −19.6% |
-> | Peak memory after unpack (`high` / `max`) | 3.96 / 4.73 MB | 4.63 / 5.43 MB | +16.8% / +14.7% |
-> | Pure compute (`high`) | 16.88 ms | 17.17 ms | +1.7% |
-> | Cold start (`high`) | 63.3 ms | 62.7 ms | within noise |
-> | Artifact size, gz+cipher (`high` / `max`) | 74,243 / 86,047 B | 74,375 / 87,407 B | +0.18% / +1.58% |
+> | Bytecode instructions (`high`) | 565 | 454 | **−19.6%** |
+> | Peak memory after unpack (`high` / `max`) | 3.96 / 4.75 MB | 4.64 / 5.45 MB | +17% / +15% |
+> | Pure compute (`high`) | 16.96 ms | 16.73 ms | **within noise** |
+> | Cold start (`high` / `max`) | 60.9 / 62.7 ms | 61.8 / 66.1 ms | +0.9 ms / **+3.4 ms** |
+> | Artifact size, gz+cipher (`high` / `max`) | 74,187 / 86,351 B | 74,563 / 87,799 B | +0.5% / +1.7% |
 >
-> The instruction drop is the `NOP` removal itself. The memory/runtime increase is **not** — it is the
-> price of the VM fixes in (2): statements that used to degrade to `EVAL_STMT` (one string constant
-> handed to native `eval`) are now really compiled into bytecode (dozens of opcode arrays), and PHP
-> arrays cost far more than a string. Trading ~15% unpack memory and 1–2% runtime for **semantically
-> correct `global` / object calls / bitwise ops** is the right side of that trade; `--no-vm-super-isa`
-> still disables the super-instruction layer entirely.
+> **Super instructions cost nothing, in either version.** The controlled experiment is on/off of
+> `--vm-super-isa` inside one build, so the VM fixes cancel out: v1.2.11 `high` is 61.8 ms / 16.73 ms
+> with it and 62.1 ms / 16.78 ms without; v1.2.10 is 60.9 / 61.3 and 16.96 / 17.02. Every one of those
+> gaps is smaller than the ±1.5 ms wall-clock spread of a single artifact run 15 times.
+>
+> **The +17% memory is the VM fixes in (2), not the `NOP` removal** — disabling super instructions
+> leaves v1.2.11 at 4.62 MB (v1.2.10: 3.96 MB). Statements that used to degrade to `EVAL_STMT` (one
+> string constant handed to native `eval`) are now really compiled into bytecode — dozens of opcode
+> arrays, and PHP arrays cost far more than a string. The `max` cold start (+3.4 ms) is the same
+> effect: unpacking a larger instruction array.
+>
+> **gz size grows 0.5%–1.7%.** `NOP` is a two-byte, highly repetitive `[199][0]` that gzip nearly
+> eliminates; removing it raises the entropy of the neighbouring bytes. `--no-vm-super-isa` still
+> disables the layer entirely.
 >
 > **(2) Four pre-existing VM semantic bugs fixed** (all present since ≤ v1.2.10, all silent — the
 > artifact produced wrong output with no warning, in `high` / `max` / `ultra`):

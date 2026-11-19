@@ -61,12 +61,12 @@ Afterwards:
 
 | Option | When | Notes |
 | --- | --- | --- |
-| `--level=min` (**site-wide**) | You only want "not readable at a glance", without changing runtime characteristics | no shell, no VM; on TP8 measured **1.6 ms, faster than native (2.0 ms)**, smaller artifact |
-| `--level=low` / `mid` (**recommended starting point**) | normal delivery, high-QPS APIs | no VM; same endpoint 5.7 ms / 12.4 ms (see `docs/en/PERFORMANCE.md`) |
-| `--level=high` | core business logic, tens of milliseconds acceptable | includes the VM; same endpoint 44 ms |
+| `--level=min` (**site-wide**) | You only want "not readable at a glance", without changing runtime characteristics | no shell, no VM; on TP8 measured **4.8 ms (native 3.4 ms, 1.4×)**, smallest artifact |
+| `--level=low` / `mid` (**recommended starting point**) | normal delivery, high-QPS APIs | no VM; same endpoint 31 ms / 83 ms (native 3.4 ms, 9.2× / 25×; see `docs/en/PERFORMANCE.md`) |
+| `--level=high` | core business logic, low hundreds of milliseconds acceptable | includes the VM; same endpoint 174 ms (52×) |
 | `thinkphp8.config.php` | large projects needing a whitelist safety net | equivalent to the `high` layers + whitelist + framework-compat options |
 | One-command script `other/thinkphp8-build.php` | you want to skip manual whitelisting | scans `app/`, collects classes / functions / constants / controller methods → merges into the config → builds |
-| `--level=max` / `ultra` | high-value single files | core files only, never the whole site: measured 391 / 485 ms on TP8, **9–11×** `high` (44 ms) — the fixed per-request cost of multi-layer shells |
+| `--level=max` / `ultra` | high-value single files | core files only, never the whole site: measured 245 / 713 ms on TP8, **1.4× / 4.1×** `high` (174 ms) — the fixed per-request cost of multi-layer shells and a nested VM |
 
 The TP8 sample passes all 26 baseline lines with `thinkphp8.config.php`.
 
