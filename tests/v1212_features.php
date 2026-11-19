@@ -119,6 +119,8 @@ file_put_contents($cfg, '<?php return ' . var_export([
         ['name' => 'shell:module_link', 'params' => []],
     ],
     'shell_shield' => false,
+    // 关闭文件头 banner：它含生成时间戳，跨秒构建必然不同，会让「可复现」测试假失败
+    'no_banner'    => true,
 ], true) . ';');
 
 $names = [];
@@ -186,7 +188,9 @@ $oneOut === $expect ? t_ok('单文件输出一致') : t_no('单文件输出', su
 // ---------------------------------------------------------------------------
 echo "\n=== E) 版本号 ===\n";
 $help = sh('php ' . escapeshellarg($entry) . ' --help');
-str_contains($help, '1.2.12') ? t_ok('--help 显示 1.2.12') : t_no('版本号', '未在 --help 找到 1.2.12');
+preg_match('/v(\d+\.\d+\.\d+)/', $help, $vm) && version_compare($vm[1], '1.2.12', '>=')
+    ? t_ok('--help 版本 >= 1.2.12（实际 ' . ($vm[1] ?? '?') . '）')
+    : t_no('版本号', '未在 --help 找到 >= 1.2.12');
 
 // ---------------------------------------------------------------------------
 echo "\n===== 结果: {$pass} 通过 / {$fail} 失败 =====\n";

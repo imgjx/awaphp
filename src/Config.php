@@ -191,6 +191,11 @@ final class Config
         $this->data['logic_shell_intensity'] = max(1, min(3, $i($this->data['logic_shell_intensity'] ?? 2)));
         $this->data['logic_shell_maxlen']    = max(0, $i($this->data['logic_shell_maxlen'] ?? 512));
         $this->data['logic_wild']            = $b($this->data['logic_wild'] ?? false) ?? false;
+        // v1.2.13 循环不变量外提（logic 层性能项）：静态可估迭代数 > 阈值时，把循环里
+        // 「每轮都要求值」的字面量积木搬到循环外，开销从 O(迭代数) 退回 O(1)。
+        // 只搬纯值字面量、不改运行结果，故默认开；阈值 20 以下的短循环保持原形态。
+        $this->data['logic_loop_hoist']     = $b($this->data['logic_loop_hoist'] ?? true) ?? true;
+        $this->data['logic_loop_threshold'] = max(0, min(1000000, $i($this->data['logic_loop_threshold'] ?? 20)));
         // v1.2.7：混写模板（PHP/HTML 交错）默认跳过 logic / decoy 激进变换层以保证运行期
         // 逐字节一致；显式设为 false 可强制开启（不推荐，边界场景会改炸输出）。
         $this->data['mixed_html_skip_aggressive'] = $b($this->data['mixed_html_skip_aggressive'] ?? true) ?? true;

@@ -50,6 +50,8 @@ final class LogicRewriter
     private bool $minifyOn = false;     // 压行
     private bool $wildOn = false;       // v1.2.4 天马行空加强档：扩张恒等积木编码库
     private int $strMaxLen = 0;         // 字符串字面量改写长度上限（0=不限；逐壳层用于保护密文载荷）
+    private bool $hoistOn = false;      // v1.2.13 循环不变量外提（性能层，默认开）
+    private int $hoistThreshold = 20;   // 迭代数超过此值才外提（小循环不值得为省几微秒加变量）
 
     public function __construct(Salt $salt, Logger $logger, int $intensity = 2)
     {
@@ -79,6 +81,10 @@ final class LogicRewriter
         // v1.2.4 天马行空加强 + 字符串长度上限（逐壳层保护密文载荷）
         $this->wildOn     = (bool) $cfg->get('logic_wild', false);
         $this->strMaxLen  = max(0, (int) $cfg->get('logic_str_maxlen', 0));
+        // v1.2.13：循环不变量外提——把「每轮都要求值」的字面量积木搬到循环外，
+        // 让 N 次开销退回 1 次。纯提速项，不改变任何运行结果，默认开。
+        $this->hoistOn    = (bool) $cfg->get('logic_loop_hoist', true);
+        $this->hoistThreshold = max(0, (int) $cfg->get('logic_loop_threshold', 20));
         $this->constSeed = $this->salt->isEmpty()
             ? 0
             : (int) hexdec(substr(bin2hex($this->salt->derive('logic-const', 4)), 0, 7));
@@ -89,6 +95,11 @@ final class LogicRewriter
         $this->genCtr = 0;
         $this->tempVars = [];
         $this->collectVars($tokens);
+        // v1.2.13：先做循环不变量外提（此时循环体内还是裸字面量，位置最容易识别），
+        // 再进入常规变换——这样被搬到循环外的字面量只生成一次积木，循环内只剩变量引用。
+        if ($this->hoistOn) {
+            $tokens = $this->hoistPass($tokens);
+        }
         // 先缠结（此时右值仍是原始字面量，可识别整数走位运算恒等链），
         // 再做表达式级递归变换（把剩余数字/字符串一并展开）。
         if ($this->intensity >= 3) {
@@ -1472,6 +1483,799 @@ $this->tempVars[] = $cand;
             }
         }
         return false;
+    }
+
+    // ====================================================================
+    // v1.2.13 循环不变量外提（性能层 / LICM）
+    //
+    // 症状：本层把字面量展开成「函数调用积木」——整数走 strlen(sha1('…'))*N，
+    //   字符串走 base64_decode(...) 之类。这类表达式语义上是纯值，但**每次求值
+    //   都要真跑一遍函数**。一旦它落在循环条件或循环体里，就被从「一次」放大成
+    //   「迭代数 × 一次」：2000 轮的 `for` 会实打实算 2000 次 sha1。循环密集的
+    //   业务代码因此比原生慢一个量级，这是 low/mid 档最大的运行期开销来源。
+    //
+    // 做法：对每个循环估算静态迭代数，超过阈值（默认 20）时，把「每轮都会求值」
+    //   的区间（for 的 cond/step、while/do-while 的 cond、以及 body）里的字面量
+    //   整体搬到循环语句之前，各用一个临时变量承接；循环内只留变量引用。
+    //   随后的常规变换只会在那条前置赋值里生成一次积木——开销从 O(N) 退回 O(1)。
+    //
+    // 语义安全边界（任何一条不满足就原样不动）：
+    //   * 只搬字面量：纯值、无副作用、无求值顺序依赖，多算一次与少算一次等价；
+    //   * 跳过常量上下文（const / 参数默认值 / 属性默认值 / case / #[…] / declare）
+    //     与跳转层级操作数（`continue 2` 必须是整数字面量）；
+    //   * 跳过函数 / 闭包 / 箭头函数 / 类体内部——那些字面量并不在循环里逐轮执行，
+    //     搬出去反而会让函数体引用一个它看不见的外部变量（致命）；
+    //   * 循环体是单语句、或循环前一个 token 不是语句边界（else、if 无花括号体）时，
+    //     用 `{ … }` 把「前置赋值 + 循环」整段包起来，避免被 else / if 吸附走；
+    //   * 迭代数静态不可估（while(true)、`while ($row = f())`）一律按「大循环」处理。
+    // ====================================================================
+
+    /**
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    private function hoistPass(array $tokens): array
+    {
+        return $this->hoistRange($tokens);
+    }
+
+    /**
+     * 递归处理：遇到循环就先递归它的 body（内层先做完，外层才能把内层前置语句里的
+     * 字面量也一并提走），再决定自己要不要外提。
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    private function hoistRange(array $tokens): array
+    {
+        $n = count($tokens);
+        $out = [];
+        $i = 0;
+        while ($i < $n) {
+            $loop = $this->parseLoop($tokens, $i);
+            if ($loop === null) {
+                $out[] = $tokens[$i];
+                $i++;
+                continue;
+            }
+            $end = $loop['end'];
+            $seg = array_slice($tokens, $i, $end - $i + 1);
+            // body 子区间（相对 seg）：递归处理嵌套循环
+            $bs = $loop['bodyStart'] - $i;
+            $be = $loop['bodyEnd'] - $i;
+            if ($be >= $bs && $bs >= 0) {
+                $body = $this->hoistRange(array_slice($seg, $bs, $be - $bs + 1));
+                $seg = array_merge(array_slice($seg, 0, $bs), $body, array_slice($seg, $be + 1));
+            }
+            // body 长度可能因内层外提而变化，重新解析一次拿准确位置
+            $loop2 = $this->parseLoop($seg, 0);
+            if ($loop2 !== null) {
+                $seg = $this->applyHoist($seg, $loop2, $tokens, $i);
+            }
+            foreach ($seg as $t) {
+                $out[] = $t;
+            }
+            $i = $end + 1;
+        }
+        return $out;
+    }
+
+    /**
+     * 判定 + 执行单个循环的外提。
+     * @param array<int,mixed> $seg 循环自身（从关键字开始到语句结束）
+     * @param array<int,mixed> $outer 原 token 流（用于判断前置 token 是否为语句边界）
+     */
+    private function applyHoist(array $seg, array $loop, array $outer, int $outerIdx): array
+    {
+        $est = $this->estimateIterations($seg, $loop);
+        if ($est !== null && $est <= $this->hoistThreshold) {
+            // 小循环：每轮就几条 strlen，外提带来的变量读写不划算，保留原有混淆形态
+            return $seg;
+        }
+        $found = $this->collectHoistable($seg, $this->hoistRanges($seg, $loop));
+        if ($found === []) {
+            return $seg;
+        }
+        // 同值去重：同一循环里出现三次 50，只建一个变量
+        $vars = [];
+        $raws = [];
+        foreach ($found as $info) {
+            $key = $info['type'] . ':' . $info['value'];
+            if (!isset($vars[$key])) {
+                $vars[$key] = $this->genName();
+                $raws[$key] = $info['raw'];
+            }
+        }
+        // 循环内：字面量 → 变量引用
+        foreach ($found as $idx => $info) {
+            $key = $info['type'] . ':' . $info['value'];
+            $seg[$idx] = [T_VARIABLE, '$' . $vars[$key], 0];
+        }
+        // 循环外：一次赋值（原字面量原样保留，交给后续 transformRange 生成积木）
+        $code = '';
+        foreach ($vars as $key => $name) {
+            $code .= '$' . $name . '=' . $raws[$key] . ';';
+        }
+        $pre = $this->exprTokens($code);
+        if ($this->needHoistBlock($outer, $outerIdx)) {
+            return array_merge(['{'], $pre, $seg, ['}']);
+        }
+        return array_merge($pre, $seg);
+    }
+
+    /** 前置语句能否直接落在循环前：只有语句边界才安全，否则要包块 */
+    private function needHoistBlock(array $tokens, int $i): bool
+    {
+        $p = Parser::prevSignificant($tokens, $i);
+        if ($p < 0) {
+            return false;
+        }
+        $t = $tokens[$p];
+        if (is_array($t)) {
+            return !in_array($t[0], [T_OPEN_TAG, T_CLOSE_TAG], true);
+        }
+        return !in_array($t, [';', '{', '}', ':'], true);
+    }
+
+    /** 需要检查（并可能被外提）的区间：每轮求值的那几段 */
+    private function hoistRanges(array $tokens, array $loop): array
+    {
+        $r = [];
+        // foreach 的表达式只在循环开始前求值一次，不需要搬
+        if ($loop['kind'] !== 'foreach' && $loop['condStart'] >= 0) {
+            $r[] = [$loop['condStart'], $loop['condEnd']];
+        }
+        if ($loop['kind'] === 'for' && $loop['stepStart'] >= 0) {
+            $r[] = [$loop['stepStart'], $loop['stepEnd']];
+        }
+        $r[] = [$loop['bodyStart'], $loop['bodyEnd']];
+        return $r;
+    }
+
+    /**
+     * 收集区间内可外提的字面量。
+     * @param array<int,mixed> $tokens
+     * @param array<int,array{0:int,1:int}> $ranges
+     * @return array<int,array{type:string,value:string,raw:string}>
+     */
+    private function collectHoistable(array $tokens, array $ranges): array
+    {
+        $n = count($tokens);
+        // 常量上下文状态必须从头单遍推进，位置才有意义
+        $ctx = new LogicCtx();
+        $constAt = [];
+        $declareAt = [];
+        for ($i = 0; $i < $n; $i++) {
+            $ctx->step($tokens, $i);
+            $constAt[$i] = $ctx->isConstContext();
+            $declareAt[$i] = $ctx->inDeclare();
+        }
+        $skip = $this->nestedScopeRanges($tokens);
+        $out = [];
+        foreach ($ranges as [$s, $e]) {
+            $s = max(0, $s);
+            $e = min($n - 1, $e);
+            for ($i = $s; $i <= $e; $i++) {
+                $tok = $tokens[$i];
+                if (!is_array($tok)) {
+                    continue;
+                }
+                if ($declareAt[$i] || $constAt[$i]) {
+                    continue;
+                }
+                if ($this->inAnyRange($i, $skip)) {
+                    continue;
+                }
+                if ($tok[0] === T_LNUMBER) {
+                    if ($this->isJumpLevelOperand($tokens, $i)) {
+                        continue;
+                    }
+                    $v = $this->intLiteralValue($tok[1]);
+                    if ($v === null || $v === 0) {
+                        continue;
+                    }
+                    $out[$i] = ['type' => 'i', 'value' => (string) $v, 'raw' => $tok[1]];
+                    continue;
+                }
+                if ($tok[0] === T_CONSTANT_ENCAPSED_STRING) {
+                    if ($this->strMaxLen > 0 && strlen($tok[1]) > $this->strMaxLen) {
+                        continue;
+                    }
+                    $v = $this->stripQuotes($tok[1]);
+                    if ($v === '') {
+                        continue;
+                    }
+                    $out[$i] = ['type' => 's', 'value' => $v, 'raw' => $tok[1]];
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** 函数体 / 闭包体 / 类体区间——里面的字面量不在循环里逐轮执行，且搬出去会跨作用域 */
+    private function nestedScopeRanges(array $tokens): array
+    {
+        $n = count($tokens);
+        $ranges = [];
+        for ($i = 0; $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!is_array($t)) {
+                continue;
+            }
+            if ($t[0] === T_FN) {
+                $ranges[] = [$i, $this->fnArrowEnd($tokens, $i)];
+                continue;
+            }
+            if (!in_array($t[0], [T_FUNCTION, T_CLASS, T_INTERFACE, T_TRAIT], true)) {
+                if (!(defined('T_ENUM') && $t[0] === T_ENUM)) {
+                    continue;
+                }
+            }
+            // `Foo::class` 的 T_CLASS 后面不会有 `{`，会在 `;` 处分流跳过
+            if ($t[0] === T_CLASS) {
+                $p = Parser::prevSignificant($tokens, $i);
+                if ($p >= 0 && is_array($tokens[$p]) && $tokens[$p][0] === T_DOUBLE_COLON) {
+                    continue;
+                }
+            }
+            $depth = 0;
+            $open = -1;
+            for ($j = $i + 1; $j < $n; $j++) {
+                $tk = $tokens[$j];
+                if (is_string($tk)) {
+                    if ($tk === '(') {
+                        $depth++;
+                    } elseif ($tk === ')') {
+                        if ($depth > 0) {
+                            $depth--;
+                        }
+                    } elseif ($tk === '{' && $depth === 0) {
+                        $open = $j;
+                        break;
+                    } elseif ($tk === ';' && $depth === 0) {
+                        break;
+                    }
+                }
+            }
+            if ($open < 0) {
+                continue;
+            }
+            $close = $this->matchBracket($tokens, $open);
+            if ($close > $open) {
+                $ranges[] = [$open, $close];
+            }
+        }
+        return $ranges;
+    }
+
+    /** 箭头函数 `fn(...) => expr` 的结束位置（同层的 , / ) / ; / ] 之前） */
+    private function fnArrowEnd(array $tokens, int $i): int
+    {
+        $n = count($tokens);
+        $depth = 0;
+        $saw = false;
+        for ($j = $i + 1; $j < $n; $j++) {
+            $t = $tokens[$j];
+            if (is_array($t) && $t[0] === T_DOUBLE_ARROW) {
+                $saw = true;
+                continue;
+            }
+            if (!$saw || !is_string($t)) {
+                continue;
+            }
+            if ($t === '(' || $t === '[' || $t === '{') {
+                $depth++;
+            } elseif ($t === ')' || $t === ']' || $t === '}') {
+                if ($depth === 0) {
+                    return $j;
+                }
+                $depth--;
+            } elseif (($t === ',' || $t === ';') && $depth === 0) {
+                return $j;
+            }
+        }
+        return $n - 1;
+    }
+
+    private function inAnyRange(int $i, array $ranges): bool
+    {
+        foreach ($ranges as $r) {
+            if ($i >= $r[0] && $i <= $r[1]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 字面量原始写法 → int；超长（可能溢出）与非十进制前缀写法外一律 null */
+    private function intLiteralValue(string $raw): ?int
+    {
+        $s = str_replace('_', '', $raw);
+        if ($s === '' || strlen($s) > 18) {
+            return null;
+        }
+        if (preg_match('/^0[xX]([0-9a-fA-F]+)$/', $s, $m)) {
+            return (int) hexdec($m[1]);
+        }
+        if (preg_match('/^0[bB]([01]+)$/', $s, $m)) {
+            return (int) bindec($m[1]);
+        }
+        if (preg_match('/^0[oO]([0-7]+)$/', $s, $m)) {
+            return (int) octdec($m[1]);
+        }
+        if (preg_match('/^0([0-7]+)$/', $s, $m)) {
+            return (int) octdec($m[1]);
+        }
+        if (preg_match('/^[0-9]+$/', $s)) {
+            return (int) $s;
+        }
+        return null;
+    }
+
+    // --------------------------------------------------------------------
+    // 循环结构解析
+    // --------------------------------------------------------------------
+
+    /**
+     * 识别 $i 处的循环（for / foreach / while / do-while）。
+     * @return array{kind:string,headStart:int,end:int,parenStart:int,parenEnd:int,
+     *               condStart:int,condEnd:int,stepStart:int,stepEnd:int,
+     *               bodyStart:int,bodyEnd:int}|null
+     */
+    private function parseLoop(array $tokens, int $i): ?array
+    {
+        $t = $tokens[$i] ?? null;
+        if (!is_array($t)) {
+            return null;
+        }
+        if ($t[0] === T_DO) {
+            $bs = $this->nextSignificant($tokens, $i, 1);
+            if ($bs < 0) {
+                return null;
+            }
+            $body = $this->extractBody($tokens, $bs);
+            if ($body[1] < 0) {
+                return null;
+            }
+            $be = $body[1];
+            $w = $this->nextSignificant($tokens, $be, 1);
+            if ($w < 0 || !is_array($tokens[$w] ?? null) || $tokens[$w][0] !== T_WHILE) {
+                return null;
+            }
+            $p = $this->nextSignificant($tokens, $w, 1);
+            if ($p < 0 || !$this->isChar($tokens[$p] ?? null, '(')) {
+                return null;
+            }
+            $q = $this->matchBracket($tokens, $p);
+            if ($q < 0) {
+                return null;
+            }
+            $end = $q;
+            $semi = $this->nextSignificant($tokens, $q, 1);
+            if ($semi > 0 && $this->isChar($tokens[$semi] ?? null, ';')) {
+                $end = $semi;
+            }
+            return [
+                'kind' => 'do', 'headStart' => $i, 'end' => $end,
+                'parenStart' => $p, 'parenEnd' => $q,
+                'condStart' => $p + 1, 'condEnd' => $q - 1,
+                'stepStart' => -1, 'stepEnd' => -1,
+                'bodyStart' => $bs, 'bodyEnd' => $be,
+            ];
+        }
+        if (!in_array($t[0], [T_FOR, T_FOREACH, T_WHILE], true)) {
+            return null;
+        }
+        $p = $this->nextSignificant($tokens, $i, 1);
+        if ($p < 0 || !$this->isChar($tokens[$p] ?? null, '(')) {
+            return null;
+        }
+        $q = $this->matchBracket($tokens, $p);
+        if ($q < 0) {
+            return null;
+        }
+        $bs = $this->nextSignificant($tokens, $q, 1);
+        if ($bs < 0) {
+            return null;
+        }
+        // `for (…): … endfor;` 老式替代语法 / 空 body：都不碰
+        if ($this->isChar($tokens[$bs] ?? null, ':') || $this->isChar($tokens[$bs] ?? null, ';')) {
+            return null;
+        }
+        $body = $this->extractBody($tokens, $bs);
+        if ($body[1] < 0) {
+            return null;
+        }
+        $be = $body[1];
+        $kind = $t[0] === T_FOR ? 'for' : ($t[0] === T_FOREACH ? 'foreach' : 'while');
+        $cs = $p + 1;
+        $ce = $q - 1;
+        $ss = -1;
+        $se = -1;
+        if ($kind === 'for') {
+            $sec = $this->forSections($tokens, $p, $q);
+            if ($sec !== null) {
+                [$cs, $ce] = $sec[1];
+                [$ss, $se] = $sec[2];
+            }
+        }
+        return [
+            'kind' => $kind, 'headStart' => $i, 'end' => $be,
+            'parenStart' => $p, 'parenEnd' => $q,
+            'condStart' => $cs, 'condEnd' => $ce,
+            'stepStart' => $ss, 'stepEnd' => $se,
+            'bodyStart' => $bs, 'bodyEnd' => $be,
+        ];
+    }
+
+    /**
+     * 切出 for 头里的三段 [init, cond, step]，返回各段的 [start, end]（含首尾）。
+     * @return array<int,array{0:int,1:int}>|null
+     */
+    private function forSections(array $tokens, int $p, int $q): ?array
+    {
+        $parts = [];
+        $start = $p + 1;
+        $depth = 0;
+        for ($i = $p + 1; $i < $q; $i++) {
+            $t = $tokens[$i];
+            if (!is_string($t)) {
+                continue;
+            }
+            if ($t === '(' || $t === '[' || $t === '{') {
+                $depth++;
+            } elseif ($t === ')' || $t === ']' || $t === '}') {
+                $depth--;
+            } elseif ($t === ';' && $depth === 0) {
+                $parts[] = [$start, $i - 1];
+                $start = $i + 1;
+            }
+        }
+        if (count($parts) !== 2) {
+            return null;
+        }
+        $parts[] = [$start, $q - 1];
+        return $parts;
+    }
+
+    /**
+     * 静态估算迭代次数；null = 估不出（按大循环处理）。
+     * @param array<int,mixed> $tokens
+     */
+    private function estimateIterations(array $tokens, array $loop): ?int
+    {
+        $kind = $loop['kind'];
+        if ($kind === 'foreach') {
+            return $this->estimateForeach($tokens, $loop);
+        }
+        if ($loop['condStart'] < 0 || $loop['condEnd'] < $loop['condStart']) {
+            return null;
+        }
+        $cond = array_slice($tokens, $loop['condStart'], $loop['condEnd'] - $loop['condStart'] + 1);
+        $b = $this->parseCondBound($cond);
+        if ($b === null) {
+            return null;
+        }
+        [$var, $op, $bound] = $b;
+        $start = null;
+        $step = 1;
+        if ($kind === 'for') {
+            $sec = $this->forSections($tokens, $loop['parenStart'], $loop['parenEnd']);
+            if ($sec === null) {
+                return null;
+            }
+            $init = array_slice($tokens, $sec[0][0], $sec[0][1] - $sec[0][0] + 1);
+            $stepT = array_slice($tokens, $sec[2][0], $sec[2][1] - $sec[2][0] + 1);
+            $start = $this->parseInitAssign($init, $var);
+            $step = $this->parseStepDelta($stepT, $var) ?? 0;
+            if ($step <= 0) {
+                return null;
+            }
+        } else {
+            $start = $this->findPrevAssign($tokens, $loop['headStart'], $var);
+        }
+        if ($start === null) {
+            return null;
+        }
+        return $this->iterCount($start, $op, $bound, $step);
+    }
+
+    /** foreach 只看「数组字面量 / range(a,b)」这两种能数清的形态 */
+    private function estimateForeach(array $tokens, array $loop): ?int
+    {
+        $p = $loop['parenStart'];
+        $q = $loop['parenEnd'];
+        // 找顶层 `as`
+        $depth = 0;
+        $as = -1;
+        for ($i = $p + 1; $i < $q; $i++) {
+            $t = $tokens[$i];
+            if (is_string($t)) {
+                if ($t === '(' || $t === '[' || $t === '{') {
+                    $depth++;
+                } elseif ($t === ')' || $t === ']' || $t === '}') {
+                    $depth--;
+                }
+                continue;
+            }
+            if ($depth === 0 && $t[0] === T_AS) {
+                $as = $i;
+                break;
+            }
+        }
+        if ($as < 0) {
+            return null;
+        }
+        $s = $this->nextSignificant($tokens, $p, 1);
+        $e = Parser::prevSignificant($tokens, $as);
+        if ($s < 0 || $e < 0 || $e < $s) {
+            return null;
+        }
+        $expr = array_slice($tokens, $s, $e - $s + 1);
+        $sig = [];
+        foreach ($expr as $t) {
+            if (!$this->isWs($t)) {
+                $sig[] = $t;
+            }
+        }
+        if ($sig === []) {
+            return null;
+        }
+        // [...]
+        if ($this->isChar($sig[0], '[') && $this->isChar($sig[count($sig) - 1], ']')) {
+            return $this->countArrayItems($sig);
+        }
+        // array(...)
+        if (is_array($sig[0]) && $sig[0][0] === T_ARRAY) {
+            $k = 1;
+            while ($k < count($sig) && $this->isWs($sig[$k])) {
+                $k++;
+            }
+            if (isset($sig[$k]) && $this->isChar($sig[$k], '(')) {
+                return $this->countArrayItems($sig);
+            }
+        }
+        // range(a, b)
+        if (is_array($sig[0]) && $sig[0][0] === T_STRING && strtolower($sig[0][1]) === 'range'
+            && isset($sig[1]) && $this->isChar($sig[1], '(')) {
+            $nums = [];
+            foreach ($sig as $t) {
+                if (is_array($t) && $t[0] === T_LNUMBER) {
+                    $v = $this->intLiteralValue($t[1]);
+                    if ($v !== null) {
+                        $nums[] = $v;
+                    }
+                }
+            }
+            if (count($nums) === 2) {
+                return abs($nums[1] - $nums[0]) + 1;
+            }
+        }
+        return null;
+    }
+
+    /** 数数组字面量的顶层元素个数（已确认首尾是 [ ] 或 array( )） */
+    private function countArrayItems(array $sig): ?int
+    {
+        $n = count($sig);
+        $depth = 0;
+        $commas = 0;
+        $any = false;
+        for ($i = 0; $i < $n; $i++) {
+            $t = $sig[$i];
+            if (is_string($t)) {
+                if ($t === '(' || $t === '[' || $t === '{') {
+                    $depth++;
+                    continue;
+                }
+                if ($t === ')' || $t === ']' || $t === '}') {
+                    $depth--;
+                    continue;
+                }
+                if ($t === ',' && $depth === 1) {
+                    $commas++;
+                    continue;
+                }
+                if ($depth >= 1) {
+                    $any = true;
+                }
+                continue;
+            }
+            if ($depth >= 1) {
+                $any = true;
+            }
+        }
+        if (!$any) {
+            return 0;
+        }
+        return $commas + 1;
+    }
+
+    /**
+     * 从条件里提取 `$var <op> <int>`（或反向），返回 [变量名, op, 边界]。
+     * @return array{0:string,1:string,2:int}|null
+     */
+    private function parseCondBound(array $c): ?array
+    {
+        $n = count($c);
+        for ($i = 0; $i < $n; $i++) {
+            $op = $this->compareKind($c[$i]);
+            if ($op === null) {
+                $t = $c[$i];
+                if (is_array($t) && $t[0] === T_IS_NOT_EQUAL) {
+                    $op = 'ne';
+                } elseif (is_array($t) && $t[0] === T_IS_EQUAL) {
+                    $op = 'eq';
+                } else {
+                    continue;
+                }
+            }
+            $l = Parser::prevSignificant($c, $i);
+            $r = $this->nextSignificant($c, $i, 1);
+            if ($l < 0 || $r < 0) {
+                continue;
+            }
+            $lt = $c[$l] ?? null;
+            $rt = $c[$r] ?? null;
+            if (is_array($lt) && $lt[0] === T_VARIABLE && is_array($rt) && $rt[0] === T_LNUMBER) {
+                $v = $this->intLiteralValue($rt[1]);
+                if ($v !== null) {
+                    return [$lt[1], $op, $v];
+                }
+            }
+            if (is_array($rt) && $rt[0] === T_VARIABLE && is_array($lt) && $lt[0] === T_LNUMBER) {
+                $v = $this->intLiteralValue($lt[1]);
+                if ($v !== null) {
+                    return [$rt[1], $this->flipOp($op), $v];
+                }
+            }
+        }
+        return null;
+    }
+
+    private function flipOp(string $op): string
+    {
+        return ['lt' => 'gt', 'gt' => 'lt', 'lte' => 'gte', 'gte' => 'lte', 'ne' => 'ne', 'eq' => 'eq'][$op] ?? $op;
+    }
+
+    /** init 段里的 `$var = <int>` */
+    private function parseInitAssign(array $init, string $var): ?int
+    {
+        $sig = [];
+        foreach ($init as $t) {
+            if (!$this->isWs($t)) {
+                $sig[] = $t;
+            }
+        }
+        $c = count($sig);
+        for ($i = 0; $i + 2 < $c + 1; $i++) {
+            if (!isset($sig[$i + 1], $sig[$i + 2])) {
+                break;
+            }
+            $a = $sig[$i];
+            if (!is_array($a) || $a[0] !== T_VARIABLE || $a[1] !== $var) {
+                continue;
+            }
+            if (!is_string($sig[$i + 1]) || $sig[$i + 1] !== '=') {
+                continue;
+            }
+            $v = $sig[$i + 2];
+            if (is_array($v) && $v[0] === T_LNUMBER) {
+                return $this->intLiteralValue($v[1]);
+            }
+        }
+        return null;
+    }
+
+    /** step 段里的 `$var++` / `++$var` / `$var += N` */
+    private function parseStepDelta(array $step, string $var): ?int
+    {
+        $sig = [];
+        foreach ($step as $t) {
+            if (!$this->isWs($t)) {
+                $sig[] = $t;
+            }
+        }
+        $c = count($sig);
+        for ($i = 0; $i < $c; $i++) {
+            $t = $sig[$i];
+            // ++$var / --$var
+            if (is_array($t) && ($t[0] === T_INC || $t[0] === T_DEC) && isset($sig[$i + 1])
+                && is_array($sig[$i + 1]) && $sig[$i + 1][0] === T_VARIABLE && $sig[$i + 1][1] === $var) {
+                return $t[0] === T_INC ? 1 : -1;
+            }
+            // $var++ / $var--
+            if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === $var && isset($sig[$i + 1])
+                && is_array($sig[$i + 1]) && in_array($sig[$i + 1][0], [T_INC, T_DEC], true)) {
+                return $sig[$i + 1][0] === T_INC ? 1 : -1;
+            }
+            // $var += N
+            if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === $var && isset($sig[$i + 2])
+                && is_array($sig[$i + 1]) && in_array($sig[$i + 1][0], [T_PLUS_EQUAL, T_MINUS_EQUAL], true)
+                && is_array($sig[$i + 2]) && $sig[$i + 2][0] === T_LNUMBER) {
+                $v = $this->intLiteralValue($sig[$i + 2][1]);
+                if ($v !== null) {
+                    return $sig[$i + 1][0] === T_PLUS_EQUAL ? $v : -$v;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 循环前紧邻的上一条语句若是 `$var = <int>;`，返回该整数 */
+    private function findPrevAssign(array $tokens, int $i, string $var): ?int
+    {
+        $p = Parser::prevSignificant($tokens, $i);
+        if ($p < 0 || !$this->isChar($tokens[$p] ?? null, ';')) {
+            return null;
+        }
+        $s = $p - 1;
+        $depth = 0;
+        while ($s >= 0) {
+            $t = $tokens[$s];
+            $boundary = is_array($t)
+                ? in_array($t[0], [T_OPEN_TAG, T_CLOSE_TAG], true)
+                : in_array($t, [';', '{', '}', ':'], true);
+            if ($boundary && $depth === 0) {
+                break;
+            }
+            if (is_string($t)) {
+                if ($t === ')' || $t === ']' || $t === '}') {
+                    $depth++;
+                } elseif ($t === '(' || $t === '[' || $t === '{') {
+                    $depth--;
+                }
+            }
+            $s--;
+        }
+        $stmt = array_slice($tokens, $s + 1, $p - $s);
+        $sig = [];
+        foreach ($stmt as $t) {
+            if (!$this->isWs($t)) {
+                $sig[] = $t;
+            }
+        }
+        if (count($sig) < 3) {
+            return null;
+        }
+        if (is_array($sig[0]) && $sig[0][0] === T_VARIABLE && $sig[0][1] === $var
+            && is_string($sig[1]) && $sig[1] === '='
+            && is_array($sig[2]) && $sig[2][0] === T_LNUMBER) {
+            return $this->intLiteralValue($sig[2][1]);
+        }
+        return null;
+    }
+
+    /** 由起点 / 比较符 / 边界 / 步长算出迭代数 */
+    private function iterCount(int $start, string $op, int $bound, int $step): ?int
+    {
+        if ($step <= 0) {
+            return null;
+        }
+        $n = null;
+        switch ($op) {
+            case 'lt':
+                $n = (int) ceil(($bound - $start) / $step);
+                break;
+            case 'lte':
+                $n = (int) floor(($bound - $start) / $step) + 1;
+                break;
+            case 'gt':
+                $n = (int) ceil(($start - $bound) / $step);
+                break;
+            case 'gte':
+                $n = (int) floor(($start - $bound) / $step) + 1;
+                break;
+            case 'ne':
+                $d = abs($bound - $start);
+                if ($d % $step !== 0) {
+                    return null;
+                }
+                $n = (int) ($d / $step);
+                break;
+            default:
+                return null;
+        }
+        return $n < 0 ? null : $n;
     }
 }
 

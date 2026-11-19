@@ -1213,6 +1213,8 @@ final class Obfuscator
                 $map['logic_extreme']   = (bool) ($params['extreme'] ?? false);
                 $map['logic_minify']    = (bool) ($params['minify'] ?? false);
                 $map['logic_wild']      = (bool) ($params['wild'] ?? false);
+                $map['logic_loop_hoist']     = (bool) ($params['loop_hoist'] ?? $this->config->get('logic_loop_hoist', true));
+                $map['logic_loop_threshold'] = (int) ($params['loop_threshold'] ?? $this->config->get('logic_loop_threshold', 20));
                 break;
         }
         return new Config(array_merge($this->config->all(), $map));

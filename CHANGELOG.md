@@ -1,5 +1,50 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.13 — Logic stops paying per iteration (loop-invariant hoisting)
+
+> One performance fix, one config bug, one new test suite.
+>
+> **(1) The `logic` layer no longer charges its cost once per loop iteration.**
+> Logic rewrites every literal into a *function-call identity* — integers become
+> `strlen(sha1('…'))*N`, strings become `base64_decode(...)` / `hex2bin(...)` chains. Semantically
+> those are pure values, but they are **evaluated for real every time they execute**. A literal sitting
+> in a loop condition or loop body is therefore evaluated N times instead of once: a 20 000-round loop
+> runs 20 000 SHA-1 calls. Measured on a loop whose trip count comes from runtime (so no build-time
+> folding): `low` took **669 ms** and `mid` **506 ms**, against 0.2 ms native.
+>
+> v1.2.13 adds a **loop-invariant hoisting pass** that runs before any rewriting. For every loop it
+> statically estimates the trip count; when that count exceeds a threshold (default **20**), all
+> hoistable literals in the per-iteration regions (a `for`'s condition and step, a `while` /
+> `do-while` condition, and the body) are lifted in front of the loop as temporary variables. The
+> normal rewriting then builds the identity **once**, outside the loop, and the loop only reads a
+> variable. Same benchmark: **4.1 ms** (`low`) and **3.7 ms** (`mid`) — the per-iteration cost is gone.
+>
+> Safety boundaries are strict, and any violation leaves the loop untouched:
+> * only literals move — pure values, no side effects, no evaluation-order dependency;
+> * constant contexts (`const` / parameter defaults / property defaults / `case` / `#[…]` / `declare`)
+>   are skipped, as are jump-level operands (`continue 2` must stay an integer literal);
+> * function, closure, arrow-function and class bodies are skipped — those literals do **not** run per
+>   iteration, and hoisting them would make the body reference a variable it cannot see;
+> * a single-statement loop body, or a loop that is not preceded by a statement boundary (`else`,
+>   brace-less `if`), gets wrapped in `{ … }` so the prologue is not captured by `else` / `if`;
+> * loops with an unestimatable trip count (`while (true)`, `while ($row = f())`) are treated as large.
+>
+> Loops at or below the threshold keep their original obfuscated shape — spending a variable on three
+> iterations is not worth it. Tune with `--logic-loop-threshold=N`, disable with
+> `--no-logic-loop-hoist`. Enabled by default in **every** preset and in the per-shell logic pass.
+>
+> **(2) `--no-logic-loop-hoist` was ignored in layered mode.** `layerConfig()` hard-coded the parameter
+> default to `true`, overwriting the global switch for every preset. It now falls back to the global
+> config, so the flag works in both single-pass and layered builds.
+>
+> **(3) `tests/v1213_features.php`** — 16 assertions covering: large loops lose their in-loop
+> identities; small loops keep them; threshold override; `for` / `while` / `do-while` / `foreach`;
+> closure scope is respected; byte-identical runtime output across `min` / `low` / `mid` / `high`;
+> the off-switch; reproducibility under a fixed salt; version.
+>
+> Build cost: **+10%** on `ultra` (1.9 s → 2.1 s on a 20 KB fixture); artifact size usually
+> **shrinks**, since one identity replaces N copies.
+
 ## v1.2.12 — Multi-file builds stop colliding, performance doc rewritten
 
 > **(1) `Cannot redeclare function __mod_sha1()` in multi-file builds — fixed.**

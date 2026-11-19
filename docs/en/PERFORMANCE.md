@@ -1,224 +1,215 @@
-# PERFORMANCE.md — Measured Overhead
+# PERFORMANCE.md — measured cost
 
 [简体中文](../PERFORMANCE.md) · **English**
 
-> Scope: **v1.2.11**, PHP 8.5.12 CLI, single-core container, OPcache off, fixed `salt`
-> (same salt ⇒ byte-identical artifacts). This document describes **only the current
-> version**; every number can be reproduced with the commands in §2.
-> Absolute milliseconds only compare on the same machine — **ratios** travel.
+> Baseline: **v1.2.13**, PHP 8.3.6 CLI, single-core container, OPcache off, fixed `salt` (same salt reproduces byte-identically).
+> This document describes the **current** version only; every number can be re-run with the commands in section 2.
+> Absolute milliseconds only compare within one machine — **ratios** travel.
 
 ---
 
 ## 1. Summary
 
-| Preset | Real project page (TP8 `/shop/calc`) | Pure-compute microbench | Positioning |
+| Preset | Real project page (TP8 `/shop/calc`) | Pure compute | Positioning |
 |---|---:|---:|---|
-| `min` | **1.4×** (3.4 → 4.8 ms) | 1.0× | no anti-debug / no shell / no `eval`; deploy everywhere |
-| `low` | **9.2×** (→ 31 ms) | — | full token layer stack + multi-layer shells |
-| `mid` | **25×** (→ 83 ms) | — | + state machine / honeypot / anti-tamper |
-| `high` | **52×** (→ 174 ms) | **12.9×** | single-layer VM; core files only |
-| `max` | **73×** (→ 245 ms) | **12.9×** | VM + full shell stack |
-| `ultra` | **212×** (→ 713 ms) | **286×** | nested VM; offline / key algorithms |
+| `min` | **1.02×** (3.18 → 3.25 ms) | 1.0× | No anti-debug / no shell / no `eval`; safe to roll out everywhere |
+| `low` | **15.8×** (→ 50 ms) | — | Full token pipeline + multi-layer shells; usable on request paths |
+| `mid` | **44.6×** (→ 142 ms) | — | Above + state machine / honeypot / anti-tamper; back office and internal systems |
+| `high` | **74.8×** (→ 238 ms) | **10.1×** | Single VM; core files only, or behind a cache |
+| `max` | **83.6×** (→ 266 ms) | **10.8×** | Single VM + full shells; core files / license checks |
+| `ultra` | **246×** (→ 782 ms) | **50.4×** | Nested VM; offline jobs and critical algorithm fragments |
 
-Three takeaways:
+Four take-aways:
 
-1. **VM starts at `high`.** Its cost scales with *executed statements*, not file size.
-2. **`max` and `high` have identical pure-compute cost (12.9×).** The 1.4× gap between them is
-   per-request shell decoding and integrity checks, not business code.
-3. **`ultra` is 20×+ more expensive than `high`** — interpreter inside interpreter.
+1. **The VM starts at `high`.** Its cost scales with *executed statements*, not with file size.
+2. **`max` and `high` cost almost the same per computation** (10.8× vs 10.1×). The 1.1× difference on the page is entirely the **per-request shell decode + integrity check**, not business code.
+3. **`ultra` costs 3.3× more than `high`**: nested VM plus layered state machines — an interpreter interpreting an interpreter. Offline entry points only.
+4. **The `logic` layer no longer charges per iteration** (v1.2.13). Identities in loops are hoisted out and evaluated once. See section 5.
 
 ---
 
 ## 2. How to reproduce
 
 ```bash
-# A) Real project: 25 PHP files of the TP8 demo (app/ + route/ + view/)
-unzip -q tests/tptest.zip -d /tmp/tp8 && cd /tmp/tp8/tp8
-php /workspace/entry.php --input=app   --output=app_obf   --level=high --salt=tp8perf
-php /workspace/entry.php --input=route --output=route_obf --level=high --salt=tp8perf
-php /workspace/entry.php --input=view  --output=view_obf  --level=high --salt=tp8perf
-rm -rf app route view && mv app_obf app && mv route_obf route && mv view_obf view
-php -S 127.0.0.1:8090 -t public public/router.php   # one copy + one SQLite per preset
-curl -s -o /dev/null -w '%{time_total}\n' 'http://127.0.0.1:8090/shop/calc?base=100&qty=5'
+# A) Real project: TP8, 25 PHP files (app/ + route/ + config/, vendor left untouched)
+cp -a longtmp/tp8demo/tp8 /tmp/tp8src
+php entry.php --input=/tmp/tp8src --output=/tmp/tp8_low -low --whitelist-dirs=vendor --salt=tp8v1213
+php8.3 -S 127.0.0.1:9202 -t /tmp/tp8_low/public          # one copy + one SQLite per preset
+curl -s -o /dev/null -w '%{time_total}\n' 'http://127.0.0.1:9202/index.php/shop/calc'
 
-# B) Pure-compute microbench (VM presets)
-php tests/perf_bench.php --runs=5 --levels=high,max,ultra --workload=tests/perf_workload_vm.php
+# B) Pure compute microbenchmark (VM presets)
+php8.3 tests/perf_bench.php --runs=5 --levels=high,max,ultra --workload=tests/perf_workload_vm.php
 
-# C) Super-instruction on/off
-php entry.php --input=tests/perf_workload_vm.php --output=/tmp/off.php -high --salt=perf-bench-v1 --no-vm-super-isa
+# C) Loop-invariant hoisting: on/off (section 5)
+php entry.php --input=/tmp/bench4.php --output=/tmp/on.php  -low --no-loop-fold
+php entry.php --input=/tmp/bench4.php --output=/tmp/off.php -low --no-loop-fold --no-logic-loop-hoist
 ```
 
-Metric definitions:
+Metrics:
 
 | Metric | Meaning |
 |---|---|
-| Cold start | Wall-clock median of `php <artifact>`, including process start-up (≈ 28.7 ms here) |
-| Pure compute | `hrtime` self-measured inside the workload — excludes start-up and decoding |
-| Decode/compile | Cold start − pure compute − empty-script baseline ≈ shell decrypt + `eval` compile, **per request** |
-| Peak memory | `memory_get_peak_usage(false)` (exact bytes; `true` rounds to allocation blocks and hides anything under a few MB) |
+| Cold start | Wall clock of `php <artifact>`, including process start (≈ 24.3 ms CLI on this box) |
+| Pure compute | Measured with `hrtime` inside the workload — excludes process start and decode |
+| Decode / compile | Cold start − pure compute − empty-script baseline ≈ shell decrypt + `eval` compile (once per request) |
+| Peak memory | `memory_get_peak_usage(false)` — exact bytes; `true` rounds to allocation blocks and hides anything below a few MB |
+| Page latency | `curl` `time_total`, median of 15 **interleaved** rounds (all presets take turns, removing order drift) |
 
-Every variant must emit the **same checksum** as native, otherwise the row is void — performance
-numbers are meaningless when semantics are broken.
-
----
-
-## 3. Real project: ThinkPHP 8 (25 files / 16 classes, ORM, cache, middleware, validators, events)
-
-Native and each preset run from **their own copy with their own SQLite database**, same seed,
-`php -S` single process, one warm-up request then median of 5:
-
-| Variant | Build | Artifact size | `/shop/calc` | vs native | `/shop/dashboard` | vs native |
-|---|---:|---:|---:|---:|---:|---:|
-| native | — | — | 3.36 ms | 1.00× | 2.75 ms | 1.00× |
-| `min` | 0.24 s | 132 KB | 4.8 ms | 1.43× | 4.0 ms | 1.45× |
-| `low` | 13.2 s | 780 KB | 31.0 ms | 9.2× | 26.1 ms | 9.5× |
-| `mid` | 27.7 s | 1.26 MB | 83.2 ms | 24.8× | 65.0 ms | 23.6× |
-| `high` | 31.1 s | 3.19 MB | 173.5 ms | 51.6× | 123 ms | 44.7× |
-| `max` | 33.1 s | 4.66 MB | 245 ms | 72.9× | 178 ms | 64.7× |
-| `ultra` | 44.8 s | 13.25 MB | 713 ms | 212× | 553 ms | 201× |
-
-`/shop/calc` is a compute-heavy endpoint (sorting, de-duplication, FX bucketing, null-safe chains);
-`/shop/dashboard` renders a ~200-line PHP/HTML template. All six presets are **byte-identical** to
-native on both endpoints.
-
-**The `low` / `mid` overhead comes from the `logic` layer's identity building blocks, not from shell
-decoding.** `logic` rewrites literals and comparisons into identities built from `__mod_sha1()` /
-`__mod_strlen()` to defeat static evaluation; once such a block lands in a **loop condition or loop
-body**, it becomes one hash per iteration:
-
-| `$sum += $i;` × 2000 | Loop-only time |
-|---|---:|
-| native | 0.02 ms |
-| `low` | **180 ms** (90 µs / iteration) |
-| `mid` | **295 ms** |
-| `low` without the `logic` layer | 0.02 ms |
-
-This is why the pure-compute microbench can show thousands of times for `low` while the real page
-shows 9×: business code loops far less. **Loop-heavy algorithms belong on `high`** (the VM folds
-those constant blocks at compile time — 12.9×), or drop `logic` intensity to 1 on `low` / `mid`.
+Every variant **must** print the same checksum as native, otherwise the row is void — performance numbers are meaningless once semantics break.
+All six presets returned **byte-identical** `/shop/calc` bodies in this run.
 
 ---
 
-## 4. Pure-compute microbench: VM presets
+## 3. Real project: ThinkPHP 8 whole site (25 files — ORM, cache, middleware, validators, events)
 
-`tests/perf_workload_vm.php` (1.9 KB: arithmetic loops, functions, class methods, arrays, string
-hashing, recursion, closures, generators), native pure compute **1.31 ms**, median of 5:
+Single endpoint `/shop/calc` (price calculation: DB → discount → buckets → FX → JSON), 15 interleaved rounds.
+Size is the whole site directory, including the 4.2 MB `vendor` copied verbatim:
 
-| Variant | Build | Size | Cold start | Pure compute | Decode | Peak memory | vs native |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| native | — | 1.9 KB | 28.8 ms | 1.31 ms | — | 716 KB | 1.00× |
-| `high` | 1.78 s | 72.8 KB | 59.3 ms | 16.4 ms | 14.2 ms | 4.42 MB | **12.9×** |
-| `max` | 1.73 s | 85.7 KB | 64.8 ms | 16.4 ms | 19.7 ms | 5.20 MB | **12.9×** |
-| `ultra` | 1.62 s | 195.6 KB | 443.8 ms | 364.8 ms | 50.3 ms | 11.47 MB | **286×** |
+| Preset | Median | p90 | vs native | Size |
+|---|---:|---:|---:|---:|
+| native | 3.18 ms | 3.42 ms | 1.00× | — |
+| `min` | 3.25 ms | 3.83 ms | **1.02×** | 3.9 MB |
+| `low` | 50.4 ms | 55.3 ms | **15.8×** | 4.6 MB |
+| `mid` | 141.7 ms | 149.9 ms | **44.6×** | 5.3 MB |
+| `high` | 237.9 ms | 324.8 ms | **74.8×** | 7.0 MB |
+| `max` | 265.8 ms | 271.8 ms | **83.6×** | 7.3 MB |
+| `ultra` | 782.0 ms | 791.6 ms | **246×** | 15 MB |
 
-- `high` and `max` have **identical pure compute**; `max`'s extra 5.5 ms of cold start is shell
-  decoding + integrity checks — once per request, independent of workload.
-- `ultra` is a nested VM (outer interpreter dispatching an inner one): 22× `high`, and 195 KB vs 73 KB.
-- The gap to the real page (12.9× vs 52×) shows where time actually goes: framework boot, DB, templating.
+Reading the numbers:
+
+- `min` at 1.02× is the net effect of build-time constant folding plus renaming — effectively native speed.
+- `low` / `mid` are dominated by the **per-request decode chain** (`low`: 2 eval layers + gz; `mid`: 5 eval layers + anti-tamper + state machine), independent of business volume.
+- `high`'s p90 is well above its median (325 vs 238 ms): the VM compiles bytecode on first load, so cold requests cost more. With OPcache enabled the curve flattens.
+- `ultra`'s 15 MB is a cost by itself (disk + IO on every `include`). Offline only.
 
 ---
 
-## 5. Super instructions: on/off and v1.2.10 → v1.2.11
+## 4. Pure compute microbenchmark: VM presets
 
-`--vm-super-isa` merges 2–4 hot instructions into one opcode. Since v1.2.11 the absorbed
-sub-instructions are **really deleted** (v1.2.10 and earlier padded with `NOP`), and the builder
-recomputes in-segment jump offsets plus exception-table pcs.
+Workload: integer/string-heavy computation plus generators, fixed checksum. Median of 5 runs:
 
-**Bytecode instruction count** (same workload, same salt, builder-side probe):
+| Variant | Pure compute | vs native | Peak memory | Decode/compile | Build time |
+|---|---:|---:|---:|---:|---:|
+| native | 1.3 ms | 1.00× | 0.64 MB | — | — |
+| `high` | 12.6 ms | **10.1×** | 6.44 MB | 23.1 ms | 1.8 s |
+| `max` | 13.5 ms | **10.8×** | 7.14 MB | 26.0 ms | 1.9 s |
+| `ultra` | 63.0 ms | **50.4×** | 13.84 MB | 63.8 ms | 1.7 s |
 
-| | Before merge | After merge |
+- The VM's cost is **interpretation**: one dispatch per statement. 10× matches "each statement becomes ~10 VM ops".
+- `ultra` is a VM inside a VM — the outer interpreter has to interpret the inner interpreter's loop, hence 5× `high` rather than 2×.
+- Memory growth comes from the **bytecode constant pool and symbol table**; it scales with source size, not runtime.
+
+---
+
+## 5. Loop-invariant hoisting (v1.2.13)
+
+### 5.1 The problem
+
+The `logic` layer rewrites every literal into a **function-call identity**:
+
+```php
+// source
+for ($i = 0; $i < 20000; $i++) { $acc += strlen('abcdefghijklmnop'); }
+
+// after logic — both fragments are really evaluated on every iteration
+for ($i = 0; $i < ((strlen(sha1('Q5KtYDi'))*500)-0); $i++) {
+    $acc += strlen(hex2bin('616263').str_rot13('def'));
+}
+```
+
+Semantically these are pure values, but **the loop multiplies their evaluation count**: 20 000 rounds = 20 000 SHA-1 calls plus 20 000 string decodes.
+That is why `low` / `mid` were two orders of magnitude slower than native on loop-heavy code.
+
+### 5.2 The fix
+
+Before rewriting, `logic` now runs a **loop-invariant code motion** pass:
+
+1. Statically estimate each loop's trip count (`for` init/bound/step, the assignment right before a `while`, a `foreach` over an array literal or `range()`);
+2. When the count is **> threshold (default 20)**, lift every hoistable literal from the per-iteration regions (condition, step, body) to **in front of** the loop, each into a temporary variable;
+3. Conditions and bodies then only read variables, and the identity is built exactly once, outside the loop.
+
+```php
+// after hoisting
+$_90962bb54 = (((strlen(sha1('qfOBSxw'))*500)^0) + (in_array(1,[])?0:0));   // evaluated once
+for ($i = (0); ((($i) <=> ($_90962bb54)) === -1); $i++) { $acc += $i; }
+```
+
+### 5.3 Measured
+
+Workload: 20 000 rounds, trip count from runtime (**not** foldable at build time), body holds one string literal and one comparison.
+Median of 7 runs:
+
+| Build | Runtime | vs native |
 |---|---:|---:|
-| v1.2.10 | 565 | 565 (NOP padding, count unchanged) |
-| v1.2.11 | 565 | **454 (−19.6%)** |
+| native | 0.2 ms | 1× |
+| `low` (default, hoisting on) | **4.1 ms** | 20× |
+| `low` (`--no-logic-loop-hoist`) | **669 ms** | 3345× |
+| `mid` (default, hoisting on) | **3.7 ms** | 18× |
+| `mid` (`--no-logic-loop-hoist`) | **506 ms** | 2530× |
 
-**Runtime** (`salt=perf-bench-v1`, median of 15 interleaved runs, two independent experiments):
+**Hoisting removes the 25–34 µs per-iteration identity cost entirely**; the remaining 4 ms is shell decoding (once per request, independent of trip count).
+With hoisting off, every extra round pays for another hash/decode — the gap widens with the trip count.
 
-| Version | Super ISA | Cold start `high` | Pure compute `high` | Peak mem `high` | Cold start `max` | Peak mem `max` |
-|---|---|---:|---:|---:|---:|---:|
-| v1.2.10 | on | 60.9 ms | 16.96 ms | 3.96 MB | 62.7 ms | 4.75 MB |
-| v1.2.10 | off | 61.3 ms | 17.02 ms | 3.96 MB | 62.6 ms | 4.74 MB |
-| v1.2.11 | on | 61.8 ms | 16.73 ms | 4.64 MB | 66.1 ms | 5.45 MB |
-| v1.2.11 | off | 62.1 ms | 16.78 ms | 4.62 MB | 64.1 ms | 5.44 MB |
+### 5.4 Boundaries
 
-**Conclusions — this is the answer to "is the new super-instruction slower?"**:
+Only **literals** move (pure values, no side effects, no evaluation-order dependency). Everything below is left untouched:
 
-1. **Super instructions cost nothing.** Within a version, on/off differs by −0.4…+0.4 ms cold start
-   and −0.1…+0.3 ms compute — **all inside the noise band** (the same artifact varies ±1.5 ms wall
-   across 15 runs). The dispatches saved are offset by per-sub-instruction operand decoding inside the
-   composite handler. That matches its purpose: **anti-analysis at zero cost**, not a speed-up.
-2. **The +17% memory difference between versions (3.96 → 4.64 MB) has nothing to do with super
-   instructions**: with super instructions disabled, v1.2.11 still sits at 4.62 MB. It is the price of
-   the VM semantic fixes in §5.1 — statements that used to degrade to `EVAL_STMT` (one string handed
-   to native `eval`) are now genuinely compiled into dozens of opcode arrays, which cost far more.
-3. **`max` cold start +2–3 ms is stable and reproducible** (66.1 / 64.1 vs 62.7 / 62.6) and equally
-   unrelated to super instructions (off still +1.5 ms) — it comes from unpacking a larger instruction array.
-4. **gz size grows slightly**: `NOP` is a two-byte, highly repetitive `[199][0]` that gzip nearly
-   eliminates. Enabling super instructions costs `high` +56…+184 B and `max` +176…+964 B; v1.2.11 vs
-   v1.2.10 totals +376 B (`high`) / +1,448 B (`max`) = **+0.5% / +1.7%**.
+- constant contexts: `const` / parameter defaults / property defaults / `case` labels / `#[…]` / `declare(...)`;
+- jump-level operands (`continue 2` / `break 3` must stay integer literals);
+- function, closure, arrow-function and class bodies — those literals do **not** run per iteration, and hoisting them would make the body reference a variable it cannot see;
+- loops at or below the threshold — spending a variable to save a few microseconds is a bad trade, so their original obfuscated shape stays;
+- loops whose trip count cannot be estimated (`while (true)`, `while ($row = f())`) — treated as large, always hoisted.
 
-### 5.1 VM semantic bugs fixed in the same release (their price is the memory above)
+When the loop body is a single statement, or the token before the loop is not a statement boundary (`else`, brace-less `if`), the whole segment is wrapped in `{ … }` so the prologue is not captured by `else` / `if`.
 
-| Bug | Fix | Cost |
-|---|---|---|
-| Top-level variables in the opaque payload (`PHPRUN`) landed in closure locals; `global $x` read `null` | scan `global` / `$GLOBALS['k']` before execution and pre-bind as references | one scan per payload |
-| Bitwise `$a & $b` failed to compile | accept all three `&` token forms | none |
-| Bare block `{ ... }` unsupported | compile as a statement group | none |
-| `__NAMESPACE__` unsupported | fold at build time | none |
-| `funcsplit` extracted statements with `->` / `?->` / `::` into **native** functions while VM classes are `stdClass` proxies → `Call to undefined method` | stop extracting those | one less split pass |
-
-The cost concentrates in "more statements really go into the VM": `high` peak memory +17%,
-`max` +15%, pure compute within noise. In exchange `preset_e2e` went from "fails at random with a
-different salt" to a stable 72/72.
+**Disable** with `--no-logic-loop-hoist`; tune with `--logic-loop-threshold=N` (0 = hoist every loop).
+Enabled by default in all six presets and in the per-shell `logic` pass.
 
 ---
 
-## 6. Where the money goes
+## 6. Where the cost actually is
 
 | Switch | Order of magnitude | Notes |
 |---|---|---|
-| `shell:vm` | **10–50×** | the only switch that scales with executed statements; calls are the most expensive op |
-| `logic` (`--logic-intensity`) | **0 to thousands×**, depends on placement | in a loop condition/body = one hash per iteration; in the init section it is free |
-| `shell:gz` / `shell:eval` / `shell:anti_*` | **5–50 ms per request, fixed** | decoding + integrity checks, independent of workload |
-| `--vm-junk` | ~+20% | junk instructions are really executed |
-| `morph` / `keychain` / `builtinReplace` / `probe` / `fakeFog` | ≈ 0 runtime | size and build time only — best value for money |
-| `constfold` | **negative** | the computation disappears at build time |
-| `funcsplit` | +0.1–0.3 µs per call | replaces inline statements with a call; `level=3` on a hot loop is measurable |
-| `var` / `func` / `class` renaming | ≈ 0 | pure static substitution |
+| `shell:vm` | **Order of magnitude (10–50×)** | The only switch that scales with executed statements; function/method calls are the most expensive operation |
+| `logic` (`--logic-intensity`) | **≈ 0** (since v1.2.13) | Literal identities are hoisted out of loops and evaluated once; short loops (≤ 20 rounds) keep their shape at negligible cost |
+| `shell:gz` / `shell:eval` / `shell:anti_*` | **15–50 ms per request, flat** | Decode + integrity checks, independent of workload |
+| `--vm-junk` | ~ +20% | Junk instructions are **really executed**, not skipped |
+| `morph` / `keychain` / `builtinReplace` / `probe` / `fakeFog` | ≈ 0 at runtime | Size and build time only — the best value in the tool |
+| `constfold` | **Negative cost** | Folds literals at build time; that computation disappears at runtime |
+| `funcsplit` | +0.1–0.3 µs per call | Turns inline statements into a call; `level=3` inside a hot loop is measurable |
+| `var` / `func` / `class` renaming | ≈ 0 | Pure static substitution |
+
+`--vm-super-isa`: on/off differences within the same version fall inside the 15-run noise band (±1.5 ms wall).
+It reduces dispatch count, but the composite handler still decodes each sub-instruction, so the saved dispatches are offset.
+It is **anti-analysis at zero cost** — do not expect a speed-up.
 
 ---
 
-## 7. Known characteristics and mitigations
+## 7. Known characteristics and workarounds
 
-1. **`logic` blocks in hot loops.** `low` / `mid` identities can land in loop conditions
-   (`for ($i = 0; $i < (__mod_strlen(...)*50); $i++)`), re-hashing every iteration. Mitigate with
-   `--logic-intensity=1`, a custom config without the `logic` layer, or `high` (VM folds them at compile time).
-2. **Decoding happens once per request.** Without OPcache, `eval`'d code is not cached — enable OPcache
-   (`--opcache`) for high QPS, otherwise every request re-decrypts and recompiles the outer shells.
-3. **`ultra` is for low-frequency entry points.** 286× compute, 212× page, 13 MB artifacts.
-4. **Under VM presets user functions are bytecode, not PHP functions**: `function_exists()` and string
-   callbacks are resolved internally; code relying on reflection over user functions should use `low` / `mid`.
-5. **Generators / large arrays cost more memory under VM**: microbench peak 4.4 MB vs 0.7 MB native
-   (`high`), 11.5 MB on `ultra`.
-6. **Function names are unique per file.** `__mod_*` blocks injected by `logic` and inlined by
-   `module_link` carry a file-derived segment (`__ml<layer><file>_<name>`), so multi-file projects never
-   hit `Cannot redeclare`. Reproducible for the same source and salt.
-7. To disable a slow switch: `--no-vm-super-isa`, `--vm-junk=0`, `--no-vm-cpool`,
-   `--no-newline-poison`, `--no-shell-shield` (the last has the biggest effect on size and decode time).
+1. **Decoding happens once per request.** Without OPcache, `eval`'d code is not cached as bytecode. At high QPS, enable OPcache (`--opcache` warm-up), otherwise every request re-decrypts and recompiles the outer shells.
+2. **`ultra` is for low-frequency entry points only.** Nested VM: 50× on pure compute, 246× on the page, 15 MB of artifacts. Fine for a single core algorithm, not for a whole site.
+3. **Under the VM, user functions become bytecode**, not PHP functions: `function_exists()` and string callbacks are resolved inside the VM. Code that walks user functions via reflection should use `low` / `mid`.
+4. **Generators / large arrays cost more memory under the VM.** Microbenchmark peak 6.4 MB vs 0.6 MB native (`high`), 13.8 MB for `ultra`.
+5. **Function names are unique per file.** The `__mod_*` identities injected by `logic`, once inlined by `module_link`, carry a **file-derived segment** (`__ml<layer><file>_<name>`), so multi-file projects never hit `Cannot redeclare`. Same source + same salt reproduces byte-identically.
+6. **Loop-heavy custom algorithms.** `logic` no longer charges per iteration, but `funcsplit` (level 3) and `statemachine` still do. Prefer `high` for this code (the VM folds constants at compile time), or whitelist the hot functions.
+7. **Turning individual switches off**: `--no-logic-loop-hoist`, `--no-vm-super-isa`, `--vm-junk=0`, `--no-vm-cpool`, `--no-newline-poison`, `--no-shell-shield` (the last has the biggest effect on size and decode time).
 
 ---
 
-## 8. Selection guide
+## 8. Choosing a preset
 
-| Scenario | Recommendation | Why |
+| Scenario | Preset | Why |
 |---|---|---|
-| High-QPS web APIs, internal systems | `low` or `mid` | 9–25×; absolute latency is still tens of milliseconds — avoid loop-heavy algorithms |
-| Loop-heavy in-house algorithms | `high` | the VM folds constant blocks: 12.9× beats `low`'s 90 µs/iteration |
-| Distributed components / SDKs | `high` | single-layer VM, bounded cost, enough anti-analysis |
-| License checks, billing cores | `max` (that file only) | VM + full shells, cost confined to a few files |
-| CLI batch / offline jobs | `max` / `ultra` | runtime is irrelevant, protection is not |
-| Frameworks (ThinkPHP / Laravel) | use the presets | all six are byte-identical to native; property/parameter names are preserved by default |
+| High-QPS APIs, internal systems | `low` or `mid` | 16–45×, still tens of milliseconds; `logic` no longer drags loops down |
+| Custom algorithms / loop-heavy code | `high` | The VM folds constants at compile time: 10× pure compute, more predictable than `mid`'s 45× page cost |
+| Distributable components / SDKs | `high` | Single VM, bounded cost, plenty of resistance |
+| License checks, billing core | `max` (on that file only) | VM + full shells, cost confined to a few files |
+| CLI batch jobs / offline | `max` / `ultra` | Runtime does not matter; maximum protection |
+| Framework projects (ThinkPHP / Laravel) | Use a preset as-is | All six presets are byte-identical to native; property and parameter names are preserved |
 
-**Mixed layering** is the practical answer: `max` on the few core files, `mid` everywhere else.
+**Mixed layering** is the most practical setup: `max` for core files, `mid` for the rest.
 
 ```bash
 php entry.php --input=app/service/PriceCalculator.php \
