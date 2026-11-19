@@ -34,6 +34,8 @@ final class VmRuntimeGenerator
     // P8 架构方向运行时开关（buildArtifact 入口统一写入）
     private bool $builtinReplace = false;   // arch_builtin_replace：natTbl 名编码
     private bool $morph = false;            // arch_morph_runtime：第二层派发 scramble
+    // v1.2.8：VM 解释器本体用 Logic 恒等式混淆整数字面量（默认开；--no-vm-runtime-logic 关）
+    private bool $vmRuntimeLogic = true;
     private string $natKey = '';            // natTbl 名编码密钥（盐派生）
     // VM 常量池加密（默认开）：PUSH_C 字面量抽入独立常量池、指令改索引引用，
     // 池以独立密钥（计数器模式 SHA-256 流）加密后 base64 内嵌，运行期解码。
@@ -141,6 +143,9 @@ final class VmRuntimeGenerator
         $this->morph          = $morph;
         // VM 常量池加密开关（默认开；--no-vm-cpool 关）
         $this->cpool          = (bool) ($opts['cpool'] ?? true);
+        // v1.2.8：VM 解释器本体 Logic 恒等式混淆（默认开；--no-vm-runtime-logic 关）
+        $this->vmRuntimeLogic = (bool) ($opts['vmRuntimeLogic'] ?? true);
+        $this->vmMorpher->setLogicExpr($this->vmRuntimeLogic);
         // VM JIT 友好模式（默认开）：解释器以可被 OPcache 追踪 JIT 编译的【内联栈】形式发射——
         // 编码逻辑直接内联进压栈闭包（去掉 MCENC 嵌套闭包调用，每次压栈省一层调用开销），
         // 整段解释器是一个平坦大函数，OPcache tracing-JIT 能整体追踪编译。

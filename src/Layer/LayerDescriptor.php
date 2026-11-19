@@ -155,6 +155,17 @@ final class LayerDescriptor
                 ],
                 'tags' => ['优化', '反分析'],
             ],
+            'aggressive_prune' => [
+                'kind'  => 'token',
+                'label' => '激进恒等式压缩 + 剪枝（性能优先，默认关）',
+                'desc'  => '把反 AST 恒等式（strlen(md5(\'x\'))、base64_decode/hex2bin、移位恒等…）用真实 PHP '
+                    . '求值折叠回字面量，并把恒真/恒假死分支（$x===$x、业务式恒真）剪成直达路径。'
+                    . '运行时不再重算恒等式、不再走诱饵判断，显著压低计算密集负载的开销。'
+                    . '代价：等于替破解者去混淆，会削弱反 AST 强度——故默认关闭，仅在 --aggressive-prune '
+                    . '或 --level=aggressive 时启用。严格白名单 + 真实求值双校验 + 声明保护，绝不改炸输出',
+                'params' => [],
+                'tags' => ['优化', '默认关'],
+            ],
             'funcsplit' => [
                 'kind'  => 'token',
                 'label' => '函数型代码打散',

@@ -315,3 +315,47 @@ compare stdout + exit code byte-for-byte against the original". On the 525-file 
 are byte-identical in stdout; the sole diff is `public/index.php`, where a standalone include makes
 the defense shell silently set rc=1 at shutdown (stdout still byte-identical, no misfire under
 normal web-SAPI requests) — a known de-shelled standalone edge. See `CHANGELOG.md` v1.2.7.
+
+---
+
+## 13. v1.2.8: zero-eval loop folding / Logic-first pruning / VM interpreter morphing
+
+**Build-time pure-compute loop folding (`loop_fold`, on by default)**: literal-bounded, pure
+deterministic loops are evaluated at build time by `ConstEval` — a token-level symbolic evaluator
+using PHP's native operators, with **zero `eval`** — and replaced by their result literals. On an
+online obfuscation service, `eval(user tokens)` is a free webshell injector; that surface is now
+removed. On the same `tests/perf_workload.php` (200k-iteration arithmetic loop, native ~12 ms),
+median of 5 runs:
+
+| Variant | Compute time | vs native | stdout byte-identical |
+|---|---:|---:|:---:|
+| Native (unobfuscated) | ~12.1 ms | 1.00× | — |
+| `min` + loop folding | **~8.56 ms** | **0.71× (faster)** | ✓ |
+| `min` + `--no-loop-fold` | ~12.99 ms | 1.07× | ✓ |
+
+Folded output is ~30% faster than native — the 200k loop becomes one result literal, zero runtime
+iterations. Safety guards (token whitelist, 1M iteration cap, double strict comparison, liveness
+write-back, leave-unchanged-on-failure, zero eval) ensure only fully deterministic pure-compute
+loops fold. `--no-loop-fold` disables it.
+
+**Logic-first aggressive pruning (`--aggressive-prune` / `--level=aggressive`, off by default)**:
+this release moves the layer from after Logic to **before** Logic — it folds only the user's own
+identities and dead branches, never the obfuscator's injected identities (no de-obfuscation
+toolkit handed to attackers). Opt-in; min–ultra unchanged. The `aggressive` preset is byte-identical.
+
+**VM interpreter Logic morphing (new)**: the interpreter's integer literals become compile-time
+bitwise identity expressions `N → ((Ka) ^ (Kb))` (salt-derived, reproducible); readable opcode
+numbers vanish from the interpreter source. These are legal constant expressions (case labels,
+array indices, default parameters), evaluated at compile time — **zero runtime cost**, so §1
+latency conclusions are unchanged. `break`/`continue` level operands are skipped;
+`--no-vm-runtime-logic` restores the v1.2.6 hexadecimal form. high/max/ultra/aggressive verified
+byte-identical.
+
+**Stronger Logic layers**: LogicRewriter / DecoyBranches stay at maximum safe intensity
+(intensity / decoy_level = 3; OOM-prone wild remains opt-in); 4 new constant-true/false decoy
+templates add branch variety.
+
+**Runtime KDF keeps its original algorithm**: the earlier KDF downgrades were reverted —
+StructPoison rounds back to 3 (ultra/aggressive 5), the VM constant pool uses the unbounded
+SHA-256 counter-mode stream, and the honeypot 1.4 s busy loop is unconditional. All levels
+byte-identical.

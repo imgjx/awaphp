@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.7');
+define('OBFUSCATOR_VERSION', '1.2.8');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -80,6 +80,7 @@ foreach ([
     'src/AntiAst/AntiAst.php',
     'src/LogicTransform/LogicRewriter.php',
     'src/LogicTransform/ConstFolder.php',
+    'src/Support/ConstEval.php',
     'src/LogicTransform/FunctionSplitter.php',
     'src/LogicTransform/DecoyBranches.php',
     'src/Project/SymbolTable.php',
@@ -96,7 +97,7 @@ function obf_parse_args(array $argv): array
     ];
     $out = [];
     // 等级短旗标：-min / -low / -mid / -high / -max / -ultra -> level=<name>
-    static $LEVEL_FLAGS = ['-min' => 'min', '-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max', '-ultra' => 'ultra'];
+    static $LEVEL_FLAGS = ['-min' => 'min', '-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max', '-ultra' => 'ultra', '-aggressive' => 'aggressive'];
     $n = count($argv);
     for ($i = 1; $i < $n; $i++) {
         $a = $argv[$i];
@@ -152,6 +153,20 @@ function obf_parse_args(array $argv): array
             $out['const_fold'] = false;
             continue;
         }
+        // v1.2.8：构建期纯计算循环折叠（默认开；关掉后 20 万次循环不再被构建期求值）
+        if ($a === '--no-loop-fold') {
+            $out['loop_fold'] = false;
+            continue;
+        }
+        // v1.2.8：激进恒等式压缩 + 死分支剪枝层（默认关，避免削弱现有各档反 AST 强度）
+        if ($a === '--aggressive-prune') {
+            $out['aggressive_prune'] = true;
+            continue;
+        }
+        if ($a === '--no-aggressive-prune') {
+            $out['aggressive_prune'] = false;
+            continue;
+        }
         if ($a === '--func-split') {
             $out['func_split'] = true;
             continue;
@@ -195,6 +210,10 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-vm-selfcheck') {
             $out['vm_selfcheck'] = false;
+            continue;
+        }
+        if ($a === '--no-vm-runtime-logic') {
+            $out['vm_runtime_logic'] = false;
             continue;
         }
         if ($a === '--no-sm-opaque') {
@@ -299,8 +318,9 @@ function obf_help(): string
   -o, --output=       输出文件或目录
   -c, --config=       指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；
                         .php 文件需 return 一个数组，可直接用 PHP 表达式与注释，便于维护）
-      --level=        等级预设：min|low|mid|high|max|ultra（一键切换完整分层方案）
-  -min -low -mid -high -max -ultra  等价 --level=<name> 的短旗标
+      --level=        等级预设：min|low|mid|high|max|ultra|aggressive（一键切换完整分层方案；
+                       aggressive=v1.2.8 性能优先档：ultra 全保护 + 恒等式压缩/死分支剪枝）
+  -min -low -mid -high -max -ultra  等价 --level=<name> 的短旗标（-aggressive 同）
                         （等级仅作默认，散装参数如 --level high --junk_intensity 10 可叠加覆盖；
                          min 为最低强度：只做变量名/数字/字符串/去注释/压空白，无任何壳，
                            运行时仅每字符串一次 base64_decode，不改变运行特征；
@@ -340,6 +360,9 @@ function obf_help(): string
       --compress       代码压缩（去空白/注释）
       --copyright=     版权注释注入文本
       --no-banner      关闭文件头"混淆引擎名+版本号"注入
+      --no-loop-fold   v1.2.8：关闭构建期纯计算循环折叠（默认开，零 eval 符号执行，20 万次循环被构建期算完）
+      --aggressive-prune  v1.2.8：激进恒等式压缩 + 死分支剪枝（默认关），置于 Logic 之前只压缩用户代码、
+                       不折叠 Logic 注入的恒等式；或用 --level=aggressive 一键开启（ultra 全部保护 + 本层）
 
 高级（第三阶段）
       --cfg=          控制流混淆：low|medium|high
@@ -379,6 +402,8 @@ function obf_help(): string
       --no-vm-inloop   关闭 VM 内反调试（默认随 --vm-probe 开启）：解释器 dispatch
                        循环内每 512~8192 条指令复检调试器/hook 扩展，命中把盐派生
                        污染因子混入 opcode 解码，指令流静默错乱（无可下断点的 exit）
+      --no-vm-runtime-logic v1.2.8：关闭 VM 解释器 Logic 混淆（默认开）：解释器整数字面量改成
+                       编译期位运算恒等式，opcode 数字从源码消失、零运行成本；关闭退回十六进制形态
       --no-vm-selfcheck 关闭 VM 高级环境自检（默认开）：解释器初始化校验「外壳绑定标记」
                        （混淆器在最外层注入的盐派生常量）。标记缺失/被删即判定 VM 被抠出
                        独立运行，把污染因子混入 opcode 解码使其静默错乱（脱壳检测）

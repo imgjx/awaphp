@@ -27,10 +27,38 @@ declare(strict_types=1);
 final class VmRuntimeMorpher
 {
     private Salt $salt;
+    private bool $logicExpr;
+    private ?IdentityExpr $idExpr = null;
+    private int $idSeed = 0;
 
-    public function __construct(Salt $salt)
+    /**
+     * @param bool $logicExpr v1.2.8：是否用 Logic 恒等式混淆解释器里的整数字面量。
+     *                       开启时十进制整数 → ((Ka)^(Kb)) 纯位运算常量表达式（case 标签/
+     *                       数组索引/默认参数均合法、编译期求值零运行成本）；关闭时退回
+     *                       v1.2.6 的纯十六进制等值重写。
+     */
+    public function __construct(Salt $salt, bool $logicExpr = true)
     {
         $this->salt = $salt;
+        $this->setLogicExpr($logicExpr);
+    }
+
+    /** 运行时切换 Logic 恒等式混淆（buildArtifact 依据 opts 调用）。 */
+    public function setLogicExpr(bool $on): void
+    {
+        $this->logicExpr = $on;
+        if ($on) {
+            if (!class_exists(IdentityExpr::class, false)) {
+                require_once __DIR__ . '/../AntiAst/IdentityExpr.php';
+            }
+            $this->idExpr = new IdentityExpr();
+            $this->idSeed = $this->salt->isEmpty()
+                ? 0
+                : (int) hexdec(substr(bin2hex($this->salt->derive('vm-logic-expr', 4)), 0, 7));
+            $this->idExpr->setSeed($this->idSeed);
+        } else {
+            $this->idExpr = null;
+        }
     }
 
     /**
@@ -70,9 +98,13 @@ final class VmRuntimeMorpher
             return $php; // 解析失败就原样返回（宁可不混淆）
         }
         $out = '';
+        $prevSig = null; // 上一个有效 token（用于识别 break/continue 层级操作数）
         foreach ($tokens as $t) {
             if (!is_array($t)) {
                 $out .= $t;
+                if (!Parser::isWhitespaceOrComment($t)) {
+                    $prevSig = $t;
+                }
                 continue;
             }
             if ($t[0] === T_LNUMBER) {
@@ -80,12 +112,29 @@ final class VmRuntimeMorpher
                 // 跳过已是 0x/0b/0o 形态、带下划线、或超出 32 位安全区的数字
                 if (preg_match('/^0[xXbBoO]/', $text) || str_contains($text, '_')) {
                     $out .= $text;
+                    $prevSig = $t;
                     continue;
                 }
                 if (ctype_digit($text) && strlen($text) <= 10) {
                     $v = (int) $text;
                     if ($v >= 0 && $v <= 0x7fffffff) {
-                        $t[1] = '0x' . dechex($v);
+                        // break/continue 的层级操作数必须是整数字面量，不能改写成表达式
+                        $isJumpLevel = is_string($prevSig)
+                            ? false
+                            : (is_array($prevSig) && in_array($prevSig[0], [T_BREAK, T_CONTINUE], true));
+                        if ($isJumpLevel) {
+                            $out .= $text; // 保持裸字面量
+                            $prevSig = $t;
+                            continue;
+                        }
+                        if ($this->logicExpr && $this->idExpr !== null) {
+                            // v1.2.8：Logic 恒等式混淆——纯位运算常量表达式，零运行成本、
+                            // case 标签/数组索引/默认参数均合法（已验证），语义逐字节相等。
+                            $expr = $this->idExpr->intExprConstSafe($text, $this->idSeed);
+                            $t[1] = $expr ?? ('0x' . dechex($v)); // 恒等式失败则退回十六进制
+                        } else {
+                            $t[1] = '0x' . dechex($v);
+                        }
                     }
                 }
             } elseif ($t[0] === T_CONSTANT_ENCAPSED_STRING) {
@@ -93,6 +142,7 @@ final class VmRuntimeMorpher
                 $t[1] = $this->morphString($text);
             }
             $out .= Parser::text($t);
+            $prevSig = $t;
         }
         return $out;
     }

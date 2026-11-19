@@ -1,6 +1,6 @@
 # 命令行选项与功能清单
 
-> 适用于「嗷呜awaのphp混淆器」v1.2.7（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
+> 适用于「嗷呜awaのphp混淆器」v1.2.8（文档随版本更新，具体以 `php entry.php --help` 即时输出为准）
 > 英文版见 [`en/CLI_OPTIONS.md`](en/CLI_OPTIONS.md)。
 > 以下为全部支持的命令行开关；也可随时运行 `php entry.php --help` 查看即时帮助。
 
@@ -185,6 +185,18 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 > `tests/v124_layer_logic.php`；详见 `CHANGELOG.md` v1.2.4。
 
 ---
+
+## 零 eval 构建安全 / Logic 前置剪枝 / VM 解释器混淆（v1.2.8）
+
+| 开关 / 配置 | 说明 |
+| --- | --- |
+| `--no-loop-fold` | **关闭构建期纯计算循环折叠**（默认开）。`loop_fold` 由 `ConstEval`（token 级符号执行、调用 PHP 原生运算符，**零 eval**）把字面量边界、纯局部算术的确定性循环（典型 20 万次 `for`）在构建期算完并替换为结果字面量，运行时零迭代。用真实 eval 求值用户上传 token = 免费 webshell 注入器，该注入面已移除。20 万次循环实测约 12 ms → 约 8.5 ms（比原生更快），输出逐字节一致。严格白名单 + 迭代上限 + 双校验，任何不确定循环原样保留 |
+| `--aggressive-prune` | **激进恒等式压缩 + 死分支剪枝**（默认关），**前置于 Logic 层**：只折叠用户自己的恒等式/死分支，绝不折叠混淆器注入的恒等式（不给攻击者送工具）。仅性能敏感场景显式开启 |
+| `--level=aggressive` | **aggressive 性能优先档**：ultra 全部保护 + `aggressive_prune` 层，端到端逐字节一致 |
+| `--no-vm-runtime-logic` | **关闭 VM 解释器 Logic 混淆**（默认开）。开启时解释器整数字面量改成编译期位运算恒等式 `N → ((Ka) ^ (Kb))`，opcode 数字从解释器源码消失，零运行成本；关闭退回 v1.2.6 十六进制形态。`break`/`continue` 层级操作数自动跳过 |
+| `struct_poison rounds` | StructPoison 的 KDF 轮数保持原算法（默认 3、ultra/aggressive 5），本版撤销早前降级 |
+
+> 稳定性：VM 逐指令主循环语义不变（解释器仅做编译期等值形态改写）；min~ultra 各档保护强度与行为不变，激进压缩层默认关闭。详见 `CHANGELOG.md` v1.2.8。
 
 ## 整站 max 逐字节一致 / 并行构建 / 混写模板保护（v1.2.7）
 

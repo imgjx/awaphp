@@ -326,6 +326,7 @@ final class Obfuscator
                 'probe'          => (int) $this->config->get('vm_probe'),
                 // VM 常量池加密（默认开，--no-vm-cpool 关）
                 'cpool'          => (bool) $this->config->get('vm_cpool'),
+                // v1.2.8：常量池流加密哈希预算（构建/运行端同值）
                 // VM 符号密文化（默认开，--no-vm-symbols 关）：程序容器内符号名加密落盘
                 'symbols'        => (bool) $this->config->get('vm_symbols'),
                 // VM 嵌套层数（真·嵌套 VM）：把上一层产物再喂给 VM 编译，实现多层 VM 壳。
@@ -494,6 +495,36 @@ final class Obfuscator
                     $rawLayers[] = $npLayer;
                 } else {
                     array_splice($rawLayers, $at, 0, [$npLayer]);
+                }
+            }
+        }
+        // v1.2.8：--aggressive-prune 只加速【用户自己的代码】，绝不折叠 Logic 层注入的
+        // 恒等式——否则等于给攻击者送"去混淆 toolkit"。因此显式开启但预设未含该层时，
+        // 把它插到【logic 之前】（constfold 之后）：此时只看到用户原始恒等式/死分支，
+        // Logic 的恒等式在它之后才生成，天然隔离。新产生的字面量仍会被后续 logic/number/
+        // string/token 层继续混淆。
+        if ($this->config->get('aggressive_prune')) {
+            $hasAp = false;
+            foreach ($rawLayers as $l) {
+                if (($l['name'] ?? '') === 'aggressive_prune') {
+                    $hasAp = true;
+                    break;
+                }
+            }
+            if (!$hasAp) {
+                $apLayer = ['name' => 'aggressive_prune', 'params' => []];
+                $at = null;
+                foreach ($rawLayers as $idx => $l) {
+                    if (($l['name'] ?? '') === 'logic') {
+                        $at = $idx;
+                        break;
+                    }
+                }
+                if ($at === null) {
+                    // 无 logic 层（如纯 min 预设）：追加到末尾（由 orderShellLayers 归位）
+                    $rawLayers[] = $apLayer;
+                } else {
+                    array_splice($rawLayers, $at, 0, [$apLayer]);
                 }
             }
         }
@@ -1046,6 +1077,13 @@ final class Obfuscator
             case 'constfold':
                 $tokens = (new ConstFolder($this->logger))->process($tokens, $cfg);
                 break;
+            case 'aggressive_prune':
+                // v1.2.8：需要 require（按需加载，避免默认路径多一次 IO）
+                if (!class_exists(AggressivePruner::class, false)) {
+                    require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
+                }
+                $tokens = (new AggressivePruner($this->logger))->process($tokens, $cfg);
+                break;
             case 'funcsplit':
                 $tokens = (new FunctionSplitter($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
@@ -1099,6 +1137,9 @@ final class Obfuscator
             case 'constfold':
                 $map['const_fold']       = true;
                 $map['const_fold_level'] = (int) ($params['level'] ?? 2);
+                break;
+            case 'aggressive_prune':
+                $map['aggressive_prune'] = true;
                 break;
             case 'funcsplit':
                 $map['func_split']       = true;
@@ -1727,6 +1768,8 @@ final class Obfuscator
             'fakeFog'        => (int) ($params['fakeFog'] ?? 0),
             'probe'          => (int) ($params['probe'] ?? 0),
             'cpool'          => (bool) ($params['cpool'] ?? true),
+            // v1.2.8：VM 解释器本体用 Logic 恒等式混淆整数字面量（默认开）
+            'vmRuntimeLogic' => (bool) ($params['vmRuntimeLogic'] ?? $this->config->get('vm_runtime_logic', true)),
             // VM 符号密文化（默认开）：程序容器内的类名/方法名/变量名等全部加密落盘，
             // 运行期解包时还原；--no-vm-symbols 关闭后行为与 v1.1.7 逐字节等价。
             'symbols'        => (bool) ($params['symbols'] ?? true),
@@ -1940,6 +1983,15 @@ final class Obfuscator
         if ($this->config->get('const_fold')) {
             $cf = new ConstFolder($this->logger);
             $tokens = $cf->process($tokens, $this->config);
+        }
+
+        // v1.2.8 激进恒等式压缩 + 死分支剪枝：置于 logic 之前——只加速用户自己的代码，
+        // 绝不折叠 Logic 层注入的恒等式（否则 = 给攻击者送去混淆 toolkit）。
+        if ($this->config->get('aggressive_prune')) {
+            if (!class_exists(AggressivePruner::class, false)) {
+                require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
+            }
+            $tokens = (new AggressivePruner($this->logger))->process($tokens, $this->config);
         }
 
         // 超激进逻辑变换：必须置于变量重命名之前，使新引入的临时变量被 var 层

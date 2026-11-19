@@ -28,6 +28,10 @@
 
 declare(strict_types=1);
 
+if (!class_exists('ConstEval', false)) {
+    require_once __DIR__ . '/../Support/ConstEval.php';
+}
+
 final class ConstFolder
 {
     private Logger $logger;
@@ -64,6 +68,10 @@ final class ConstFolder
         if ($n === 0) {
             return $tokens;
         }
+        // v1.2.8：先把"纯计算循环"在构建期真实求值并折叠成结果字面量，直接消掉运行时的
+        // 20 万次迭代。必须最先做——此时 token 仍是原始形态；且在表达式折叠之前，避免
+        // 折叠后的字面量再被本类的表达式 pass 二次处理（无副作用但无意义）。
+        $tokens = $this->foldLoops($tokens, $cfg);
         $out = $tokens;
         // 多遍：每遍把最内层的二元折叠掉，直到无变化（如 2*3+4 → 6+4 → 10）。
         for ($pass = 0; $pass < 8; $pass++) {
@@ -471,5 +479,498 @@ final class ConstFolder
             $s .= '.0';
         }
         return $s;
+    }
+
+    // =====================================================================
+    // v1.2.8：构建期纯计算循环折叠（loop_fold）
+    //
+    // 目标：把 for/while 里"只用字面量 + 已初始化局部变量 + 纯算术/位运算/比较 +
+    // if/else + intdiv"的确定性循环，在构建期用【静态符号执行 ConstEval】求值一遍，
+    // 读取各受影响变量的终值，把整个循环替换成 `变量 = 终值;` 序列。运行时不再跑
+    // 那 20 万次迭代。
+    //
+    // v1.2.8 安全升级：彻底弃用 eval——在线混淆服务器场景下，eval(用户上传代码的
+    // token) = 免费 webshell 注入器。改由 ConstEval 自解析 token + 调用 PHP 原生运算
+    // 运算符求值：既杜绝任意代码执行，又保留 PHP 的优先级/溢出/负数取模/intdiv 语义。
+    // 安全性靠四道闸：①严格 token 白名单（任何可疑构造整段放弃）；②循环变量必须在
+    // 循环体之外以字面量初始化；③ConstEval 全程只认白名单运算，任一处无法安全求值
+    // 即整段原样保留；④迭代次数 <= 上限（防构建期卡死）+ 两次执行严格比对（=== 含类型）。
+    // =====================================================================
+
+    /** 构建期循环折叠的最大迭代次数（超过即放弃，避免构建期被超大循环拖死） */
+    private const LOOP_FOLD_MAX_ITER = 1000000;
+
+    /** 循环体允许出现的纯函数（用真实 eval 执行，但白名单只放无副作用的确定性函数） */
+    private const LOOP_FOLD_PURE_FNS = ['intdiv' => true];
+
+    /**
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    private function foldLoops(array $tokens, Config $cfg): array
+    {
+        if (!$cfg->get('loop_fold', true)) {
+            return $tokens;
+        }
+        $n = count($tokens);
+        $out = [];
+        $folded = 0;
+        $i = 0;
+        while ($i < $n) {
+            $hit = null;
+            if (Parser::isToken($tokens[$i]) && $tokens[$i][0] === T_FOR) {
+                $hit = $this->tryFoldLoop($tokens, $i, 'for');
+            } elseif (Parser::isToken($tokens[$i]) && $tokens[$i][0] === T_WHILE) {
+                $hit = $this->tryFoldLoop($tokens, $i, 'while');
+            }
+            if ($hit !== null) {
+                // $hit = ['end'=>int, 'assign'=>[name=>value]]，用字面量赋值替换整个循环
+                foreach ($hit['assign'] as $name => $value) {
+                    $line = 1;
+                    $src = $tokens[$i];
+                    if (Parser::isToken($src) && isset($src[2])) {
+                        $line = (int) $src[2];
+                    }
+                    $out[] = [T_VARIABLE, '$' . $name, $line];
+                    $out[] = '=';
+                    $out[] = $this->literalToken($value, $src);
+                    $out[] = ';';
+                }
+                $i = $hit['end'] + 1; // 跳过循环体末尾 '}' 及其后的空白由下一轮自然处理
+                $folded++;
+                continue;
+            }
+            $out[] = $tokens[$i];
+            $i++;
+        }
+        if ($folded > 0) {
+            $this->logger->debug(sprintf('loopfold: 构建期折叠 %d 处纯计算循环', $folded));
+        }
+        return $out;
+    }
+
+    /**
+     * 尝试折叠从 $i 起始的一个 for/while 循环。
+     * 返回 null 表示放弃（整段原样保留）。
+     *
+     * @param array<int,mixed> $tokens
+     * @return array{end:int,assign:array<string,int|float|string>}|null
+     */
+    private function tryFoldLoop(array $tokens, int $i, string $kind): ?array
+    {
+        $n = count($tokens);
+        // 1) 收集循环前的字面量赋值 $v = <literal>;（作为初始状态），并定位循环头部
+        $init = [];
+        $j = $i - 1;
+        while ($j >= 0) {
+            $prev = $this->skipTriviaBack($tokens, $j);
+            if ($prev < 0 || !$this->isCharTok($tokens[$prev], ';')) {
+                break;
+            }
+            // 形态：$var = literal ;
+            $litIdx = $this->skipTriviaBack($tokens, $prev - 1);
+            $eqIdx = $this->skipTriviaBack($tokens, $litIdx - 1);
+            $varIdx = $this->skipTriviaBack($tokens, $eqIdx - 1);
+            if ($litIdx < 0 || $eqIdx < 0 || $varIdx < 0) {
+                break;
+            }
+            if (!$this->isCharTok($tokens[$eqIdx], '=')
+                || !Parser::isToken($tokens[$varIdx]) || $tokens[$varIdx][0] !== T_VARIABLE
+                || !$this->isLiteralTok($tokens[$litIdx])) {
+                break;
+            }
+            $name = substr((string) $tokens[$varIdx][1], 1);
+            if (array_key_exists($name, $init)) {
+                break; // 重复初始化，放弃以保证可判定
+            }
+            $val = $this->literalValue($tokens[$litIdx]);
+            if ($val === null) {
+                break;
+            }
+            $init[$name] = $val;
+            $j = $varIdx - 1;
+        }
+
+        // 2) 定位循环体 '{ ... }' 与循环头
+        $open = $this->findNextChar($tokens, $i, '{');
+        if ($open === null || $open >= $n) {
+            return null;
+        }
+        $close = $this->matchBrace($tokens, $open);
+        if ($close === null || $close >= $n) {
+            return null;
+        }
+        // 循环头 = ($i .. open-1)，必须是 for(...) / while(...) 的括号包裹条件
+        $headStart = $this->skipTrivia($tokens, $i + 1);
+        if ($headStart >= $n || !$this->isCharTok($tokens[$headStart], '(')) {
+            return null;
+        }
+        $headEnd = $this->matchParen($tokens, $headStart);
+        if ($headEnd === null || $headEnd >= $open) {
+            return null;
+        }
+
+        // 3) token 白名单：语句段（init 赋值之后到循环结束）内不允许任何可疑构造
+        $scanFrom = $j + 1; // 最后一条被纳入的初始化之后
+        if (!$this->loopTokensAllowed($tokens, $scanFrom, $close)) {
+            return null;
+        }
+
+        // 4) v1.2.8：改用【静态符号执行】——绝不 eval 用户上传代码的 token。
+        //    初始 env 取循环前的字面量赋值 $init；执行片段为循环语句本身（$i..$close），
+        //    ConstEval 用 PHP 原生运算符完成求值，语义与真实执行逐字节一致。
+        $names = array_keys($init);
+        if ($names === []) {
+            return null; // 没有任何字面量初始化的循环不折叠（无法安全求值）
+        }
+        $loopTokens = [];
+        for ($k = $i; $k <= $close; $k++) {
+            $loopTokens[] = $tokens[$k];
+        }
+
+        // 5) 静态迭代上界判定 + 找出循环变量名。循环变量（for 头 c1 段的 $i）在循环
+        //    结束后仍可见，必须连同外部 init 变量一起回写，否则破坏 liveness。
+        $loopVar = $this->loopVariable($tokens, $headStart, $headEnd, $kind);
+        $iter = $this->estimateIterations($tokens, $headStart, $headEnd, $kind, $init, $loopVar);
+        if ($iter === null || $iter < 0 || $iter > self::LOOP_FOLD_MAX_ITER) {
+            return null;
+        }
+        // 待回写变量 = 外部 init 变量 + 循环控制变量（去重）
+        $writeNames = $names;
+        if ($loopVar !== null && !in_array($loopVar, $writeNames, true)) {
+            $writeNames[] = $loopVar;
+        }
+
+        // 6) 静态执行两次并严格比对（含类型），杜绝偶发/副作用不一致。
+        //    任一处无法安全求值 → ConstEval 返回 false → 整段原样保留（绝不改炸）。
+        $env1 = $init;
+        if (!ConstEval::execStatements($loopTokens, $env1, self::LOOP_FOLD_MAX_ITER)) {
+            return null;
+        }
+        $env2 = $init;
+        if (!ConstEval::execStatements($loopTokens, $env2, self::LOOP_FOLD_MAX_ITER)) {
+            return null;
+        }
+        $r1 = [];
+        $r2 = [];
+        foreach ($writeNames as $nm) {
+            if (!array_key_exists($nm, $env1) || !array_key_exists($nm, $env2)) {
+                return null;
+            }
+            $r1[$nm] = $env1[$nm];
+            $r2[$nm] = $env2[$nm];
+        }
+        if ($r1 !== $r2) {
+            return null;
+        }
+
+        // 7) 只回写"执行后值仍为标量字面量"的变量；出现数组/对象等一律放弃整段
+        $assign = [];
+        foreach ($r1 as $nm => $val) {
+            if (!(is_int($val) || is_float($val) || is_string($val))) {
+                return null;
+            }
+            if (is_float($val) && !is_finite($val)) {
+                return null;
+            }
+            $assign[$nm] = $val;
+        }
+        if ($assign === []) {
+            return null;
+        }
+        return ['end' => $close, 'assign' => $assign];
+    }
+
+    /**
+     * 估算循环迭代次数（仅字面量边界 + 简单自增/自减）。无法判定返回 null。
+     * @param array<int,mixed> $tokens
+     * @param array<string,int|float|string> $init
+     */
+    /**
+     * 找出循环控制变量名：for 取 c1 段 `$v=...` 的变量；while 取条件左侧 `$v`。
+     * @param array<int,mixed> $tokens
+     */
+    private function loopVariable(array $tokens, int $open, int $close, string $kind): ?string
+    {
+        $txt = [];
+        for ($k = $open + 1; $k < $close; $k++) {
+            if (Parser::isWhitespaceOrComment($tokens[$k])) {
+                continue;
+            }
+            $txt[] = Parser::text($tokens[$k]);
+        }
+        if ($kind === 'while') {
+            if (count($txt) >= 1 && $txt[0][0] === '$') {
+                return substr($txt[0], 1);
+            }
+            return null;
+        }
+        // for: 第一段形如 $v = literal (, ...)?，取第一个变量
+        $first = [];
+        foreach ($txt as $t) {
+            if ($t === ';') {
+                break;
+            }
+            $first[] = $t;
+        }
+        if (count($first) >= 1 && $first[0][0] === '$') {
+            return substr($first[0], 1);
+        }
+        return null;
+    }
+
+    /**
+     * @param array<int,mixed> $tokens
+     * @param array<string,int|float|string> $init
+     */
+    private function estimateIterations(array $tokens, int $open, int $close, string $kind, array $init, ?string $loopVar): ?int
+    {
+        // 收集头部内有效 token 文本
+        $txt = [];
+        for ($k = $open + 1; $k < $close; $k++) {
+            if (Parser::isWhitespaceOrComment($tokens[$k])) {
+                continue;
+            }
+            $txt[] = Parser::text($tokens[$k]);
+        }
+        if ($kind === 'while') {
+            // while 无显式 step，无法安全估算终止，一律放弃 while 折叠（保守）。
+            // 保留该分支仅为将来扩展；当前返回 null 表示原样保留。
+            return null;
+        }
+        // for(init;cond;step)：按 ';' 切成三段
+        $segs = [];
+        $cur = [];
+        foreach ($txt as $t) {
+            if ($t === ';') {
+                $segs[] = $cur;
+                $cur = [];
+            } else {
+                $cur[] = $t;
+            }
+        }
+        $segs[] = $cur;
+        if (count($segs) !== 3) {
+            return null;
+        }
+        [$c1, $c2, $c3] = $segs;
+        // cond: $v <op> literal
+        if (count($c2) !== 3 || $c2[0][0] !== '$' || !in_array($c2[1], ['<', '<=', '>', '>=', '!=', '!=='], true)) {
+            return null;
+        }
+        $name = substr($c2[0], 1);
+        if ($loopVar === null || $name !== $loopVar) {
+            return null;
+        }
+        // 起始值必须从 for 头 c1 段 `$i = literal` 取（循环变量在 for 内部初始化），
+        // 外部 init 只含被累加变量（如 $sum），不能拿来当循环变量起点。
+        if (count($c1) < 3 || $c1[0] !== '$' . $name || $c1[1] !== '=') {
+            return null;
+        }
+        $start = $this->numVal($c1[2]);
+        if ($start === null) {
+            return null;
+        }
+        $bound = $this->numVal($c2[2]);
+        if ($bound === null) {
+            return null;
+        }
+        // step: $v++ / $v-- / $v += literal / $v -= literal / $v = $v + literal
+        $step = null;
+        if (count($c3) === 2 && $c3[0] === '$' . $name && ($c3[1] === '++' || $c3[1] === '--')) {
+            $step = $c3[1] === '++' ? 1 : -1;
+        } elseif (count($c3) === 3 && $c3[0] === '$' . $name && in_array($c3[1], ['+=', '-='], true) && is_numeric($c3[2])) {
+            $d = $this->numVal($c3[2]);
+            if ($d === null) {
+                return null;
+            }
+            $step = $c3[1] === '+=' ? $d : -$d;
+        } elseif (count($c3) === 5 && $c3[0] === '$' . $name && $c3[1] === '=' && $c3[2] === '$' . $name
+            && in_array($c3[3], ['+', '-'], true) && is_numeric($c3[4])) {
+            $d = $this->numVal($c3[4]);
+            if ($d === null) {
+                return null;
+            }
+            $step = $c3[3] === '+' ? $d : -$d;
+        }
+        if ($step === null || $step == 0 || !is_int($step)) {
+            return null;
+        }
+        if (!is_int($start) || !is_int($bound)) {
+            return null;
+        }
+        $op = $c2[1];
+        $iter = $this->countSteps($start, $bound, $step, $op);
+        return $iter;
+    }
+
+    /** 计算从 $start 按 $step 递增、满足 $start $op $bound 的迭代次数；不可判定返回 null */
+    private function countSteps(int $start, int $bound, int $step, string $op): ?int
+    {
+        if ($op === '!=' || $op === '!==') {
+            return null; // 边界不可静态确定，放弃
+        }
+        if ($step > 0) {
+            if ($op === '<') {
+                $last = $bound - 1;
+            } elseif ($op === '<=') {
+                $last = $bound;
+            } else {
+                return null; // 正步长却用 > >=，可能永不终止
+            }
+            if ($start > $last) {
+                return 0;
+            }
+            return intdiv($last - $start, $step) + 1;
+        }
+        // step < 0
+        if ($op === '>') {
+            $last = $bound + 1;
+        } elseif ($op === '>=') {
+            $last = $bound;
+        } else {
+            return null;
+        }
+        if ($start < $last) {
+            return 0;
+        }
+        return intdiv($start - $last, -$step) + 1;
+    }
+
+    /** token 白名单扫描：循环头之后的语句段内出现任何可疑构造即返回 false */
+    private function loopTokensAllowed(array $tokens, int $from, int $to): bool
+    {
+        $n = count($tokens);
+        for ($k = $from; $k <= $to && $k < $n; $k++) {
+            $t = $tokens[$k];
+            if (Parser::isWhitespaceOrComment($t)) {
+                continue;
+            }
+            if (!Parser::isToken($t)) {
+                // 单字符：只放行安全的算术/比较/括号/分隔
+                if (!in_array($t, ['+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '<', '>',
+                    '(', ')', '{', '}', ';', ',', '='], true)) {
+                    return false;
+                }
+                continue;
+            }
+            $id = $t[0];
+            // 比较/逻辑/赋值/自增/纯函数/关键字
+            $ok = [
+                T_VARIABLE, T_LNUMBER, T_DNUMBER, T_CONSTANT_ENCAPSED_STRING,
+                T_INC, T_DEC, T_PLUS_EQUAL, T_MINUS_EQUAL, T_MUL_EQUAL, T_DIV_EQUAL,
+                T_MOD_EQUAL, T_AND_EQUAL, T_OR_EQUAL, T_XOR_EQUAL, T_SL_EQUAL, T_SR_EQUAL,
+                T_IS_EQUAL, T_IS_NOT_EQUAL, T_IS_IDENTICAL, T_IS_NOT_IDENTICAL,
+                T_IS_SMALLER_OR_EQUAL, T_IS_GREATER_OR_EQUAL, T_SPACESHIP,
+                T_BOOLEAN_AND, T_BOOLEAN_OR, T_LOGICAL_AND, T_LOGICAL_OR,
+                T_IF, T_ELSE, T_ELSEIF,
+                T_SL, T_SR, T_POW, T_COALESCE,
+                // 循环自身的关键字（扫描范围含循环头）：放行 for/while，其余语句体仍受白名单约束
+                T_FOR, T_WHILE,
+            ];
+            if (in_array($id, $ok, true)) {
+                continue;
+            }
+            // PHP 8.1+ 把表达式里的位与 `&` 词法化为数组 token（非引用位置）。
+            // 此处已排除 T_FUNCTION/T_CLASS 及 `&` 引用赋值上下文，按位与放行安全。
+            if (defined('T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG')
+                && $id === T_AMPERSAND_NOT_FOLLOWED_BY_VAR_OR_VARARG) {
+                continue;
+            }
+            // 函数：只有白名单纯函数允许，且必须是调用形态 name(
+            if ($id === T_STRING) {
+                $name = (string) $t[1];
+                if (!isset(self::LOOP_FOLD_PURE_FNS[$name])) {
+                    return false;
+                }
+                continue;
+            }
+            return false; // T_ECHO/RETURN/NEW/ARRAY/成员访问/引用/全局/闭包/heredoc 等一律放弃
+        }
+        return true;
+    }
+
+    private function skipTriviaBack(array $tokens, int $j): int
+    {
+        while ($j >= 0 && Parser::isWhitespaceOrComment($tokens[$j])) {
+            $j--;
+        }
+        return $j;
+    }
+
+    private function isCharTok($t, string $c): bool
+    {
+        return is_string($t) && $t === $c;
+    }
+
+    private function isLiteralTok($t): bool
+    {
+        return Parser::isToken($t) && in_array($t[0], [T_LNUMBER, T_DNUMBER], true);
+    }
+
+    /** @return int|float|string|null */
+    private function literalValue($t)
+    {
+        if (!Parser::isToken($t)) {
+            return null;
+        }
+        if ($t[0] === T_LNUMBER || $t[0] === T_DNUMBER) {
+            return $this->numVal((string) $t[1]);
+        }
+        return null;
+    }
+
+    private function phpLit($v): string
+    {
+        if (is_int($v)) {
+            return (string) $v;
+        }
+        if (is_float($v)) {
+            return $this->floatToLit($v);
+        }
+        return "'" . addcslashes((string) $v, "\\'") . "'";
+    }
+
+    private function findNextChar(array $tokens, int $from, string $ch): ?int
+    {
+        $n = count($tokens);
+        for ($k = $from; $k < $n; $k++) {
+            if ($this->isCharTok($tokens[$k], $ch)) {
+                return $k;
+            }
+        }
+        return null;
+    }
+
+    /** 匹配括号，返回配对右括号下标（$open 为左括号） */
+    private function matchParen(array $tokens, int $open): ?int
+    {
+        return $this->matchPair($tokens, $open, '(', ')');
+    }
+
+    private function matchBrace(array $tokens, int $open): ?int
+    {
+        return $this->matchPair($tokens, $open, '{', '}');
+    }
+
+    private function matchPair(array $tokens, int $open, string $l, string $r): ?int
+    {
+        $depth = 0;
+        $n = count($tokens);
+        for ($k = $open; $k < $n; $k++) {
+            $t = $tokens[$k];
+            if (!is_string($t)) {
+                continue;
+            }
+            if ($t === $l) {
+                $depth++;
+            } elseif ($t === $r) {
+                $depth--;
+                if ($depth === 0) {
+                    return $k;
+                }
+            }
+        }
+        return null;
     }
 }

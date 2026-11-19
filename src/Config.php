@@ -81,6 +81,8 @@ final class Config
         $this->data['vm_selfcheck']  = $b($this->data['vm_selfcheck'] ?? true) ?? true;
         // VM 常量池加密（默认开）：PUSH_C 字面量抽入独立加密常量池；--no-vm-cpool 关
         $this->data['vm_cpool']      = $b($this->data['vm_cpool'] ?? true) ?? true;
+        // v1.2.8：VM 解释器本体 Logic 恒等式混淆（默认开）；--no-vm-runtime-logic 关
+        $this->data['vm_runtime_logic'] = $b($this->data['vm_runtime_logic'] ?? true) ?? true;
         // VM 符号密文化（默认开）：程序容器内的类名/方法名/函数名/变量名/属性名/常量名
         // 全部以盐派生密钥加密落盘，运行期解包时还原；--no-vm-symbols 关
         $this->data['vm_symbols']    = $b($this->data['vm_symbols'] ?? true) ?? true;
@@ -107,6 +109,9 @@ final class Config
         $this->data['opcache']        = $b($this->data['opcache'] ?? false) ?? false;
         // v1.2.7：工程模式并行构建的 worker 数（1=串行；>1 时用 pcntl fork 分发文件）
         $this->data['jobs']           = max(1, min(256, $i($this->data['jobs'] ?? 1)));
+        // v1.2.8：构建期纯计算循环折叠（默认开）；激进恒等式压缩/剪枝层（默认关）
+        $this->data['loop_fold']            = $b($this->data['loop_fold'] ?? true) ?? true;
+        $this->data['aggressive_prune']     = $b($this->data['aggressive_prune'] ?? false) ?? false;
 
         // 分层 / VM 层相关字段
         $this->data['vm_flatten']     = $b($this->data['vm_flatten'] ?? false) ?? false;

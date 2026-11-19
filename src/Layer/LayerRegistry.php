@@ -19,6 +19,8 @@ final class LayerRegistry
         'anti_ast', 'logic',
         // v1.2.5：编译时优化（常量折叠）与函数型代码打散
         'constfold', 'funcsplit', 'decoy',
+        // v1.2.8：激进恒等式压缩 + 死分支剪枝（默认关闭的性能优先层）
+        'aggressive_prune',
     ];
 
     /** 源码头/尾包裹层（shell）：按序包裹源码字符串；数组越靠后 = 越外层 */

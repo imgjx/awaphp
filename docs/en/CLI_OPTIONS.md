@@ -2,7 +2,7 @@
 
 [简体中文](../CLI_OPTIONS.md) · **English**
 
-> Applies to **AWAPHP** v1.2.7. This document tracks releases; the authoritative output is always `php entry.php --help`.
+> Applies to **AWAPHP** v1.2.8. This document tracks releases; the authoritative output is always `php entry.php --help`.
 
 **Usage**
 
@@ -188,6 +188,20 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 
 > `logic_shell` output is `php -l`-checked and rolls back on failure, so no unrunnable file is
 > produced. Regression: `tests/v124_layer_logic.php`; see `CHANGELOG.md` v1.2.4.
+
+## Zero-eval build safety / Logic-first pruning / VM interpreter morphing (v1.2.8)
+
+| Flag / config | Description |
+| --- | --- |
+| `--no-loop-fold` | **Disable build-time pure-compute loop folding** (on by default). `loop_fold` uses `ConstEval` (a token-level symbolic evaluator with PHP native operators, **zero `eval`**) to fold literal-bound, pure-local-arithmetic deterministic loops (the classic 200k `for`) into result literals — zero runtime iterations. Evaluating *user-uploaded* tokens with real eval is a free webshell injector; that surface is now removed. The 200k loop drops from ~12 ms to ~8.5 ms (faster than native), byte-identical. Strict whitelist + iteration cap + double check; uncertain loops are left untouched |
+| `--aggressive-prune` | **Aggressive identity compression + dead-branch pruning** (off by default), placed **before** the Logic layers: folds only the user's own identities/branches, never the obfuscator's injected identities (no de-obfuscation toolkit). Opt-in for performance-sensitive scenarios |
+| `--level=aggressive` | **aggressive performance tier**: full ultra protection + the `aggressive_prune` layer; byte-identical end-to-end |
+| `--no-vm-runtime-logic` | **Disable VM interpreter Logic morphing** (on by default). When on, the interpreter's integer literals become compile-time bitwise identity expressions `N → ((Ka) ^ (Kb))` — opcode numbers vanish from the interpreter source at zero runtime cost; off restores the v1.2.6 hexadecimal form. `break`/`continue` level operands are auto-skipped |
+| `struct_poison rounds` | StructPoison KDF rounds keep the original algorithm (default 3, ultra/aggressive 5); the earlier downgrade was reverted |
+
+> Stability: the VM per-instruction main-loop semantics are unchanged (the interpreter only gets an
+> equivalent compile-time literal form); all min–ultra tiers keep their protection strength and
+> behaviour, and the aggressive compression layer is off by default. See `CHANGELOG.md` v1.2.8.
 
 ## Whole-site `max` byte-identity / parallel builds / mixed-template guard (v1.2.7)
 

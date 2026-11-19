@@ -362,3 +362,41 @@ jobs≤1 或无 pcntl 时零变化退回串行。
 exit code 与原生逐字节比对」。525 文件夹具 524/525 stdout 逐字节一致；唯一差异是
 `public/index.php` 独立 include 时防御壳 shutdown 静默置 rc=1（stdout 仍逐字节一致，
 Web SAPI 正常请求不误报），属已知的「脱壳独立运行」边界。详见 `CHANGELOG.md` v1.2.7。
+
+---
+
+## 13. v1.2.8：零 eval 循环折叠 / Logic 前置剪枝 / VM 解释器混淆
+
+**构建期纯计算循环折叠（`loop_fold`，默认开）**：把"字面量边界 + 纯确定性字面量运算"的循环
+在构建期用 `ConstEval`（token 级符号执行器，调用 PHP 原生运算符，**完全不用 eval**）算完、
+替换为结果字面量，运行时不再迭代。在线混淆服务器场景下，`eval(用户上传 token)` = 免费
+webshell 注入器，本版把该注入面彻底移除。同一份 `tests/perf_workload.php`（含 20 万次算术
+循环，原生纯计算约 12 ms），每档 5 次取中位数：
+
+| 变体 | 纯计算耗时 | 相对原生 | stdout 逐字节一致 |
+|---|---:|---:|:---:|
+| 原生（未混淆） | ~12.1 ms | 1.00× | — |
+| `min` + 循环折叠 | **~8.56 ms** | **0.71×（更快）** | ✓ |
+| `min` + `--no-loop-fold` | ~12.99 ms | 1.07× | ✓ |
+
+折叠后比原生还快约 30%——20 万次循环在产物里被整段替换成一个结果字面量，运行期零迭代。
+安全边界（token 白名单 / 迭代上限 100 万 / 双次严格比对 / liveness 回写 / 失败原样保留 /
+零 eval）确保只有完全确定的纯计算循环被折叠；负载里其余含函数调用 / 闭包的循环保持不动。
+`--no-loop-fold` 一键关闭。
+
+**激进恒等式压缩 + 死分支剪枝前置（`--aggressive-prune` / `--level=aggressive`，默认关）**：
+本版把该层从 Logic 之后移到 **Logic 之前**——只折叠用户自己的恒等式与死分支，绝不折叠
+混淆器注入的恒等式（不给攻击者送去混淆工具）。计算密集负载的运行时开销下降；可选层，
+min~ultra 各档不受影响。`aggressive` 预设（ultra 全保护 + 本层）端到端输出逐字节一致。
+
+**VM 解释器 Logic 混淆（新增）**：解释器的整数字面量改成编译期位运算恒等式
+`N → ((Ka) ^ (Kb))`（salt 派生、可复现），opcode 数字从解释器源码消失。这些是合法常量
+表达式（case 标签 / 数组索引 / 默认参数均可用），编译期求值、运行期零成本，不改动第 1 节
+各档延迟结论。`break`/`continue` 层级操作数（PHP 要求整数字面量）跳过；
+`--no-vm-runtime-logic` 可退回 v1.2.6 的十六进制形态。high/max/ultra/aggressive 逐字节一致。
+
+**Logic 层加强**：LogicRewriter / DecoyBranches 保持安全强度顶格（intensity / decoy_level=3，
+OOM 的 wild 仍可选），新增 4 种恒真/恒假诱饵模板增加分支多样性。
+
+**运行时 KDF 保持原算法**：本版撤销了早前的 KDF 降级——StructPoison rounds 恢复 3
+（ultra/aggressive=5）、VM 常量池无预算 SHA-256 流、蜜罐 1.4 s 忙等无条件。各档逐字节一致。

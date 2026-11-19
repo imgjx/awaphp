@@ -337,6 +337,11 @@ final class DecoyBranches
             ['abs(crc32((string)(' . $probeVar . ' ?? \'\')))', $d . '>=0', $d . '<0'],
             ['str_repeat(\'x\',0).(string)(' . $probeVar . ' ?? \'\')', 'is_string(' . $d . ')', 'is_array(' . $d . ')'],
             ['(' . $d . '=strlen((string)(' . $probeVar . ' ?? \'\')))', $d . '>=0', $d . '===-1'],
+            // v1.2.8：新增恒真/恒假派生式，提升诱饵分支多样性（全部对标量安全、恒真/恒假成立）
+            ['strlen((string)(' . $probeVar . ' ?? \'\'))*2', $d . '%2===0', $d . '%2===1'],
+            ['crc32((string)(' . $probeVar . ' ?? \'\'))|0', $d . '===intval(' . $d . ')', $d . '!==intval(' . $d . ')'],
+            ['(int)(' . $probeVar . ' ?? 0)+0', $d . '<PHP_INT_MAX', $d . '===PHP_INT_MAX'],
+            ['strlen((string)(' . $probeVar . ' ?? \'\'))^0', $d . '>=0&&' . $d . '<1000000000', $d . '<0'],
         ];
         $pick = $forms[$rng->nextInt(0, count($forms) - 1)];
         $pre = $safePre . $d . '=' . $pick[0] . ';';

@@ -61,6 +61,7 @@ return [
     'vm_jit'       => true,    // VM JIT 友好模式：解释器以可被 OPcache 追踪 JIT 编译的内联栈形式发射（false=回退旧闭包栈，最大兼容）
     'vm_inloop'    => true,    // VM 内反调试：dispatch 循环内每 N 条指令复检调试器/hook 扩展，命中污染 opcode 解码（静默错乱，不显式 exit）
     'vm_selfcheck' => true,    // VM 高级环境自检（脱壳独立执行检测）：解释器初始化校验外壳绑定标记，缺失则污染 opcode 解码（静默错乱）
+    'vm_runtime_logic' => true,// v1.2.8：VM 解释器本体的整数字面量用 Logic 恒等式混淆（编译期常量、零运行成本；false=退回十六进制形态）
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
     'decoy' => false,          // v1.2.6 多变恒真三分支诱饵（--decoy；等级 --decoy-level=1|2|3）
@@ -126,6 +127,16 @@ return [
     // v1.2.7 工程模式并行构建 worker 数（需 pcntl）：1=串行（默认），上限 256。
     // 全局符号表只建一次，N 个 worker 进程并发混淆不同文件；32 核建议 32。
     'jobs' => 1,
+
+    // v1.2.8 性能优化：
+    // loop_fold —— 构建期把"纯计算循环"真实求值折叠成结果字面量，直接消掉运行时的
+    //   20 万次迭代。严格 token 白名单 + 迭代上限 + 真实 eval 双校验，任一不确定即原样
+    //   保留。默认开；--no-loop-fold 关闭。
+    'loop_fold' => true,
+    // aggressive_prune —— 激进恒等式压缩 + 死分支剪枝层。会把反 AST 恒等式折叠成裸值、
+    //   诱饵恒真分支剪成单路，等于替破解者去混淆，故默认关；--aggressive-prune 或
+    //   --level=aggressive 开启。
+    'aggressive_prune' => false,
 
     // 白名单：不混淆的目录 / 文件 / 符号。目录模式可整文件跳过（原样拷贝）；符号保留原名。
     // dirs/files 用相对输入目录的路径（file 为精确匹配，dir 为前缀匹配，支持 * 通配）；

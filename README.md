@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.2.7-orange)
+![Version](https://img.shields.io/badge/version-1.2.8-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -135,6 +135,13 @@ A block of PHP is wrapped into a function: `echo $i + $k . $str;` → `function 
 - **Multi-shaped 3-way decoys** (`decoy` layer, `--decoy[=N]` / `--decoy-level=1|2|3`, densities ≈12% / 25% / 45%; on by default in `high`/`max`/`ultra`): one true statement becomes `if / elseif / else` with **three paths and two unreachable decoys**. The conditions are **not the giveaway `($v===$v)||($v!==$v)`**: a salt-picked template from 12 business-looking checks carries the decision — `strlen(...) >= 0`, `crc32(...) & 1 ∈ {0,1}`, `substr()` returning a string, `count(...)` on an array, `in_array(...,[0,1],true)`, … with two structural variants (real path first, or real path in `else`). The true branch applies "same-kind substitution" — variables are copied into fresh locals and string literals into fresh variables before use — while dead branches use look-alike values (numeric last digit +1, ASCII suffix). A probe value is normalised to a scalar first, so objects/closures never trigger a `__toString` error. **Only `echo`/`print` statements are decoyed**: assignments and write-back statements (`$a[] = $b`, `$o->p = $v`, compound assigns) are deliberately skipped — same-kind substitution copies variables into locals, which is safe for reads but would silently drop writes to the original variable (caught by whole-site runtime testing).
 - **Zero-cost bytecode disassociation** (`--vm-isa-split=N`, default 2, 1 = off, up to 4): several **functionally identical physical opcodes** are created for one semantic opcode and **actually used in rotation** across the bytecode. Static 1:1 opcode→handler mapping and instruction-frequency statistics break down. Each alias gets its own dispatch label, but aliases of the same semantic opcode **share one handler body** (`case A: case B: body`): measured 400k-iteration loop 1.95 s at split=1 vs 1.95 s at split=2 — no runtime cost (dispatch stays a single jump-table lookup), only a slightly larger table.
 - **VM interpreter morphing**: the interpreter's own PHP is post-processed — decimal constants become hexadecimal, ASCII literals become `\xHH` escapes (both compile-time constants, zero runtime cost), and unreachable "key-schedule / checksum" blocks plus misleading comments are woven between the closures. The generator stays byte-for-byte reproducible for a given salt.
+
+### Zero-eval build safety + Logic-first pruning + VM interpreter morphing (v1.2.8)
+
+- **Build-time compute-loop folding, no `eval`** (on by default, `--no-loop-fold` to disable): deterministic loops over literal bounds and pure local arithmetic (the classic 200k-iteration `for` loop) are folded into their result literals at build time by `ConstEval` — a token-level symbolic evaluator using PHP's native operators, **zero `eval`**. This matters for online obfuscation services: evaluating *user-uploaded* tokens with `eval` is a free webshell injector, and that surface is now gone. Measured on the bundled workload: ~12 ms → ~8.5 ms (**faster than native**), byte-identical output. Strict token whitelist + iteration cap + double-check; any uncertain loop is left untouched.
+- **Aggressive pruning runs *before* Logic** (`--aggressive-prune` / `--level=aggressive`, off by default): it only folds the user's own constant identities and dead branches. It is deliberately placed ahead of the Logic layers so it can **never** collapse the obfuscator's own injected identities — no de-obfuscation toolkit handed to attackers. Opt-in only; `min`–`ultra` are unchanged.
+- **VM interpreter Logic morphing** (new, `--no-vm-runtime-logic` to disable): the interpreter's own integer literals become compile-time bitwise identity expressions (`N → ((Ka) ^ (Kb))`) — readable opcode numbers disappear from the interpreter source at **zero runtime cost** (compile-time constants). All levels verified byte-identical.
+- **Stronger Logic layers**: maximum safe intensities retained; four extra constant-true/false decoy templates add branch variety. **Runtime KDF keeps its original algorithm** (StructPoison rounds, unbounded VM cpool stream, unconditional honeypot delay) — no downgrade.
 
 ### ThinkPHP 8 whole-site `max` byte-identical + parallel builds (v1.2.7)
 

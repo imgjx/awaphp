@@ -1,5 +1,71 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.8 — Zero build-time `eval`, Logic-first pruning, VM-interpreter Logic morphing
+
+> Core: strengthen anti-reverse-engineering **without** turning the online obfuscation service into a
+> webshell injector. All build-time evaluation of **user-supplied tokens** is replaced by static symbolic
+> execution (PHP native operators, zero `eval`). `AggressivePruner` is moved **before** the Logic layers so
+> it only accelerates the user's own code and never folds the obfuscator's own injected identities — i.e. it
+> never hands attackers a de-obfuscation toolkit. The generated VM interpreter itself is now Logic-morphed.
+> Byte-identical output is preserved throughout under the "never break functionality" rule.
+
+### Static loop folding — no `eval` (`loop_fold`, on by default; `--no-loop-fold` to disable)
+
+- New shared evaluator `src/Support/ConstEval.php`: a token-level Pratt parser that evaluates arithmetic,
+  bitwise, comparison and logical operators using **PHP's native operators** (so precedence, integer overflow,
+  negative modulo and `intdiv` semantics stay byte-identical to PHP) plus a strict whitelist of deterministic
+  pure functions. It never calls `eval`, never includes files, never touches superglobals.
+- `ConstFolder` folds literal-bounded, deterministic pure-compute `for`/`while` loops at build time via
+  `ConstEval::execStatements` (bounded statement interpreter), replacing the whole loop with `var = result;`.
+  Safety: strict token whitelist, 1,000,000-iteration cap, variable liveness write-back, double execution with
+  strict (`===`) comparison, and leave-unchanged-on-failure. A malicious payload can no longer be executed:
+  the previous version's `eval(user tokens)` (a free webshell injector on an online service) is gone.
+- Measured on `tests/perf_workload.php`'s 200k-iteration loop: native ~12 ms, unfolded ~13 ms, folded ~8.5 ms
+  (~30% faster than native), with byte-identical stdout checksum.
+
+### Aggressive identity compression + dead-branch pruning (`aggressive-prune`, off by default)
+
+- New `src/LogicTransform/AggressivePruner.php`, now placed **before** the `logic` layers (previously after
+  `anti_ast`): Pass A folds literal-argument pure calls (`strlen(md5(...))`, `base64_decode`, `hex2bin`,
+  `str_rot13`, `ord`/`hexdec`/`bindec`, `(K<<s)>>s`, …) into literals via `ConstEval`; Pass B prunes
+  provably constant-true/false branches (`$x===$x`, `$x!==$x`, folded comparisons), skipping branches that
+  declare functions/classes/labels/goto.
+- **Why moved earlier**: running it after Logic would fold the obfuscator's own injected identities, which is
+  exactly the de-obfuscation toolkit an attacker wants. Running it before Logic means it only sees the user's
+  original code; Logic identities are injected afterwards and are never collapsed.
+- Opt-in only (`--aggressive-prune` or `--level=aggressive`); min–ultra are unchanged. The `aggressive` preset
+  (full ultra protection + this layer) is byte-identical end-to-end.
+
+### VM interpreter Logic morphing (new)
+
+- `VmRuntimeMorpher` now rewrites the generated VM interpreter's integer literals into **compile-time bitwise
+  identity expressions** (`N -> ((Ka) ^ (Kb))`) via `IdentityExpr::intExprConstSafe`, seeded from the salt.
+  These are legal constant expressions in `case` labels, array indices, default parameters and loop bounds,
+  evaluate to the exact same integers at compile time, and cost **zero** at runtime — so the interpreter's
+  source no longer shows readable opcode numbers while remaining fully functional.
+- `break`/`continue` level operands (which PHP requires to be integer literals) are explicitly skipped.
+  Toggle with `--no-vm-runtime-logic` (falls back to the v1.2.6 hexadecimal form). high/max/ultra/aggressive
+  all verified byte-identical.
+
+### Stronger Logic layers
+
+- `LogicRewriter` and `DecoyBranches` remain at their maximum safe intensities (`intensity`/`decoy_level` = 3);
+  the OOM-prone `wild` mode stays opt-in. Added 4 more constant-true/false decoy condition templates to
+  increase branch variety (all scalar-safe, byte-identical verified across max/ultra/aggressive).
+
+### Runtime KDF — original algorithm restored
+
+- The v1.2.8 KDF downgrades were reverted: StructPoison `rounds` back to 3 (ultra/aggressive 5), the VM
+  constant-pool cipher back to the unbounded counter-mode SHA-256 stream, and the Honeypot 1.4 s busy loop
+  back to unconditional. All levels verified byte-identical.
+
+### Tests & docs
+
+- `tests/v128_features.php` expanded to 24 checks: loop folding, zero-eval injection-surface audit,
+  VM Logic morphing, aggressive pruning (pre-forward), and KDF-original byte-identity. Original suites
+  (55 / 54 / 50) remain green.
+- Version bumped to 1.2.8; README (EN/ZH), DISCLAIMER, CLI and performance docs updated.
+
 ## v1.2.7 — 整站 max 逐字节一致 + 官方白名单安全构建 + 并行构建
 
 > 核心：让 VM 路径与原生 PHP 路径能做到的事物，在 ThinkPHP 8 全站 `max` 档下也基本全部做到——
