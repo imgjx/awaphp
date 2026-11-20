@@ -178,7 +178,7 @@ php other/thinkphp8-build.php --project=/var/www/shop --salt=team-salt-2026
 | 顶层 `const` | 常量按名引用 |
 | 控制器 public 方法 + 魔术方法 | 路由按「控制器/方法」调度，改名即 404/500 |
 
-`--dry-run` 只扫描并打印白名单，`--app-only` 只混淆 `app/`（快速迭代），`--output` 指定输出目录（默认 `<项目>_obf`）。
+`--dry-run` 只扫描并打印白名单，`--app-only` 只混淆 `app/`（快速迭代），`--output` 指定输出目录（默认 `<项目>_obf`）。非 PHP 资源（`.env`、异常页 `.tpl`、静态文件、runtime 数据库）一并原样拷贝——少了 `.tpl`，正常的请求路径看不出问题，一旦抛异常整站就白屏。
 
 ### OPcache 辅助编译（Zend 字节码）
 混淆产物写出后，可「加一道工」将其编译为 **Zend 字节码**（`--opcache`）：
