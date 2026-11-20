@@ -1,5 +1,69 @@
 # 更新日志（CHANGELOG）
 
+## v1.2.14 — loop-local identity injection, two infinite-loop fixes, docs rewritten
+
+> **(1) The `logic` layer keeps injecting inside loops — but only at zero runtime cost.**
+> v1.2.13 lifted loop literals *out* of the loop into temporary variables. That removed the cost, but it
+> also removed the obfuscation from the loop body: strip one layer and the loop reads a plain variable.
+> v1.2.14 replaces the lift with an **operator-level identity**: inside loops above the threshold
+> (default 20) a literal becomes `(20000^0)`, `(0+7)` or `'ab'.'cd'` — PHP folds those at compile time,
+> so they emit **no runtime instruction**, while the source still contains no bare literal and no
+> function call that iteration can amplify. Loop bodies keep an obfuscated shape; nothing is moved out.
+>
+> Loop-heavy benchmark (20 000 iterations, trip count from runtime so it cannot be folded, body with one
+> string literal and one always-true comparison, median of 7):
+>
+> | build | runtime | vs native |
+> |---|---:|---:|
+> | native | 0.24 ms | 1× |
+> | `low`, light injection on (default) | **3.69 ms** | 15× |
+> | `low`, `--no-logic-loop-light` | **54.3 ms** | 226× |
+> | `mid`, light injection on (default) | **3.79 ms** | 16× |
+> | `mid`, `--no-logic-loop-light` | **51.6 ms** | 215× |
+> | v1.2.13 hoisting, `low` | 4.1 ms | 17× |
+> | v1.2.13 hoisting off, `low` | 669 ms | 3345× |
+>
+> So the new shape is as cheap as hoisting (slightly cheaper — no extra variable traffic) and keeps the
+> loop decorated. The shared loop analyser (`parseLoop` / `estimateIterations` / …) moved into
+> `src/Support/LoopScanTrait.php` so `LogicRewriter`, `StringEncoder` and `StringRuntimeAssembler` all
+> use one definition of "large loop": strings inside those loops are not XOR-assembled either.
+> Switch: `--logic-loop-light` / `--no-logic-loop-light` (the old `--no-logic-loop-hoist` still works as
+> an alias), threshold `--logic-loop-threshold=N`.
+>
+> **(2) `--level=mid --logic-shell` on `tests/fixtures/vm_full_syntax.php` spun at 100 % CPU.**
+> `src/Module/builtin/sha1.php` pads with `while (strlen($__m) % 64 !== 56) { $__m .= "\x00"; }`.
+> `stripQuotes()` decoded `"\x00"` as **four characters** (backslash, x, 0, 0) instead of one NUL byte,
+> so the re-encoded filler was 4 bytes long and the padding loop could never hit `len % 64 === 56` — it
+> appended forever. `stripQuotes()` now uses `stripcslashes()` and returns `null` for interpolated
+> strings and `\u{…}`, which the callers skip. The fixture now finishes in well under a second and is
+> byte-identical to native.
+>
+> **(3) A second infinite loop, exposed by the first fix.** `builtin/base64_dec.php` looped forever after
+> `logic` rewriting: `while ($__i + 3 < $__len)` had its left operand sliced at the parenthesis and
+> rebuilt as `$__i + ((3 <=> $__len) === -1)` — `$__i + true`, always true. `leftOperand()` now keeps
+> scanning left when the `(` it meets belongs to a larger expression (previous token is a binary operator
+> or `]`). `__b64_dec()` returns the right bytes again, in 0.03 ms.
+>
+> **(4) Whole-site `high` / `max` builds could produce an artifact that printed nothing at all.**
+> The mutual-comment layer could land inside the opaque payload produced by the struct-poison shell; the
+> payload still parsed, `php -l` could not see it (it is ciphertext), and the inner decode then yielded
+> garbage — the artifact exited silently with an empty body. Reproduced on the ThinkPHP 8 demo entry
+> file: `high` and `max` returned `200` with 0 bytes. Mutual-comment injection is now skipped whenever
+> the struct-poison shell is part of the build (`struct_poison` or a `shell:structpoison` layer); the
+> rest of the anti-LLM layer (fake annotations, CHANGELOG blocks, CJK scattering) is unaffected.
+> All six presets now return the same 184-byte `/shop/calc` body as native.
+>
+> **(5) Documentation rewritten to describe the current state only.** `README` / `README.zh-CN` list the
+> complete feature set with no "introduced in vX" markers; `docs/PERFORMANCE.md` and its English
+> counterpart were re-measured end to end and carry a single current set of numbers. Version-to-version
+> comparisons live here, in the changelog, and nowhere else.
+>
+> New `/ updated tests`: `tests/v1214_features.php` (11 assertions — full `mid + logic-shell` chain,
+> escape-byte fidelity, no decoders in large loops, no function bricks in loop bodies, small loops keep
+> the full set, runtime cost, off-switch, version), `tests/v1213_features.php` re-pointed at the new
+> semantics. Full suite: `run_tests` 55/0, `v1214` 11/0, `v1213` 16/0, `logic_smoke` 60/0,
+> `hardening_v109` 59/0, `preset_e2e` 72/0.
+
 ## v1.2.13 — Logic stops paying per iteration (loop-invariant hoisting)
 
 > One performance fix, one config bug, one new test suite.

@@ -886,6 +886,8 @@ final class Obfuscator
 
     /** 互斥注释的投放开关（结构毒化壳之后必须关闭，否则指纹失配） */
     private bool $mcActive = true;
+    /** 结构毒化壳是否参与本次构建（配置开关或分层里的 shell:structpoison） */
+    private ?bool $spActive = null;
     /** 是否启用外壳绑定 / 脱壳检测（vm + vm_selfcheck 同时开启时为真） */
     private bool $selfcheck = false;
     /**
@@ -896,12 +898,41 @@ final class Obfuscator
     private bool $logicDone = false;
 
     /**
+     * 本次构建是否启用结构指纹毒化壳。
+     *
+     * 两种表达方式都要认：散装键 `struct_poison=true`，以及分层/预设里的 `shell:structpoison` 层。
+     * 结果缓存，避免每次注入都扫一遍层表。
+     */
+    private function structPoisonActive(): bool
+    {
+        if ($this->spActive !== null) {
+            return $this->spActive;
+        }
+        if ($this->config->get('struct_poison')) {
+            return $this->spActive = true;
+        }
+        foreach ((array) $this->config->getLayers() as $layer) {
+            if (is_array($layer) && ($layer['name'] ?? '') === 'shell:structpoison') {
+                return $this->spActive = true;
+            }
+        }
+        return $this->spActive = false;
+    }
+
+    /**
      * 互斥注释（Confrontation 家族）：把"互相打脸"的成对注释投进【壳内部】。
      * 越往后投放的注释会被更外层的壳再加密一层，明文文件里看不到、解开才读到。
      */
     private function mutualTick(string $code, string $key): string
     {
         if (!$this->mcActive || !$this->config->get('mutual_comments')) {
+            return $code;
+        }
+        // 结构毒化壳一旦启用，壳内载荷就是【不可 lint 的不透明串】：注释被投进载荷后，
+        // 语法仍然合法、`php -l` 也查不出来，但内层解码结果会错位（gzinflate 拿到坏数据）
+        // → 产物静默零输出。该组合（结构毒化 + 互斥注释）在整站 high/max 上可稳定复现，
+        // 故此处直接跳过注释投放：宁可少一层"娱乐性注释"，也不能产出跑不起来的产物。
+        if ($this->structPoisonActive()) {
             return $code;
         }
         $sealing = ($key === 'structpoison' || $key === 'anti_tamper' || $key === 'license');
@@ -1213,7 +1244,7 @@ final class Obfuscator
                 $map['logic_extreme']   = (bool) ($params['extreme'] ?? false);
                 $map['logic_minify']    = (bool) ($params['minify'] ?? false);
                 $map['logic_wild']      = (bool) ($params['wild'] ?? false);
-                $map['logic_loop_hoist']     = (bool) ($params['loop_hoist'] ?? $this->config->get('logic_loop_hoist', true));
+                $map['logic_loop_light']     = (bool) ($params['loop_light'] ?? $params['loop_hoist'] ?? $this->config->get('logic_loop_light', true));
                 $map['logic_loop_threshold'] = (int) ($params['loop_threshold'] ?? $this->config->get('logic_loop_threshold', 20));
                 break;
         }

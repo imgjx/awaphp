@@ -25,8 +25,12 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/LoopScanTrait.php';
+
 final class StringEncoder
 {
+    use LoopScanTrait;
+
     private HtmlEncoder $html;
 
     public function __construct(
@@ -55,12 +59,23 @@ final class StringEncoder
         $segCount = $varSplit > 1 ? $varSplit : 0;
 
         $safe = ConstExprScan::safeStringIndices($tokens); // [index => true] 表示"不可编码"
+        // 大循环（迭代数 > 阈值，或估不出）内部每轮都会执行：那里的字符串一旦改成
+        // XOR + base64 / gz 解码，就是 N 轮 N 次解码。保留字面量，别把循环变成解码器。
+        $bigLoops = $this->bigLoopRanges($tokens, max(0, (int) $config->get('logic_loop_threshold', 20)));
         $count = 0;
         foreach ($tokens as $i => $tok) {
             if (!is_array($tok) || $tok[0] !== T_CONSTANT_ENCAPSED_STRING) {
                 continue;
             }
             if (isset($safe[$i])) {
+                continue;
+            }
+            if ($bigLoops !== [] && $this->inRanges($i, $bigLoops)) {
+                continue;
+            }
+            // 大循环内已被 logic 层降级为「拼接/原样」形态：这里不能再套 XOR+base64，
+            // 否则每轮循环都要真跑一遍解码函数（迭代数把它放大成 N 倍开销）。
+            if (!empty($tok[3])) {
                 continue;
             }
             $value = $this->decodeLiteral($tok[1]);

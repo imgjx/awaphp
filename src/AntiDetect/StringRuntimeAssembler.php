@@ -21,8 +21,12 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/LoopScanTrait.php';
+
 final class StringRuntimeAssembler
 {
+    use LoopScanTrait;
+
     /** $GLOBALS 键名（拟真命名，去除 __awa_k 指纹） */
     private string $keyName = '_str_crypt_key';
 
@@ -45,6 +49,9 @@ final class StringRuntimeAssembler
             return $tokens;
         }
         $safe = ConstExprScan::safeStringIndices($tokens); // [index => true] 表示"不可编码"（常量表达式/属性默认值等）
+        // 大循环（迭代数 > 阈值，或估不出）内部每轮都会执行：那里的字符串一旦改成
+        // XOR + 解码函数，就是 N 轮 N 次解码。保留字面量，别把循环变成解码器。
+        $bigLoops = $this->bigLoopRanges($tokens, max(0, (int) $config->get('logic_loop_threshold', 20)));
         // ---- 密钥（v2）：不再存储密钥本身，只存 seed；运行期 key = sha256(seed) 前 8 字节 ----
         $style = new NameStyle($this->salt);
         $this->keyName = $style->globalKey('str-xor-key');
@@ -76,6 +83,9 @@ final class StringRuntimeAssembler
             }
             $out[] = $tok;
             if (is_array($tok) && $tok[0] === T_CONSTANT_ENCAPSED_STRING && !isset($safe[$i])) {
+                if ($bigLoops !== [] && $this->inRanges($i, $bigLoops)) {
+                    continue;
+                }
                 $val = $this->decodeLiteral($tok[1]);
                 if ($val === null || $val === '') {
                     continue;

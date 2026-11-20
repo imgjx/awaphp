@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.13');
+define('OBFUSCATOR_VERSION', '1.2.14');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -28,6 +28,7 @@ foreach ([
     'src/Confrontation/ConfrontRng.php',
     'src/Support/DynamicSymbols.php',
     'src/Logger.php',
+    'src/Support/LoopScanTrait.php',
     'src/Config.php',
     'src/Parser.php',
     'src/Validator.php',
@@ -143,12 +144,14 @@ function obf_parse_args(array $argv): array
             $out['logic_wild'] = false;
             continue;
         }
-        // v1.2.13：循环不变量外提（默认开，纯提速项）
-        if ($a === '--no-logic-loop-hoist') {
+        // 循环内轻量注入（默认开，纯提速项）：大循环里只注入运算符级恒等
+        if ($a === '--no-logic-loop-light' || $a === '--no-logic-loop-hoist') {
+            $out['logic_loop_light'] = false;
             $out['logic_loop_hoist'] = false;
             continue;
         }
-        if ($a === '--logic-loop-hoist') {
+        if ($a === '--logic-loop-light' || $a === '--logic-loop-hoist') {
+            $out['logic_loop_light'] = true;
             $out['logic_loop_hoist'] = true;
             continue;
         }
@@ -519,15 +522,16 @@ function obf_help(): string
                        bindec/abs/移位链、缠结加法/减法链；逐值校验保真。默认关，独立开关。
                        注意：深度编码产物会显著拖慢 VM 字节码编译，含 shell:vm 的高档位
                        （high/max/ultra）不建议开启；适合 low/mid 等无 VM 档位追求极限混淆。
-      --logic-loop-hoist v1.2.13 循环不变量外提（默认开）：logic 把字面量展开成
-                       strlen(sha1(…)) 这类函数调用后，若落在循环条件/循环体里就会
-                       每轮重算一遍（N 倍开销）。该优化把"静态可估迭代数 > 阈值"的
-                       循环里的字面量整体搬到循环之前，用临时变量承接，循环内只留
-                       变量引用——开销从 O(N) 退回 O(1)，运行结果逐字节不变。
-                       常量上下文 / 跳转层级 / 函数与闭包体内的字面量不搬。
-                       --no-logic-loop-hoist 关闭。
-      --logic-loop-threshold=  迭代数阈值（默认 20）：超过才外提，短循环保留原混淆
-                       形态；估不出迭代数（while(true)、while($row=f())）一律按大循环处理。
+      --logic-loop-light 循环内轻量注入（默认开）：logic 的常规积木是函数调用形态
+                       （strlen(sha1(…))、base64_decode(…)），落在循环条件或循环体里
+                       就会每轮重算一遍，N 轮就是 N 倍开销。该优化把"静态可估迭代数
+                       > 阈值"的循环里的字面量改成**运算符级恒等**（(20000^0)、(0+7)、
+                       'ab'.'cd'）——编译期常量折叠，运行期零指令，混淆形态仍在，
+                       但没有函数调用被迭代放大。循环外的字面量仍用完整积木。
+                       常量上下文 / 跳转层级 / 函数与闭包体内的字面量不碰。
+                       --no-logic-loop-light 关闭（--no-logic-loop-hoist 为旧名，同样有效）。
+      --logic-loop-threshold=  迭代数阈值（默认 20）：超过才降级，短循环保留完整积木；
+                       估不出迭代数（while(true)、while($row=f())）一律按大循环处理。
 逐壳层激进变换（v1.2.4）
       --logic-shell      每个 shell 壳包裹后，对本层新生成的解码逻辑再施加一次逻辑恒等
                        重组：剥开任意一层看到的解码代码同样是面目全非的恒等式。内层密文

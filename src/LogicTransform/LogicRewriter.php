@@ -33,8 +33,12 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../Support/LoopScanTrait.php';
+
 final class LogicRewriter
 {
+    use LoopScanTrait;
+
     private Salt $salt;
     private Logger $logger;
     private IdentityExpr $id;
@@ -50,8 +54,8 @@ final class LogicRewriter
     private bool $minifyOn = false;     // 压行
     private bool $wildOn = false;       // v1.2.4 天马行空加强档：扩张恒等积木编码库
     private int $strMaxLen = 0;         // 字符串字面量改写长度上限（0=不限；逐壳层用于保护密文载荷）
-    private bool $hoistOn = false;      // v1.2.13 循环不变量外提（性能层，默认开）
-    private int $hoistThreshold = 20;   // 迭代数超过此值才外提（小循环不值得为省几微秒加变量）
+    private bool $hoistOn = false;      // 循环内轻量注入（大循环不用函数调用积木，默认开）
+    private int $hoistThreshold = 20;   // 迭代数超过此值才降级（小循环保留最强形态）
 
     public function __construct(Salt $salt, Logger $logger, int $intensity = 2)
     {
@@ -81,9 +85,9 @@ final class LogicRewriter
         // v1.2.4 天马行空加强 + 字符串长度上限（逐壳层保护密文载荷）
         $this->wildOn     = (bool) $cfg->get('logic_wild', false);
         $this->strMaxLen  = max(0, (int) $cfg->get('logic_str_maxlen', 0));
-        // v1.2.13：循环不变量外提——把「每轮都要求值」的字面量积木搬到循环外，
-        // 让 N 次开销退回 1 次。纯提速项，不改变任何运行结果，默认开。
-        $this->hoistOn    = (bool) $cfg->get('logic_loop_hoist', true);
+        // 循环内轻量注入：大循环里的字面量只用「运算符 + 字面量」级恒等（编译期折叠、
+        // 运行期零指令），避免函数调用积木被迭代数放大成 N 倍开销。默认开。
+        $this->hoistOn = (bool) $cfg->get('logic_loop_light', $cfg->get('logic_loop_hoist', true));
         $this->hoistThreshold = max(0, (int) $cfg->get('logic_loop_threshold', 20));
         $this->constSeed = $this->salt->isEmpty()
             ? 0
@@ -95,8 +99,8 @@ final class LogicRewriter
         $this->genCtr = 0;
         $this->tempVars = [];
         $this->collectVars($tokens);
-        // v1.2.13：先做循环不变量外提（此时循环体内还是裸字面量，位置最容易识别），
-        // 再进入常规变换——这样被搬到循环外的字面量只生成一次积木，循环内只剩变量引用。
+        // 先把大循环内的字面量降级成轻量形态（此时还是裸字面量，位置最容易识别），
+        // 再进入常规变换——被标记的 token 不会再被展开成函数调用积木。
         if ($this->hoistOn) {
             $tokens = $this->hoistPass($tokens);
         }
@@ -140,6 +144,10 @@ final class LogicRewriter
 
             // —— 数字字面量恒等展开（仅顶层）——
             if ($transformNumbers && $this->isIntLiteral($tok)) {
+                // 大循环内已被替换成轻量形态（运算符 + 字面量），不再展开成函数调用积木
+                if (!empty($tok[3])) {
+                    continue;
+                }
                 // v1.2.7：`continue 2;` / `break 3;` 的操作数必须是【整数字面量】，
                 // 展开成恒等表达式（如 (2===2?2:2)）会触发
                 // "'continue' operator with non-integer operand is no longer supported"。
@@ -160,13 +168,17 @@ final class LogicRewriter
             // 属性参数）里的字符串必须是字面量，调用 base64_decode 等会致命；
             // heredoc/nowdoc 与插值字符串不是单个 T_CONSTANT_ENCAPSED_STRING，天然不在此列。
             if ($transformNumbers && is_array($tok) && $tok[0] === T_CONSTANT_ENCAPSED_STRING) {
+                // 大循环内已被替换成轻量形态（拼接或原样），不再展开成函数调用积木
+                if (!empty($tok[3])) {
+                    continue;
+                }
                 // 逐壳层模式：超过长度上限的字符串一律不碰——那几乎必定是内层壳的
                 // base64/gz/字节码密文载荷，改写它会膨胀产物且与结构指纹冲突。
                 $tooLong = $this->strMaxLen > 0 && strlen($tok[1]) > $this->strMaxLen;
                 if (!$tooLong && !$ctx->inDeclare() && !$ctx->isConstContext()) {
                     $s = $this->stripQuotes($tok[1]);
-                    $expr = $this->id->stringExpr($s);
-                    if ($this->id->verify($s, $expr)) {
+                    $expr = $s === null ? null : $this->id->stringExpr($s);
+                    if ($s !== null && $expr !== null && $this->id->verify($s, $expr)) {
                         $matches[$i] = ['start' => $i, 'end' => $i, 'repl' => $this->exprTokens($expr)];
                     }
                 }
@@ -717,6 +729,18 @@ final class LogicRewriter
                             $j = $p + 1; // 下一轮 j-- 后从 $p 继续向前扫描整个调用
                             continue;
                         }
+                        // 括号只是更大表达式的一段：`$i + (3) < $n` 的左操作数是
+                        // `$i + (3)` 而不是 `(3)`。早先在这里直接返回，导致重组后变成
+                        // `$i + ((3 <=> $n) === -1)` —— 循环条件恒真，运行期死循环。
+                        // 前一个 token 是二元运算符（precOf > 0）或数组下标闭括号时，
+                        // 必须继续向左扫描，把整段算术表达式纳入。
+                        if ($p >= 0) {
+                            $pt = $tokens[$p];
+                            if ($this->precOf($pt) > 0 || (is_string($pt) && $pt === ']')) {
+                                $j = $p + 1;
+                                continue;
+                            }
+                        }
                         return [$j, $end]; // 此 ( 是操作数自身的左括号，含入区间
                     }
                 } elseif ($t === '{') {
@@ -888,33 +912,6 @@ final class LogicRewriter
     private function isCompare($tok): bool
     {
         return $this->compareKind($tok) !== null;
-    }
-
-    /**
-     * 比较运算符归一化：token_get_all 对单字符 < > 返回裸字符串（无对应常量），
-     * 仅 <= >= == != === !== <=> 是多字符才对应 T_* 常量。
-     * 这里只接受 < > <= >=（==/!=/===/!== 不改写，因 <=> 对对象抛异常会破坏 == 语义）。
-     * @param mixed $tok
-     */
-    private function compareKind($tok): ?string
-    {
-        if (is_string($tok)) {
-            if ($tok === '<') {
-                return 'lt';
-            }
-            if ($tok === '>') {
-                return 'gt';
-            }
-            return null;
-        }
-        if (is_array($tok)) {
-            return match ($tok[0]) {
-                T_IS_SMALLER_OR_EQUAL => 'lte',
-                T_IS_GREATER_OR_EQUAL => 'gte',
-                default => null,
-            };
-        }
-        return null;
     }
 
     private function isBoolOp($tok): bool
@@ -1151,96 +1148,22 @@ final class LogicRewriter
         return $out;
     }
 
-    private function matchBracket(array $tokens, int $open): int
-    {
-        $depth = 0;
-        $n = count($tokens);
-        for ($j = $open; $j < $n; $j++) {
-            $t = $tokens[$j];
-            if (is_string($t)) {
-                if ($t === '(' || $t === '[' || $t === '{') {
-                    $depth++;
-                } elseif ($t === ')' || $t === ']' || $t === '}') {
-                    $depth--;
-                    if ($depth === 0) {
-                        return $j;
-                    }
-                }
-            } elseif (is_array($t) && ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES)) {
-                $depth++;
-            }
-        }
-        return -1;
-    }
-
-    /** 提取语句主体：{...} 块或单条到深度0 ';' 的语句。返回 [tokens, end]，失败 [[], -1]。 */
-    private function extractBody(array $tokens, int $start): array
-    {
-        $t = $tokens[$start];
-        if ($this->isChar($t, '{')) {
-            $close = $this->matchBracket($tokens, $start);
-            if ($close < 0) {
-                return [[], -1];
-            }
-            return [array_slice($tokens, $start + 1, $close - $start - 1), $close];
-        }
-        $depth = 0;
-        $pdepth = 0;
-        $bdepth = 0;
-        $n = count($tokens);
-        for ($i = $start; $i < $n; $i++) {
-            $tk = $tokens[$i];
-            if (is_string($tk)) {
-                if ($tk === '(') {
-                    $pdepth++;
-                } elseif ($tk === ')') {
-                    if ($pdepth > 0) {
-                        $pdepth--;
-                    }
-                } elseif ($tk === '[') {
-                    $bdepth++;
-                } elseif ($tk === ']') {
-                    if ($bdepth > 0) {
-                        $bdepth--;
-                    }
-                } elseif ($tk === '{') {
-                    $depth++;
-                } elseif ($tk === '}') {
-                    if ($depth > 0) {
-                        $depth--;
-                    }
-                } elseif ($tk === ';' && $depth === 0 && $pdepth === 0 && $bdepth === 0) {
-                    return [array_slice($tokens, $start, $i - $start + 1), $i];
-                }
-            } elseif (is_array($tk) && ($tk[0] === T_CURLY_OPEN || $tk[0] === T_DOLLAR_OPEN_CURLY_BRACES)) {
-                $depth++;
-            }
-        }
-        return [[], -1];
-    }
-
     private function prevSignificant(array $tokens, int $i): int
     {
         return Parser::nextSignificant($tokens, $i, -1);
     }
 
-    private function nextSignificant(array $tokens, int $i, int $dir): int
-    {
-        return Parser::nextSignificant($tokens, $i, $dir);
-    }
-
-    private function isWs($t): bool
-    {
-        return is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true);
-    }
-
-    private function isChar($t, string $c): bool
-    {
-        return is_string($t) && $t === $c;
-    }
-
-    /** 去掉字符串字面量的引号并还原转义（单/双引号），用于生成等价表达式 */
-    private function stripQuotes(string $raw): string
+    /**
+     * 字符串字面量的【真实值】。无法静态求值时返回 null（调用方跳过不碰）。
+     *
+     * 必须完整解析转义：`"\x00"` 是 1 个字节，不是反斜杠加三个字符。此前直接把 token
+     * 文本去引号当值，`"\x00"` 会被编码成求值等于 4 字符文本的表达式——字节数从 1 变 4。
+     * 这类字符串一旦落进 sha1 的填充循环（它按「长度 % 64 命中 56」决定追加多少个 0 字节），
+     * 步长就从 1 变成 4，长度序列永远命不中目标值，运行期无限追加 → CPU 100%。
+     *
+     * 跳过的情况：含变量插值（`$`）、`\u{...}`（stripcslashes 不认）——静态求不出值就不碰。
+     */
+    private function stripQuotes(string $raw): ?string
     {
         if ($raw === '' || strlen($raw) < 2) {
             return $raw;
@@ -1248,11 +1171,13 @@ final class LogicRewriter
         $q = $raw[0];
         $inner = substr($raw, 1, -1);
         if ($q === "'") {
-            return str_replace(["\\'", '\\\\'], ["'", '\\'], $inner);
+            // 单引号只认 \\ 与 \'
+            return preg_replace_callback('/\\\\([\\\\\'])/', static fn ($m): string => $m[1], $inner);
         }
-        return preg_replace_callback('/\\\\([nrt\\\\$"\'])/', static fn ($m): string => match ($m[1]) {
-            'n' => "\n", 't' => "\t", 'r' => "\r", '\\' => '\\', '$' => '$', '"' => '"', "'" => "'",
-        }, $inner);
+        if (str_contains($inner, '$') || str_contains($inner, '\\u{')) {
+            return null;
+        }
+        return stripcslashes($inner);
     }
 
     private function collectVars(array $tokens): void
@@ -1560,46 +1485,91 @@ $this->tempVars[] = $cand;
     }
 
     /**
-     * 判定 + 执行单个循环的外提。
+     * 判定 + 执行单个循环的「轻量注入」。
+     *
+     * 大循环（静态迭代数 > 阈值）：循环条件 / 步进 / 循环体里每轮都会求值的字面量，
+     * 换成**只由运算符与字面量组成**的等价式（`(20000^0)`、`(0+7)`、`'ab'.'cd'`）。
+     * PHP 编译期对整个表达式做常量折叠，运行期一条指令都不多；源码里也不再是裸字面量
+     * ——混淆形态保留，但没有任何函数调用被迭代放大。
+     *
+     * 小循环：原样不动，交给随后的常规变换施加重积木（几十轮，放大效应可忽略）。
+     *
      * @param array<int,mixed> $seg 循环自身（从关键字开始到语句结束）
-     * @param array<int,mixed> $outer 原 token 流（用于判断前置 token 是否为语句边界）
      */
     private function applyHoist(array $seg, array $loop, array $outer, int $outerIdx): array
     {
         $est = $this->estimateIterations($seg, $loop);
         if ($est !== null && $est <= $this->hoistThreshold) {
-            // 小循环：每轮就几条 strlen，外提带来的变量读写不划算，保留原有混淆形态
             return $seg;
         }
         $found = $this->collectHoistable($seg, $this->hoistRanges($seg, $loop));
         if ($found === []) {
             return $seg;
         }
-        // 同值去重：同一循环里出现三次 50，只建一个变量
-        $vars = [];
-        $raws = [];
-        foreach ($found as $info) {
-            $key = $info['type'] . ':' . $info['value'];
-            if (!isset($vars[$key])) {
-                $vars[$key] = $this->genName();
-                $raws[$key] = $info['raw'];
+        $out = [];
+        foreach ($seg as $i => $tok) {
+            if (!isset($found[$i])) {
+                $out[] = $tok;
+                continue;
+            }
+            foreach ($this->cheapLiteralTokens($found[$i]) as $t) {
+                $out[] = $t;
             }
         }
-        // 循环内：字面量 → 变量引用
-        foreach ($found as $idx => $info) {
-            $key = $info['type'] . ':' . $info['value'];
-            $seg[$idx] = [T_VARIABLE, '$' . $vars[$key], 0];
+        return $out;
+    }
+
+    /**
+     * 轻量恒等的 token 形态。
+     *
+     * 约束：只允许**常量折叠级**的构造——纯字面量、算术 / 位运算、字符串拼接。
+     * 绝不出现函数调用（那正是每轮重算的根源）。生成的 token 打上 [3]=true 标记，
+     * 后续常规变换看到标记就跳过，避免被再次展开成重积木。
+     *
+     * @param array{type:string,value:string,raw:string} $info
+     * @return array<int,mixed>
+     */
+    private function cheapLiteralTokens(array $info): array
+    {
+        if ($info['type'] === 'i') {
+            $v = (int) $info['value'];
+            if ($v <= 0) {
+                return $this->markCheap($this->exprTokens($info['raw']));
+            }
+            $forms = [
+                '(' . $v . '^0)',
+                '(0+' . $v . ')',
+                '((' . $v . ')|0)',
+                '(0x' . dechex($v) . '^0)',
+            ];
+            $idx = abs(crc32($v . '|' . $this->constSeed)) % count($forms);
+            return $this->markCheap($this->exprTokens($forms[$idx]));
         }
-        // 循环外：一次赋值（原字面量原样保留，交给后续 transformRange 生成积木）
-        $code = '';
-        foreach ($vars as $key => $name) {
-            $code .= '$' . $name . '=' . $raws[$key] . ';';
+        $s = $info['value'];
+        // 纯可打印、无单引号 / 反斜杠 / 插值 → 对半拆成两段拼接（编译期折叠成同一个常量）
+        if ($s !== '' && strlen($s) >= 2 && preg_match('/^[\x20-\x7e]+$/', $s)
+            && !str_contains($s, "'") && !str_contains($s, '\\') && !str_contains($s, '$')) {
+            $cut = strlen($s) >= 4 ? intdiv(strlen($s), 2) : 1;
+            $expr = "'" . substr($s, 0, $cut) . "' . '" . substr($s, $cut) . "'";
+            return $this->markCheap($this->exprTokens($expr));
         }
-        $pre = $this->exprTokens($code);
-        if ($this->needHoistBlock($outer, $outerIdx)) {
-            return array_merge(['{'], $pre, $seg, ['}']);
+        // 含转义 / 控制字节 / 引号的串：保持原字面量原样（值绝对正确，只是形态不变）
+        return $this->markCheap([$info['raw']]);
+    }
+
+    /**
+     * 给 token 打「已是轻量形态」标记，阻止 transformRange 再次展开。
+     * @param array<int,mixed> $tokens
+     * @return array<int,mixed>
+     */
+    private function markCheap(array $tokens): array
+    {
+        foreach ($tokens as $k => $t) {
+            if (is_array($t)) {
+                $tokens[$k] = [$t[0], $t[1], $t[2] ?? 0, true];
+            }
         }
-        return array_merge($pre, $seg);
+        return $tokens;
     }
 
     /** 前置语句能否直接落在循环前：只有语句边界才安全，否则要包块 */
@@ -1666,7 +1636,7 @@ $this->tempVars[] = $cand;
                     continue;
                 }
                 if ($tok[0] === T_LNUMBER) {
-                    if ($this->isJumpLevelOperand($tokens, $i)) {
+                    if (!empty($tok[3]) || $this->isJumpLevelOperand($tokens, $i)) {
                         continue;
                     }
                     $v = $this->intLiteralValue($tok[1]);
@@ -1677,11 +1647,14 @@ $this->tempVars[] = $cand;
                     continue;
                 }
                 if ($tok[0] === T_CONSTANT_ENCAPSED_STRING) {
+                    if (!empty($tok[3])) {
+                        continue;
+                    }
                     if ($this->strMaxLen > 0 && strlen($tok[1]) > $this->strMaxLen) {
                         continue;
                     }
                     $v = $this->stripQuotes($tok[1]);
-                    if ($v === '') {
+                    if ($v === null || $v === '') {
                         continue;
                     }
                     $out[$i] = ['type' => 's', 'value' => $v, 'raw' => $tok[1]];
@@ -1784,498 +1757,6 @@ $this->tempVars[] = $cand;
             }
         }
         return false;
-    }
-
-    /** 字面量原始写法 → int；超长（可能溢出）与非十进制前缀写法外一律 null */
-    private function intLiteralValue(string $raw): ?int
-    {
-        $s = str_replace('_', '', $raw);
-        if ($s === '' || strlen($s) > 18) {
-            return null;
-        }
-        if (preg_match('/^0[xX]([0-9a-fA-F]+)$/', $s, $m)) {
-            return (int) hexdec($m[1]);
-        }
-        if (preg_match('/^0[bB]([01]+)$/', $s, $m)) {
-            return (int) bindec($m[1]);
-        }
-        if (preg_match('/^0[oO]([0-7]+)$/', $s, $m)) {
-            return (int) octdec($m[1]);
-        }
-        if (preg_match('/^0([0-7]+)$/', $s, $m)) {
-            return (int) octdec($m[1]);
-        }
-        if (preg_match('/^[0-9]+$/', $s)) {
-            return (int) $s;
-        }
-        return null;
-    }
-
-    // --------------------------------------------------------------------
-    // 循环结构解析
-    // --------------------------------------------------------------------
-
-    /**
-     * 识别 $i 处的循环（for / foreach / while / do-while）。
-     * @return array{kind:string,headStart:int,end:int,parenStart:int,parenEnd:int,
-     *               condStart:int,condEnd:int,stepStart:int,stepEnd:int,
-     *               bodyStart:int,bodyEnd:int}|null
-     */
-    private function parseLoop(array $tokens, int $i): ?array
-    {
-        $t = $tokens[$i] ?? null;
-        if (!is_array($t)) {
-            return null;
-        }
-        if ($t[0] === T_DO) {
-            $bs = $this->nextSignificant($tokens, $i, 1);
-            if ($bs < 0) {
-                return null;
-            }
-            $body = $this->extractBody($tokens, $bs);
-            if ($body[1] < 0) {
-                return null;
-            }
-            $be = $body[1];
-            $w = $this->nextSignificant($tokens, $be, 1);
-            if ($w < 0 || !is_array($tokens[$w] ?? null) || $tokens[$w][0] !== T_WHILE) {
-                return null;
-            }
-            $p = $this->nextSignificant($tokens, $w, 1);
-            if ($p < 0 || !$this->isChar($tokens[$p] ?? null, '(')) {
-                return null;
-            }
-            $q = $this->matchBracket($tokens, $p);
-            if ($q < 0) {
-                return null;
-            }
-            $end = $q;
-            $semi = $this->nextSignificant($tokens, $q, 1);
-            if ($semi > 0 && $this->isChar($tokens[$semi] ?? null, ';')) {
-                $end = $semi;
-            }
-            return [
-                'kind' => 'do', 'headStart' => $i, 'end' => $end,
-                'parenStart' => $p, 'parenEnd' => $q,
-                'condStart' => $p + 1, 'condEnd' => $q - 1,
-                'stepStart' => -1, 'stepEnd' => -1,
-                'bodyStart' => $bs, 'bodyEnd' => $be,
-            ];
-        }
-        if (!in_array($t[0], [T_FOR, T_FOREACH, T_WHILE], true)) {
-            return null;
-        }
-        $p = $this->nextSignificant($tokens, $i, 1);
-        if ($p < 0 || !$this->isChar($tokens[$p] ?? null, '(')) {
-            return null;
-        }
-        $q = $this->matchBracket($tokens, $p);
-        if ($q < 0) {
-            return null;
-        }
-        $bs = $this->nextSignificant($tokens, $q, 1);
-        if ($bs < 0) {
-            return null;
-        }
-        // `for (…): … endfor;` 老式替代语法 / 空 body：都不碰
-        if ($this->isChar($tokens[$bs] ?? null, ':') || $this->isChar($tokens[$bs] ?? null, ';')) {
-            return null;
-        }
-        $body = $this->extractBody($tokens, $bs);
-        if ($body[1] < 0) {
-            return null;
-        }
-        $be = $body[1];
-        $kind = $t[0] === T_FOR ? 'for' : ($t[0] === T_FOREACH ? 'foreach' : 'while');
-        $cs = $p + 1;
-        $ce = $q - 1;
-        $ss = -1;
-        $se = -1;
-        if ($kind === 'for') {
-            $sec = $this->forSections($tokens, $p, $q);
-            if ($sec !== null) {
-                [$cs, $ce] = $sec[1];
-                [$ss, $se] = $sec[2];
-            }
-        }
-        return [
-            'kind' => $kind, 'headStart' => $i, 'end' => $be,
-            'parenStart' => $p, 'parenEnd' => $q,
-            'condStart' => $cs, 'condEnd' => $ce,
-            'stepStart' => $ss, 'stepEnd' => $se,
-            'bodyStart' => $bs, 'bodyEnd' => $be,
-        ];
-    }
-
-    /**
-     * 切出 for 头里的三段 [init, cond, step]，返回各段的 [start, end]（含首尾）。
-     * @return array<int,array{0:int,1:int}>|null
-     */
-    private function forSections(array $tokens, int $p, int $q): ?array
-    {
-        $parts = [];
-        $start = $p + 1;
-        $depth = 0;
-        for ($i = $p + 1; $i < $q; $i++) {
-            $t = $tokens[$i];
-            if (!is_string($t)) {
-                continue;
-            }
-            if ($t === '(' || $t === '[' || $t === '{') {
-                $depth++;
-            } elseif ($t === ')' || $t === ']' || $t === '}') {
-                $depth--;
-            } elseif ($t === ';' && $depth === 0) {
-                $parts[] = [$start, $i - 1];
-                $start = $i + 1;
-            }
-        }
-        if (count($parts) !== 2) {
-            return null;
-        }
-        $parts[] = [$start, $q - 1];
-        return $parts;
-    }
-
-    /**
-     * 静态估算迭代次数；null = 估不出（按大循环处理）。
-     * @param array<int,mixed> $tokens
-     */
-    private function estimateIterations(array $tokens, array $loop): ?int
-    {
-        $kind = $loop['kind'];
-        if ($kind === 'foreach') {
-            return $this->estimateForeach($tokens, $loop);
-        }
-        if ($loop['condStart'] < 0 || $loop['condEnd'] < $loop['condStart']) {
-            return null;
-        }
-        $cond = array_slice($tokens, $loop['condStart'], $loop['condEnd'] - $loop['condStart'] + 1);
-        $b = $this->parseCondBound($cond);
-        if ($b === null) {
-            return null;
-        }
-        [$var, $op, $bound] = $b;
-        $start = null;
-        $step = 1;
-        if ($kind === 'for') {
-            $sec = $this->forSections($tokens, $loop['parenStart'], $loop['parenEnd']);
-            if ($sec === null) {
-                return null;
-            }
-            $init = array_slice($tokens, $sec[0][0], $sec[0][1] - $sec[0][0] + 1);
-            $stepT = array_slice($tokens, $sec[2][0], $sec[2][1] - $sec[2][0] + 1);
-            $start = $this->parseInitAssign($init, $var);
-            $step = $this->parseStepDelta($stepT, $var) ?? 0;
-            if ($step <= 0) {
-                return null;
-            }
-        } else {
-            $start = $this->findPrevAssign($tokens, $loop['headStart'], $var);
-        }
-        if ($start === null) {
-            return null;
-        }
-        return $this->iterCount($start, $op, $bound, $step);
-    }
-
-    /** foreach 只看「数组字面量 / range(a,b)」这两种能数清的形态 */
-    private function estimateForeach(array $tokens, array $loop): ?int
-    {
-        $p = $loop['parenStart'];
-        $q = $loop['parenEnd'];
-        // 找顶层 `as`
-        $depth = 0;
-        $as = -1;
-        for ($i = $p + 1; $i < $q; $i++) {
-            $t = $tokens[$i];
-            if (is_string($t)) {
-                if ($t === '(' || $t === '[' || $t === '{') {
-                    $depth++;
-                } elseif ($t === ')' || $t === ']' || $t === '}') {
-                    $depth--;
-                }
-                continue;
-            }
-            if ($depth === 0 && $t[0] === T_AS) {
-                $as = $i;
-                break;
-            }
-        }
-        if ($as < 0) {
-            return null;
-        }
-        $s = $this->nextSignificant($tokens, $p, 1);
-        $e = Parser::prevSignificant($tokens, $as);
-        if ($s < 0 || $e < 0 || $e < $s) {
-            return null;
-        }
-        $expr = array_slice($tokens, $s, $e - $s + 1);
-        $sig = [];
-        foreach ($expr as $t) {
-            if (!$this->isWs($t)) {
-                $sig[] = $t;
-            }
-        }
-        if ($sig === []) {
-            return null;
-        }
-        // [...]
-        if ($this->isChar($sig[0], '[') && $this->isChar($sig[count($sig) - 1], ']')) {
-            return $this->countArrayItems($sig);
-        }
-        // array(...)
-        if (is_array($sig[0]) && $sig[0][0] === T_ARRAY) {
-            $k = 1;
-            while ($k < count($sig) && $this->isWs($sig[$k])) {
-                $k++;
-            }
-            if (isset($sig[$k]) && $this->isChar($sig[$k], '(')) {
-                return $this->countArrayItems($sig);
-            }
-        }
-        // range(a, b)
-        if (is_array($sig[0]) && $sig[0][0] === T_STRING && strtolower($sig[0][1]) === 'range'
-            && isset($sig[1]) && $this->isChar($sig[1], '(')) {
-            $nums = [];
-            foreach ($sig as $t) {
-                if (is_array($t) && $t[0] === T_LNUMBER) {
-                    $v = $this->intLiteralValue($t[1]);
-                    if ($v !== null) {
-                        $nums[] = $v;
-                    }
-                }
-            }
-            if (count($nums) === 2) {
-                return abs($nums[1] - $nums[0]) + 1;
-            }
-        }
-        return null;
-    }
-
-    /** 数数组字面量的顶层元素个数（已确认首尾是 [ ] 或 array( )） */
-    private function countArrayItems(array $sig): ?int
-    {
-        $n = count($sig);
-        $depth = 0;
-        $commas = 0;
-        $any = false;
-        for ($i = 0; $i < $n; $i++) {
-            $t = $sig[$i];
-            if (is_string($t)) {
-                if ($t === '(' || $t === '[' || $t === '{') {
-                    $depth++;
-                    continue;
-                }
-                if ($t === ')' || $t === ']' || $t === '}') {
-                    $depth--;
-                    continue;
-                }
-                if ($t === ',' && $depth === 1) {
-                    $commas++;
-                    continue;
-                }
-                if ($depth >= 1) {
-                    $any = true;
-                }
-                continue;
-            }
-            if ($depth >= 1) {
-                $any = true;
-            }
-        }
-        if (!$any) {
-            return 0;
-        }
-        return $commas + 1;
-    }
-
-    /**
-     * 从条件里提取 `$var <op> <int>`（或反向），返回 [变量名, op, 边界]。
-     * @return array{0:string,1:string,2:int}|null
-     */
-    private function parseCondBound(array $c): ?array
-    {
-        $n = count($c);
-        for ($i = 0; $i < $n; $i++) {
-            $op = $this->compareKind($c[$i]);
-            if ($op === null) {
-                $t = $c[$i];
-                if (is_array($t) && $t[0] === T_IS_NOT_EQUAL) {
-                    $op = 'ne';
-                } elseif (is_array($t) && $t[0] === T_IS_EQUAL) {
-                    $op = 'eq';
-                } else {
-                    continue;
-                }
-            }
-            $l = Parser::prevSignificant($c, $i);
-            $r = $this->nextSignificant($c, $i, 1);
-            if ($l < 0 || $r < 0) {
-                continue;
-            }
-            $lt = $c[$l] ?? null;
-            $rt = $c[$r] ?? null;
-            if (is_array($lt) && $lt[0] === T_VARIABLE && is_array($rt) && $rt[0] === T_LNUMBER) {
-                $v = $this->intLiteralValue($rt[1]);
-                if ($v !== null) {
-                    return [$lt[1], $op, $v];
-                }
-            }
-            if (is_array($rt) && $rt[0] === T_VARIABLE && is_array($lt) && $lt[0] === T_LNUMBER) {
-                $v = $this->intLiteralValue($lt[1]);
-                if ($v !== null) {
-                    return [$rt[1], $this->flipOp($op), $v];
-                }
-            }
-        }
-        return null;
-    }
-
-    private function flipOp(string $op): string
-    {
-        return ['lt' => 'gt', 'gt' => 'lt', 'lte' => 'gte', 'gte' => 'lte', 'ne' => 'ne', 'eq' => 'eq'][$op] ?? $op;
-    }
-
-    /** init 段里的 `$var = <int>` */
-    private function parseInitAssign(array $init, string $var): ?int
-    {
-        $sig = [];
-        foreach ($init as $t) {
-            if (!$this->isWs($t)) {
-                $sig[] = $t;
-            }
-        }
-        $c = count($sig);
-        for ($i = 0; $i + 2 < $c + 1; $i++) {
-            if (!isset($sig[$i + 1], $sig[$i + 2])) {
-                break;
-            }
-            $a = $sig[$i];
-            if (!is_array($a) || $a[0] !== T_VARIABLE || $a[1] !== $var) {
-                continue;
-            }
-            if (!is_string($sig[$i + 1]) || $sig[$i + 1] !== '=') {
-                continue;
-            }
-            $v = $sig[$i + 2];
-            if (is_array($v) && $v[0] === T_LNUMBER) {
-                return $this->intLiteralValue($v[1]);
-            }
-        }
-        return null;
-    }
-
-    /** step 段里的 `$var++` / `++$var` / `$var += N` */
-    private function parseStepDelta(array $step, string $var): ?int
-    {
-        $sig = [];
-        foreach ($step as $t) {
-            if (!$this->isWs($t)) {
-                $sig[] = $t;
-            }
-        }
-        $c = count($sig);
-        for ($i = 0; $i < $c; $i++) {
-            $t = $sig[$i];
-            // ++$var / --$var
-            if (is_array($t) && ($t[0] === T_INC || $t[0] === T_DEC) && isset($sig[$i + 1])
-                && is_array($sig[$i + 1]) && $sig[$i + 1][0] === T_VARIABLE && $sig[$i + 1][1] === $var) {
-                return $t[0] === T_INC ? 1 : -1;
-            }
-            // $var++ / $var--
-            if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === $var && isset($sig[$i + 1])
-                && is_array($sig[$i + 1]) && in_array($sig[$i + 1][0], [T_INC, T_DEC], true)) {
-                return $sig[$i + 1][0] === T_INC ? 1 : -1;
-            }
-            // $var += N
-            if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === $var && isset($sig[$i + 2])
-                && is_array($sig[$i + 1]) && in_array($sig[$i + 1][0], [T_PLUS_EQUAL, T_MINUS_EQUAL], true)
-                && is_array($sig[$i + 2]) && $sig[$i + 2][0] === T_LNUMBER) {
-                $v = $this->intLiteralValue($sig[$i + 2][1]);
-                if ($v !== null) {
-                    return $sig[$i + 1][0] === T_PLUS_EQUAL ? $v : -$v;
-                }
-            }
-        }
-        return null;
-    }
-
-    /** 循环前紧邻的上一条语句若是 `$var = <int>;`，返回该整数 */
-    private function findPrevAssign(array $tokens, int $i, string $var): ?int
-    {
-        $p = Parser::prevSignificant($tokens, $i);
-        if ($p < 0 || !$this->isChar($tokens[$p] ?? null, ';')) {
-            return null;
-        }
-        $s = $p - 1;
-        $depth = 0;
-        while ($s >= 0) {
-            $t = $tokens[$s];
-            $boundary = is_array($t)
-                ? in_array($t[0], [T_OPEN_TAG, T_CLOSE_TAG], true)
-                : in_array($t, [';', '{', '}', ':'], true);
-            if ($boundary && $depth === 0) {
-                break;
-            }
-            if (is_string($t)) {
-                if ($t === ')' || $t === ']' || $t === '}') {
-                    $depth++;
-                } elseif ($t === '(' || $t === '[' || $t === '{') {
-                    $depth--;
-                }
-            }
-            $s--;
-        }
-        $stmt = array_slice($tokens, $s + 1, $p - $s);
-        $sig = [];
-        foreach ($stmt as $t) {
-            if (!$this->isWs($t)) {
-                $sig[] = $t;
-            }
-        }
-        if (count($sig) < 3) {
-            return null;
-        }
-        if (is_array($sig[0]) && $sig[0][0] === T_VARIABLE && $sig[0][1] === $var
-            && is_string($sig[1]) && $sig[1] === '='
-            && is_array($sig[2]) && $sig[2][0] === T_LNUMBER) {
-            return $this->intLiteralValue($sig[2][1]);
-        }
-        return null;
-    }
-
-    /** 由起点 / 比较符 / 边界 / 步长算出迭代数 */
-    private function iterCount(int $start, string $op, int $bound, int $step): ?int
-    {
-        if ($step <= 0) {
-            return null;
-        }
-        $n = null;
-        switch ($op) {
-            case 'lt':
-                $n = (int) ceil(($bound - $start) / $step);
-                break;
-            case 'lte':
-                $n = (int) floor(($bound - $start) / $step) + 1;
-                break;
-            case 'gt':
-                $n = (int) ceil(($start - $bound) / $step);
-                break;
-            case 'gte':
-                $n = (int) floor(($start - $bound) / $step) + 1;
-                break;
-            case 'ne':
-                $d = abs($bound - $start);
-                if ($d % $step !== 0) {
-                    return null;
-                }
-                $n = (int) ($d / $step);
-                break;
-            default:
-                return null;
-        }
-        return $n < 0 ? null : $n;
     }
 }
 
