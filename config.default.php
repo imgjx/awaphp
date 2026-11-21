@@ -64,7 +64,7 @@ return [
     'vm_runtime_logic' => true,// v1.2.8：VM 解释器本体的整数字面量用 Logic 恒等式混淆（编译期常量、零运行成本；false=退回十六进制形态）
     'vm_layers'    => 1,       // VM 嵌套层数（真·嵌套 VM）：>=2 时把上一层产物再 VM 化
     'vm_combo'     => 0,       // VM opcode 组合执行强度 0-3（0=关；1-3 越高等价多指令序列越密，抗反编译）
-    'decoy' => false,          // v1.2.6 多变恒真三分支诱饵（--decoy；等级 --decoy-level=1|2|3）
+    'decoy' => true,           // v1.2.6 多变恒真三分支诱饵（--decoy；等级 --decoy-level=1|2|3）
     'decoy_level' => 2,
     'vm_isa_split' => 2,       // VM 字节码拆解：同一语义 opcode 的等价 ISA 形态数（1=关，2~4=开，默认 2，零运行开销）
     'vm_super_isa' => 3,       // VM 指令集加速：把高频指令组合并为新 ISA 复合指令的条数（0=关，默认 3；越多越激进）
@@ -119,6 +119,37 @@ return [
     // 默认关（保持既有档位行为）；ultra 档默认开，也可由 --logic-wild 独立开启。
     'logic_wild' => false,
 
+    // v1.3.0 低成本恒等积木（默认开）：数字恒等从 strlen(md5('…')) 改成
+    // 「十进制分块 + 位运算掩码」，每次求值只要 1~3 条整数指令（原来要跑一遍哈希）。
+    // 形态仍按 salt/计数器轮换，静态阅读难度不降。
+    'logic_cheap' => true,
+
+    // v1.3.0 函数型代码打散（默认开）：把 echo/print/赋值/纯表达式语句提取成函数再原位调用。
+    'func_split'       => true,
+    'func_split_level' => 1,   // 1=echo/print 2=+return/纯表达式 3=+写回语句
+    'func_split_max'   => 64,  // 单文件最多提取多少个函数（0=关闭）
+
+    // v1.3.0 运行时环境门闩：
+    // 文件开头取一次 PHP 版本 / 当前时间 / 是否装了 xdebug·dbg / 是否被 include，
+    // 派生一个带自增计数器的环境指纹，把 echo/print 包成两路**等价**分支。
+    // 条件不是自消恒等式，静态侧剪不掉；计数器让同一表达式重复求值结果不同；
+    // 被 xdebug 接管时走向另一支，动态插桩拿到的路径在线上复现不了。
+    //
+    // 默认 false：**六档预设（min/low/mid/high/max/ultra）在分层方案里显式开启**，
+    // 而裸开关路径（`--vm` / `--var-length=…` 这类散装参数）保持 v1.2.14 语义不变。
+    // 原因：裸路径不经过预设的层序（envgate → var → 语义层），直接叠加门闩会在
+    // 生成器等自定义 VM 语法上产生语义偏差（tests/hardening_v109.php 实测）。
+    // 需要时用 `--envgate` 显式打开。
+    'envgate'         => false,
+    'envgate_max'     => 8,     // 单文件最多包裹多少条 echo/print（0=只留文件级探针）
+    'envgate_version' => true,  // PHP 版本识别（PHP_VERSION_ID）
+    'envgate_time'    => true,  // 时间识别（time()，文件级只取一次）
+    'envgate_debug'   => true,  // 反调试布尔（xdebug/dbg 是否在场）
+    'envgate_include' => true,  // 是否被 include（测试脚本包裹）
+
+    // v1.3.0 状态机：case 标签写成「运行期基址变量 + 偏移」，静态列不出分支表。
+    'sm_dynamic_case' => true,
+
     // 循环内轻量注入（logic 层性能项，默认开）：
     // logic 的常规积木是 strlen(sha1(…)) 这类函数调用形态，落在循环里就从「一次」
     // 放大成「迭代数 × 一次」。开启后，凡是静态可估迭代数超过阈值的循环，条件/步进/
@@ -143,10 +174,6 @@ return [
     //   20 万次迭代。严格 token 白名单 + 迭代上限 + 真实 eval 双校验，任一不确定即原样
     //   保留。默认开；--no-loop-fold 关闭。
     'loop_fold' => true,
-    // aggressive_prune —— 激进恒等式压缩 + 死分支剪枝层。会把反 AST 恒等式折叠成裸值、
-    //   诱饵恒真分支剪成单路，等于替破解者去混淆，故默认关；--aggressive-prune 或
-    //   --level=aggressive 开启。
-    'aggressive_prune' => false,
 
     // 白名单：不混淆的目录 / 文件 / 符号。目录模式可整文件跳过（原样拷贝）；符号保留原名。
     // dirs/files 用相对输入目录的路径（file 为精确匹配，dir 为前缀匹配，支持 * 通配）；

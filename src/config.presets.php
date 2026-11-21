@@ -74,7 +74,16 @@ return [
             // base64 / gz+base64 / chr 拼接 / \xHH 十六进制等多种编码混合，
             // 解码全走 PHP 原生函数（C 实现），同样看不见明文，但运行时开销更低。
             ['name' => 'constfold',    'params' => ['level' => 1]],
+            // v1.3.0：最低档也接走「语句拆函数 + 多变分支 + 运行时环境门闩」三件套。
+            // 目的：让 min 不再只是"改改名"，而具备最低限度的结构混淆与运行期环境判定；
+            // 三者都只加常数级开销（每次调用/每次 echo 数个位运算），不影响 min 的定位。
+            // 顺序与 high/max 保持一致：先 decoy/envgate（新变量随后被 var 一并改名），
+            // 再 var，最后 funcsplit（必须在 var/func/class 之后 —— 否则提取出的形参
+            // 用的是旧名、调用点用的是新名，产物必然 Undefined variable）。
+            ['name' => 'decoy',        'params' => ['level' => 1]],
+            ['name' => 'envgate',      'params' => ['max' => 4]],
             ['name' => 'var',          'params' => ['length' => 8]],
+            ['name' => 'funcsplit',    'params' => ['level' => 1, 'max' => 32]],
             ['name' => 'number',       'params' => ['on' => true]],
             ['name' => 'string',       'params' => ['xor' => false, 'length' => 8, 'split' => 2]],
             ['name' => 'comment',      'params' => []],
@@ -94,6 +103,8 @@ return [
         'layers' => [
             ['name' => 'constfold',   'params' => ['level' => 1]],
             ['name' => 'logic',       'params' => ['intensity' => 1]],
+            ['name' => 'decoy',       'params' => ['level' => 1]],
+            ['name' => 'envgate',     'params' => ['max' => 6]],
             ['name' => 'var',          'params' => ['length' => 10]],
             ['name' => 'func',         'params' => ['length' => 12, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -129,6 +140,7 @@ return [
             ['name' => 'constfold',   'params' => ['level' => 2]],
             ['name' => 'logic',       'params' => ['intensity' => 2]],
             ['name' => 'decoy',       'params' => ['level' => 1]],
+            ['name' => 'envgate',     'params' => ['max' => 8]],
             ['name' => 'var',          'params' => ['length' => 16]],
             ['name' => 'func',         'params' => ['length' => 18, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -172,6 +184,7 @@ return [
             ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3]],
             ['name' => 'decoy',       'params' => ['level' => 2]],
+            ['name' => 'envgate',     'params' => ['max' => 12]],
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -208,6 +221,7 @@ return [
             ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3]],
             ['name' => 'decoy',       'params' => ['level' => 2]],
+            ['name' => 'envgate',     'params' => ['max' => 12]],
             ['name' => 'var',          'params' => ['length' => 20]],
             ['name' => 'func',         'params' => ['length' => 24, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -247,6 +261,7 @@ return [
             ['name' => 'constfold',   'params' => ['level' => 3]],
             ['name' => 'logic',       'params' => ['intensity' => 3, 'decoy' => true, 'fake_tail' => true, 'minify' => true]],
             ['name' => 'decoy',       'params' => ['level' => 3]],
+            ['name' => 'envgate',     'params' => ['max' => 16]],
             ['name' => 'var',          'params' => ['length' => 24]],
             ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
             ['name' => 'class',        'params' => ['on' => true]],
@@ -286,61 +301,5 @@ return [
         'logic_shell'            => true,
         'logic_shell_intensity'  => 2,
         'logic_shell_maxlen'     => 512,
-    ] + $FRAMEWORK_SAFE,
-
-
-    // ===================== aggressive：v1.2.8 性能优先档 =====================
-    // 在 ultra 全部保护的基础上，把反 AST 恒等式与诱饵分支【激进压缩/剪枝】回直达路径，
-    // 换取计算密集负载的运行时性能。代价是弱化静态反 AST 强度——仅用于性能敏感、
-    // 且已由 VM/多层壳提供主要保护的场景。默认各档不含此层。
-    'aggressive' => [
-        'layers' => [
-            ['name' => 'constfold',   'params' => ['level' => 3]],
-            // v1.2.8：前置到 logic 之前——只压缩用户自己的代码，隔离 Logic 注入的恒等式，
-            // 不给攻击者送去混淆 toolkit。
-            ['name' => 'aggressive_prune', 'params' => []],
-            ['name' => 'logic',       'params' => ['intensity' => 3, 'decoy' => true, 'fake_tail' => true, 'minify' => true]],
-            ['name' => 'decoy',       'params' => ['level' => 3]],
-            ['name' => 'var',          'params' => ['length' => 24]],
-            ['name' => 'func',         'params' => ['length' => 28, 'call' => true, 'enc' => true]],
-            ['name' => 'class',        'params' => ['on' => true]],
-            ['name' => 'funcsplit',    'params' => ['level' => 3, 'max' => 96]],
-            ['name' => 'controlflow',  'params' => ['cfg' => 'high', 'goto' => 5, 'goto_cpx' => 16]],
-            ['name' => 'statemachine', 'params' => ['complexity' => 12, 'passes' => 3, 'traps' => 4, 'opaque' => true]],
-            ['name' => 'number',       'params' => ['on' => true]],
-            ['name' => 'string',       'params' => ['xor' => true, 'length' => 4, 'split' => 8]],
-            ['name' => 'semantic',     'params' => ['strength' => 3]],
-            ['name' => 'anti_ast',     'params' => []],
-            ['name' => 'junk_runtime', 'params' => ['intensity' => 10, 'fake_b64' => true, 'fake_echo' => true, 'tangle' => true]],
-            ['name' => 'dead',         'params' => ['density' => 10]],
-            ['name' => 'comment',      'params' => []],
-            ['name' => 'stat',         'params' => []],
-            ['name' => 'token',        'params' => ['case' => true, 'literal' => true, 'quote' => true, 'heredoc' => false, 'decoy' => 50]],
-            ['name' => 'ws',           'params' => []],
-            ['name' => 'shell:vm',     'params' => ['stateMachine' => true, 'chunks' => 16, 'layers' => 2, 'morph' => true, 'fakeFog' => 200, 'probe' => 50, 'keychain' => true, 'builtinReplace' => true, 'junk' => 200, 'cpool' => true, 'combo' => 3, 'isaSplit' => 1]],
-            ['name' => 'shell:eval',   'params' => ['layers' => 10]],
-            ['name' => 'shell:anti_debug',  'params' => ['probes' => 'ext,func,ini,env,sapi,proc,trace,func2,ini2', 'intensity' => 4, 'response' => 'silent', 'multipoint' => true]],
-            ['name' => 'shell:gz',     'params' => ['decoy' => true, 'chunks' => 6]],
-            ['name' => 'shell:anti_strip',  'params' => ['depth' => 4, 'response' => 'silent']],
-            ['name' => 'shell:anti_hook',   'params' => ['strict' => true]],
-            ['name' => 'shell:anti_tamper', 'params' => ['segments' => 8, 'shutdown' => true, 'chain' => true, 'multipoint' => true]],
-            ['name' => 'shell:honeypot',    'params' => ['count' => 6]],
-            ['name' => 'shell:structpoison','params' => ['rounds' => 5]],
-        ],
-        'shell_shield' => true,
-        'shell_shield_intensity' => 3,
-        // Confrontation-LLM：反 LLM 静态分析（误导注释 + 生僻 CJK 散布，强度拉满）
-        'confrontation_llm' => true,
-        'confrontation_intensity' => 3,
-        // VM opcode 组合执行（抗反编译）强度 3
-        'vm_combo' => 3,
-        // v1.2.4：逐壳层激进变换（ultra 默认开，独立开关可关）
-        // 注：logic_wild（天马行空深度编码）刻意不在此默认开启——它会与 VM 字节码编译
-        // 冲突导致构建 OOM，仅适合无 VM 档位显式 --logic-wild 使用。
-        'logic_shell'            => true,
-        'logic_shell_intensity'  => 2,
-        'logic_shell_maxlen'     => 512,
-        // v1.2.8：本档启用激进恒等式压缩 + 死分支剪枝（性能优先，弱化反 AST）
-        'aggressive_prune'       => true,
     ] + $FRAMEWORK_SAFE,
 ];

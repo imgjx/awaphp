@@ -81,13 +81,22 @@ final class ShellProtector
             $logger->warn('[壳层自保护] 变换异常，回滚：' . $e->getMessage());
             return $before;
         }
-        $check = (new Validator($logger))->checkSyntaxString($out);
+        // 调试钩子：OBF_SHIELD_DUMP=<目录> 时总是落盘输入/输出，便于定位"哪一步引入坏代码"
+        $dumpAll = getenv('OBF_SHIELD_DUMP');
+        if (is_string($dumpAll) && $dumpAll !== '') {
+            @mkdir($dumpAll, 0777, true);
+            static $seq = 0;
+            $tag = sprintf('%03d', ++$seq);
+            @file_put_contents($dumpAll . '/' . $tag . '.in.php', $before);
+            @file_put_contents($dumpAll . '/' . $tag . '.out.php', $out);
+        }
+        $check = (new Validator($logger))->checkSyntaxString($out, true);
         if (!$check['ok']) {
             // 先尝试序言归一修复（把被推后的 declare/namespace 提到最前），修复成功则复用，
             // 避免自保护整体回退（壳仍在，但自保护强度丢失）。
             $fixed = DeclareHoist::reconcile($out);
             if ($fixed !== $out) {
-                $c2 = (new Validator($logger))->checkSyntaxString($fixed);
+                $c2 = (new Validator($logger))->checkSyntaxString($fixed, true);
                 if (!empty($c2['ok'])) {
                     return $fixed;
                 }

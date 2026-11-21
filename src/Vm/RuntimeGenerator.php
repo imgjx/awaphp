@@ -1531,7 +1531,7 @@ TPL;
     private function phprunGlobalBind(): string
     {
         return <<<'PHP'
-$___GNAMES___=[];$___GFLAG___=0;foreach(token_get_all("<?php ".$___TCODE2___) as $___GTK___){if(is_array($___GTK___)){if($___GTK___[0]===T_GLOBAL){$___GFLAG___=1;continue;}if($___GFLAG___===1){if($___GTK___[0]===T_VARIABLE){$___GNAMES___[substr($___GTK___[1],1)]=1;}continue;}if($___GTK___[0]===T_VARIABLE&&$___GTK___[1]==='$GLOBALS'){$___GFLAG___=2;continue;}if($___GFLAG___===2&&$___GTK___[0]===T_CONSTANT_ENCAPSED_STRING){$___GNAMES___[trim($___GTK___[1],'\'"')]=1;$___GFLAG___=0;}}else{if($___GTK___===';'||$___GTK___===']'){$___GFLAG___=0;}}}foreach($___GNAMES___ as $___GN___=>$___GD___){if($___GN___===''||$___GN___==='this'||$___GN___==='GLOBALS'){continue;}if(!array_key_exists($___GN___,$GLOBALS)){$GLOBALS[$___GN___]=null;}${$___GN___}=&$GLOBALS[$___GN___];}
+$___GNAMES___=[];$___GFLAG___=0;foreach(['argv','argc','http_response_header'] as $___GA___){if(array_key_exists($___GA___,$GLOBALS)){$___GNAMES___[$___GA___]=1;}}foreach(token_get_all("<?php ".$___TCODE2___) as $___GTK___){if(is_array($___GTK___)){if($___GTK___[0]===T_GLOBAL){$___GFLAG___=1;continue;}if($___GFLAG___===1){if($___GTK___[0]===T_VARIABLE){$___GNAMES___[substr($___GTK___[1],1)]=1;}continue;}if($___GTK___[0]===T_VARIABLE&&$___GTK___[1]==='$GLOBALS'){$___GFLAG___=2;continue;}if($___GFLAG___===2&&$___GTK___[0]===T_CONSTANT_ENCAPSED_STRING){$___GNAMES___[trim($___GTK___[1],'\'"')]=1;$___GFLAG___=0;}}else{if($___GTK___===';'||$___GTK___===']'){$___GFLAG___=0;}}}foreach($___GNAMES___ as $___GN___=>$___GD___){if($___GN___===''||$___GN___==='this'||$___GN___==='GLOBALS'){continue;}if(!array_key_exists($___GN___,$GLOBALS)){$GLOBALS[$___GN___]=null;}${$___GN___}=&$GLOBALS[$___GN___];}
 PHP;
     }
 

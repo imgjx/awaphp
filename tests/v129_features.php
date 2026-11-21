@@ -100,7 +100,7 @@ foreach (['perfkill', 'v129high', 'abc123', 'x'] as $hsalt) {
 // B) 新逻辑变化条件在多档恒真恒假（逐字节一致）
 // ---------------------------------------------------------------------------
 echo "\n=== B) 新逻辑变化条件恒真恒假 ===\n";
-foreach (['mid', 'max', 'ultra', 'aggressive'] as $lv) {
+foreach (['mid', 'max', 'ultra'] as $lv) {
     $r = case_run($entry, $richSrc, $tmp . '/cond_' . $lv . '.php', ['--level=' . $lv, '--salt=v129cond']);
     $r['ok'] ? t_ok("{$lv} 档新条件（版本/debug/时间/可预测）输出一致") : t_no("{$lv} 新条件", $r['why']);
 }

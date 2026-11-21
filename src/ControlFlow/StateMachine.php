@@ -36,6 +36,8 @@ final class StateMachineObfuscator
     private int $passes = 2;       // 嵌套层数（把上一层每个分派器再分发，形成分发树）
     private int $traps = 2;        // 诱饵死状态数（0=关闭）
     private bool $opaque = true;   // 转移包不透明谓词（恒真，else 指向自锁诱饵）
+    /** v1.3.0：case 标签改用「运行期变量基址 + 偏移」，静态列不出分支表 */
+    private bool $dynamicCase = true;
 
     public function __construct(private Logger $logger, ?Salt $salt = null)
     {
@@ -56,6 +58,7 @@ final class StateMachineObfuscator
         $this->passes = max(1, (int) $config->get('sm_passes'));
         $this->traps = max(0, min(4, (int) $config->get('sm_traps')));
         $this->opaque = (bool) $config->get('sm_opaque');
+        $this->dynamicCase = (bool) $config->get('sm_dynamic_case', true);
         if ($this->complexity <= 1 || $this->passes <= 0) {
             return $tokens; // 未开启
         }
@@ -552,6 +555,20 @@ final class StateMachineObfuscator
                 ? '0x' . dechex($v)
                 : (string) $v;
         };
+        // v1.3.0：运行期标签基址。$c 恒为 0（(PHP_VERSION_ID > 0) - 1），
+        // 但静态分析必须先知道目标机的 PHP 版本才能把 case 标签折回字面量 ——
+        // 分支表不再是"扫一眼就能列出来"的常量集合，状态机裁剪必须走全路径分析。
+        $c = '';
+        if ($this->dynamicCase) {
+            $c = $this->pickVar('sm-casebase-' . $seq);
+        }
+        // 标签值发射器：静态模式发裸字面量，动态模式发 `$c + 字面量`
+        $num = function (int $v) use ($c, $fmt): array {
+            if ($c === '') {
+                return [[T_LNUMBER, $fmt($v), 0]];
+            }
+            return [[T_VARIABLE, $c, 0], '+', [T_LNUMBER, $fmt($v), 0]];
+        };
         $order = $this->salt->shuffle(range(0, $k - 1), 'sm-order-' . $seq);
 
         // 诱饵死状态：不透明谓词开启时至少保留 1 个（else 分支需要跳转目标）
@@ -572,12 +589,22 @@ final class StateMachineObfuscator
             $trapLabels[] = $lv;
         }
         // 诱饵分支体：把状态变量写回自身 → while(true) 自锁死循环
-        $trapBody = function (int $tl) use ($s, $fmt, $seq): array {
+        $trapBody = function (int $tl) use ($s, $num, $seq): array {
             $tmp = $this->pickVar('sm-d-' . $seq . '-' . $tl);
-            return [
-                [T_VARIABLE, $tmp, 0], '=', [T_LNUMBER, $fmt($tl), 0], '*', [T_LNUMBER, '3', 0], ';',
-                [T_VARIABLE, $s, 0], '=', [T_LNUMBER, $fmt($tl), 0], ';',
-            ];
+            $out = [[T_VARIABLE, $tmp, 0], '='];
+            foreach ($num($tl) as $tk) {
+                $out[] = $tk;
+            }
+            $out[] = '*';
+            $out[] = [T_LNUMBER, '3', 0];
+            $out[] = ';';
+            $out[] = [T_VARIABLE, $s, 0];
+            $out[] = '=';
+            foreach ($num($tl) as $tk) {
+                $out[] = $tk;
+            }
+            $out[] = ';';
+            return $out;
         };
         $trapIdx = 0;
 
@@ -593,14 +620,35 @@ final class StateMachineObfuscator
         $cmp    = $strict ? '===' : '==';
 
         $out = [];
+        // 标签基址变量：$c = (PHP_VERSION_ID > 0) - 1  → 运行期恒 0
+        if ($c !== '') {
+            $out[] = [T_VARIABLE, $c, 0];
+            $out[] = '=';
+            $out[] = '(';
+            $out[] = [T_STRING, 'PHP_VERSION_ID', 0];
+            $out[] = '>';
+            $out[] = [T_LNUMBER, '0', 0];
+            $out[] = ')';
+            $out[] = '-';
+            $out[] = [T_LNUMBER, '1', 0];
+            $out[] = ';';
+        }
         $out[] = [T_VARIABLE, $s, 0];
         $out[] = '=';
-        $out[] = [T_LNUMBER, $fmt($labels[0]), 0];
+        foreach ($num($labels[0]) as $tk) {
+            $out[] = $tk;
+        }
         $out[] = ';';
-        // 不透明变量声明
+        // 不透明变量声明：与运行期版本号异或，避免成为"纯字面量"被静态求值
         $out[] = [T_VARIABLE, $o, 0];
         $out[] = '=';
         $out[] = [T_LNUMBER, (string) $oInit, 0];
+        $out[] = '^';
+        $out[] = '(';
+        $out[] = [T_STRING, 'PHP_VERSION_ID', 0];
+        $out[] = '>>';
+        $out[] = [T_LNUMBER, '8', 0];
+        $out[] = ')';
         $out[] = ';';
         if ($loop === 0) {
             array_push($out, 'while', '(', '1', ')', '{');
@@ -617,19 +665,23 @@ final class StateMachineObfuscator
             array_push($out, ')', '{');
             foreach ($order as $idx) {
                 array_push($out, 'case');
-                $out[] = [T_LNUMBER, $fmt($labels[$idx]), 0];
+                foreach ($num($labels[$idx]) as $tk) {
+                    $out[] = $tk;
+                }
                 array_push($out, ':');
                 foreach ($this->withTerminator($stmts[$idx]) as $t) {
                     $out[] = $t;
                 }
                 $next = $idx + 1 < $k ? $labels[$idx + 1] : $sentinel;
-                $out = array_merge($out, $this->transition($s, $o, $next, $fmt, $trapLabels));
+                $out = array_merge($out, $this->transition($s, $o, $next, $num, $trapLabels));
                 array_push($out, 'break', ';');
                 if ($trapIdx < count($trapLabels)
                     && $this->salt->deriveInt('sm-trap-at-' . $seq . '-' . $idx, 0, 2) === 0) {
                     $tl = $trapLabels[$trapIdx++];
                     array_push($out, 'case');
-                    $out[] = [T_LNUMBER, $fmt($tl), 0];
+                    foreach ($num($tl) as $tk) {
+                        $out[] = $tk;
+                    }
                     array_push($out, ':');
                     foreach ($trapBody($tl) as $t) {
                         $out[] = $t;
@@ -640,7 +692,9 @@ final class StateMachineObfuscator
             while ($trapIdx < count($trapLabels)) {
                 $tl = $trapLabels[$trapIdx++];
                 array_push($out, 'case');
-                $out[] = [T_LNUMBER, $fmt($tl), 0];
+                foreach ($num($tl) as $tk) {
+                    $out[] = $tk;
+                }
                 array_push($out, ':');
                 foreach ($trapBody($tl) as $t) {
                     $out[] = $t;
@@ -655,13 +709,15 @@ final class StateMachineObfuscator
                 array_push($out, $first ? 'if' : 'elseif', '(');
                 $out[] = [T_VARIABLE, $s, 0];
                 array_push($out, $cmp);
-                $out[] = [T_LNUMBER, $fmt($labels[$idx]), 0];
+                foreach ($num($labels[$idx]) as $tk) {
+                    $out[] = $tk;
+                }
                 array_push($out, ')', '{');
                 foreach ($this->withTerminator($stmts[$idx]) as $t) {
                     $out[] = $t;
                 }
                 $next = $idx + 1 < $k ? $labels[$idx + 1] : $sentinel;
-                $out = array_merge($out, $this->transition($s, $o, $next, $fmt, $trapLabels));
+                $out = array_merge($out, $this->transition($s, $o, $next, $num, $trapLabels));
                 array_push($out, '}');
                 $first = false;
             }
@@ -670,7 +726,9 @@ final class StateMachineObfuscator
                 array_push($out, 'elseif', '(');
                 $out[] = [T_VARIABLE, $s, 0];
                 array_push($out, '===');
-                $out[] = [T_LNUMBER, $fmt($tl), 0];
+                foreach ($num($tl) as $tk) {
+                    $out[] = $tk;
+                }
                 array_push($out, ')', '{');
                 foreach ($trapBody($tl) as $t) {
                     $out[] = $t;
@@ -723,26 +781,47 @@ final class StateMachineObfuscator
     /**
      * 生成一条状态转移指令序列。
      * - 不透明关闭：直接 $s = $next;
-     * - 不透明开启：if (($o ^ $o) === 0) { $s = $next; } else { $s = $trap; }
+     * - 不透明开启：if ((($o | 1) & 1) === 1) { $s = $next; } else { $s = $trap; }
      *   谓词恒真、无副作用；else 死路指向自锁诱饵状态。
-     * @param callable(int):string $fmt
+     *
+     * v1.3.0：谓词从「($o ^ $o) === 0」换成「(($o | 1) & 1) === 1」。
+     * 前者是一眼可辨的自消恒等式（扫一眼就知道 else 是死代码）；后者要看懂
+     * "任何整数或 1 之后最低位必为 1"，且 $o 本身由运行期版本号参与派生，
+     * 静态侧连 $o 的奇偶都算不出来 —— 想剪掉 else 必须先做位级推理。
+     * @param callable(int):array $num
      * @param array<int> $trapLabels
      * @return array<int,mixed>
      */
-    private function transition(string $s, string $o, int $next, callable $fmt, array $trapLabels): array
+    private function transition(string $s, string $o, int $next, callable $num, array $trapLabels): array
     {
         if (!$this->opaque || count($trapLabels) === 0) {
-            return [
-                [T_VARIABLE, $s, 0], '=', [T_LNUMBER, $fmt($next), 0], ';',
-            ];
+            $out = [[T_VARIABLE, $s, 0], '='];
+            foreach ($num($next) as $tk) {
+                $out[] = $tk;
+            }
+            $out[] = ';';
+            return $out;
         }
         $trap = $trapLabels[0];
-        return [
-            'if', '(', '(', [T_VARIABLE, $o, 0], '^', [T_VARIABLE, $o, 0], ')', '===', [T_LNUMBER, '0', 0], ')', '{',
-                [T_VARIABLE, $s, 0], '=', [T_LNUMBER, $fmt($next), 0], ';',
-            '}', 'else', '{',
-                [T_VARIABLE, $s, 0], '=', [T_LNUMBER, $fmt($trap), 0], ';',
-            '}',
+        $out = [
+            'if', '(', '(', '(', [T_VARIABLE, $o, 0], '|', [T_LNUMBER, '1', 0], ')', '&', [T_LNUMBER, '1', 0], ')',
+            '===', [T_LNUMBER, '1', 0], ')', '{',
+            [T_VARIABLE, $s, 0], '=',
         ];
+        foreach ($num($next) as $tk) {
+            $out[] = $tk;
+        }
+        $out[] = ';';
+        $out[] = '}';
+        $out[] = 'else';
+        $out[] = '{';
+        $out[] = [T_VARIABLE, $s, 0];
+        $out[] = '=';
+        foreach ($num($trap) as $tk) {
+            $out[] = $tk;
+        }
+        $out[] = ';';
+        $out[] = '}';
+        return $out;
     }
 }

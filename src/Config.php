@@ -111,7 +111,6 @@ final class Config
         $this->data['jobs']           = max(1, min(256, $i($this->data['jobs'] ?? 1)));
         // v1.2.8：构建期纯计算循环折叠（默认开）；激进恒等式压缩/剪枝层（默认关）
         $this->data['loop_fold']            = $b($this->data['loop_fold'] ?? true) ?? true;
-        $this->data['aggressive_prune']     = $b($this->data['aggressive_prune'] ?? false) ?? false;
 
         // 分层 / VM 层相关字段
         $this->data['vm_flatten']     = $b($this->data['vm_flatten'] ?? false) ?? false;
@@ -191,6 +190,8 @@ final class Config
         $this->data['logic_shell_intensity'] = max(1, min(3, $i($this->data['logic_shell_intensity'] ?? 2)));
         $this->data['logic_shell_maxlen']    = max(0, $i($this->data['logic_shell_maxlen'] ?? 512));
         $this->data['logic_wild']            = $b($this->data['logic_wild'] ?? false) ?? false;
+        // v1.3.0：低成本恒等积木（十进制分块 + 位运算），默认开
+        $this->data['logic_cheap']           = $b($this->data['logic_cheap'] ?? true) ?? true;
         // 循环内轻量注入（logic 层性能项）：静态可估迭代数 > 阈值的大循环里，字面量
         // 只注入「运算符 + 字面量」级恒等（编译期常量折叠，运行期零指令），不再使用
         // strlen(sha1(…)) / base64_decode(…) 这类函数调用积木——那会被迭代数放大成 N 倍。
@@ -207,12 +208,22 @@ final class Config
         // 通过 layerConfig() 注入同名键，二者共用同一组归一化。
         $this->data['const_fold']       = $b($this->data['const_fold'] ?? false) ?? false;
         $this->data['const_fold_level'] = max(1, min(3, $i($this->data['const_fold_level'] ?? 2)));
-        $this->data['func_split']       = $b($this->data['func_split'] ?? false) ?? false;
+        $this->data['func_split']       = $b($this->data['func_split'] ?? true) ?? true;
         $this->data['func_split_level'] = max(1, min(3, $i($this->data['func_split_level'] ?? 1)));
         $this->data['func_split_max']   = max(0, $i($this->data['func_split_max'] ?? 64));
         // v1.2.6 多变恒真三分支诱饵
-        $this->data['decoy']            = $b($this->data['decoy'] ?? false) ?? false;
+        $this->data['decoy']            = $b($this->data['decoy'] ?? true) ?? true;
         $this->data['decoy_level']      = max(1, min(3, $i($this->data['decoy_level'] ?? 2)));
+        // v1.3.0 运行时环境门闩（PHP 版本 / 时间 / 反调试布尔 / 是否被 include）
+        // 默认开启：四个探针都是 O(1) 的廉价运算，文件级只取一次。
+        $this->data['envgate']          = $b($this->data['envgate'] ?? true) ?? true;
+        $this->data['envgate_max']      = max(0, min(512, $i($this->data['envgate_max'] ?? 8)));
+        $this->data['envgate_version']  = $b($this->data['envgate_version'] ?? true) ?? true;
+        $this->data['envgate_time']     = $b($this->data['envgate_time'] ?? true) ?? true;
+        $this->data['envgate_debug']    = $b($this->data['envgate_debug'] ?? true) ?? true;
+        $this->data['envgate_include']  = $b($this->data['envgate_include'] ?? true) ?? true;
+        // v1.3.0 状态机：case 标签改用运行期变量基址 + 偏移，静态列不出分支表
+        $this->data['sm_dynamic_case']  = $b($this->data['sm_dynamic_case'] ?? true) ?? true;
 
         // 白名单：不混淆的目录 / 文件 / 符号（目录模式可整文件跳过；符号保留原名）
         $wlKeys = ['dirs', 'files', 'variables', 'functions', 'classes', 'constants', 'methods', 'namespaces', 'interfaces', 'traits'];

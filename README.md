@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-1.2.14-orange)
+![Version](https://img.shields.io/badge/version-1.3.0-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -136,7 +136,12 @@ Compiles program segments into **custom bytecode** executed instruction by instr
 ### Compile-time optimisation and performance layers
 - **constfold constant pre-computation** (`--const-fold-level=1|2|3`): "simple but expensive" pure literal arithmetic is evaluated **at build time** — `60*60*24 → 86400`, `'a'.'b'.'c' → 'abc'`. Nothing is computed at runtime (fewer instructions, zero overhead) and the original computation disappears from the source. Strictly literal-only evaluation honouring PHP 8 precedence and right associativity (`2+3*4=14`, `2**3**2=512`); division by zero / overflow / oversized results / type mismatches are skipped; the folded result is still a literal, so `const`, parameter defaults and other constant contexts stay legal. It runs **before `logic`**: compute first, then let the logic layer obfuscate the result.
 - **Build-time loop folding** (on by default, `--no-loop-fold` disables): deterministic loops with literal bounds and pure local arithmetic (the typical 200 000-iteration `for`) are folded into a result literal at build time by `ConstEval` — a token-level symbolic executor that evaluates with native PHP operators and **never uses `eval`**. A strict token whitelist, an iteration cap and double verification keep anything uncertain untouched.
-- **Aggressive pruning `aggressive_prune`** (`--aggressive-prune`, on by default in the `aggressive` preset): folds constant identities and dead branches written by the user, so the artifact does not recompute them at runtime. It is **hard-pinned before `logic`** — pruning after Logic would fold the obfuscator's own identities back into literals (protection defeating itself). "Logic cannot be accelerated away by the pruning layer" is therefore structural, with two backstops: the pipeline idles the layer if it is ever scheduled after `logic`, and it idles if the token stream already carries Logic brick fingerprints.
+- **Runtime environment gates `envgate`** (on by default in **every** preset, `min` included): at the top of each file the artifact samples four facts that only exist at runtime — `PHP_VERSION_ID`, `time()`, whether a debugger/instrumentation extension is loaded (`xdebug` / `dbg`), and whether the file was `include`d by another script — and folds them into one **environment fingerprint** carrying a self-incrementing counter. `echo` / `print` statements are then wrapped in two **output-identical** branches selected by that fingerprint.
+  - The condition is *not* a self-cancelling identity (`($x^$x)===0` gives the dead branch away at a glance). It is a question whose answer is unknown until runtime, and may differ on the next machine — static analysis cannot prune it.
+  - Because the counter increments on every evaluation, the **same expression yields a different value the second time**. Iterative constant folding / symbolic execution that runs to a fixed point gets contaminated in round two instead of converging.
+  - Both branches are byte-identical in output, so either one is correct — but under xdebug the artifact takes the *other* branch. Dynamic instrumentation traces a path that will never occur in production.
+  - Cost: four O(1) probes per file plus 3–4 bit operations per gate — orders of magnitude cheaper than `strlen(md5('…'))` bricks. Switch: `--envgate` / `--no-envgate`, cap `--envgate-max` (default 8), per-probe toggles `--envgate-version|time|debug|include`.
+- **Dynamic `case` labels**: the state machine emits its dispatch table as `case $base + <offset>` where `$base = (PHP_VERSION_ID > 0) - 1` is computed at runtime, instead of a table of literal constants. The branch table can no longer be listed statically, so state-machine pruning has to degrade to full-path analysis. `--sm-dynamic-case` / `--no-sm-dynamic-case`.
 
 ### Function-level splitting (`funcsplit` layer)
 Extracts a statement into a function wrapper: `echo $i + $k . $str;` → `function _fs9ab12c34($i, $k, $str){echo $i + $k . $str;}` plus an in-place call `_fs9ab12c34($i, $k, $str);` (definitions land at the top of the file, calls stay where they were).

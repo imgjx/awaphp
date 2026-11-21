@@ -27,7 +27,8 @@ final class ProjectBuilder
         private Salt $salt,
         private Logger $logger,
         private string $toolName,
-        private string $toolVersion
+        private string $toolVersion,
+        private ?BuildReport $report = null
     ) {
         // v1.1.8：与 Obfuscator 一致——未指定盐时用随机盐兜底，走确定性派生主路径
         if ($this->salt->isEmpty()) {
@@ -153,6 +154,13 @@ final class ProjectBuilder
                     // 精确计数通过每个子进程写的小计文件汇总（避免共享内存）。
                     $statFile = $outDir . '/.obf-worker-' . $w . '.stat';
                     @file_put_contents($statFile, $childOk . ',' . $childFail);
+                    // fork 后的内存改动不会回流到父进程：分表落盘，父进程合并
+                    if ($this->report !== null && $this->report->enabled()) {
+                        @file_put_contents(
+                            $outDir . '/.obf-worker-' . $w . '.report.json',
+                            json_encode($this->report->toArray())
+                        );
+                    }
                     exit($childFail > 0 ? 1 : 0);
                 }
                 $pids[$w] = $pid;
@@ -168,6 +176,18 @@ final class ProjectBuilder
                     $ok += (int) ($parts[0] ?? 0);
                     $fail += (int) ($parts[1] ?? 0);
                     @unlink($statFile);
+                }
+            }
+            if ($this->report !== null && $this->report->enabled()) {
+                for ($w = 0; $w < $jobs; $w++) {
+                    $rp = $outDir . '/.obf-worker-' . $w . '.report.json';
+                    if (is_file($rp)) {
+                        $d = json_decode((string) file_get_contents($rp), true);
+                        if (is_array($d) && isset($d['layers']) && is_array($d['layers'])) {
+                            $this->report->merge($d['layers']);
+                        }
+                        @unlink($rp);
+                    }
                 }
             }
             $this->logger->info("并行构建完成：{$jobs} workers，成功 {$ok}，失败 {$fail}");
@@ -204,7 +224,7 @@ final class ProjectBuilder
             }
             if (is_array($obfOrCtx)) {
                 [$cfg, $table] = $obfOrCtx;
-                $obf = new Obfuscator($cfg, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table);
+                $obf = new Obfuscator($cfg, $this->salt, $this->logger, $this->toolName, $this->toolVersion, $table, $this->report);
             } else {
                 $obf = $obfOrCtx;
             }

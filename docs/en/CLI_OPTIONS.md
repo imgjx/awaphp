@@ -19,8 +19,8 @@ php entry.php --input=<file|dir> [--output=<file|dir>] [options]
 | `-i, --input=` | Input file or directory (required; directories are processed recursively) |
 | `-o, --output=` | Output file or directory |
 | `-c, --config=` | Config file (plain scalar config, layered JSON, or a PHP array config; a `.php` file must `return` an array and may use PHP expressions and comments) |
-| `--level=` | Preset: `min\|low\|mid\|high\|max\|ultra\|aggressive`. Strength ladder: **`min` = light obfuscation (lexical only, no shell, near-zero runtime cost) → `low` = most obfuscation → `mid` = almost all** (these three exclude the VM); `high` / `max` / `ultra` / `aggressive` enable the VM. All presets keep property / parameter names by default so frameworks keep working (see `--no-var-keep-props`). Cost comparison: `docs/en/PERFORMANCE.md` |
-| `-min -low -mid -high -max -ultra -aggressive` | Short flags equivalent to `--level=<name>` (the preset is only a default; individual flags override it) |
+| `--level=` | Preset: `min\|low\|mid\|high\|max\|ultra`. Strength ladder: **`min` = light obfuscation (lexical only, no shell, near-zero runtime cost) → `low` = most obfuscation → `mid` = almost all** (these three exclude the VM); `high` / `max` / `ultra` enable the VM. All presets keep property / parameter names by default so frameworks keep working (see `--no-var-keep-props`). Cost comparison: `docs/en/PERFORMANCE.md` |
+| `-min -low -mid -high -max -ultra` | Short flags equivalent to `--level=<name>` (the preset is only a default; individual flags override it) |
 | `--salt=` | Obfuscation salt (empty = no salt; the same salt reproduces the same output) |
 | `--repeat=` | Number of repeated encryption passes (default 1) |
 
@@ -98,7 +98,11 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 | `--sm-complexity=` | Native state machine: max statements per dispatcher (2–32, default 8) — consecutive statements are chunked, one dispatcher per chunk |
 | `--sm-passes=` | Native state machine: nesting depth (1–5, default 2) — each dispatcher of the previous pass is dispatched again, forming a dispatch tree |
 | `--sm-traps=` | Native state machine: decoy dead states (0–4, default 2) — unreachable labels; forcing a jump into one locks the program |
-| `--no-sm-opaque` | Disable the opaque predicate on transitions (default on: `if(($o^$o)===0)`, with an `else` leading to a decoy dead end) |
+| `--envgate` / `--no-envgate` | **Runtime environment gates** (v1.3.0, **on in every preset**, `min` included): samples four runtime facts once per file — `PHP_VERSION_ID`, `time()`, whether `xdebug`/`dbg` is loaded (the anti-debug boolean), and whether the file was `include`d by another script — and folds them into an **environment fingerprint** with a self-incrementing counter, wrapping `echo`/`print` in two **output-identical** branches. The condition is not a self-cancelling identity (so it cannot be pruned statically); the counter makes the same expression evaluate differently on the second run (iterative folding contaminates itself); under xdebug the artifact takes the other branch (an instrumented trace never reproduces in production). Cost: four O(1) probes per file plus 3–4 bit ops per gate |
+| `--envgate-max=` | Max `echo`/`print` statements wrapped per file (default 8; 0 = file-level probes only) |
+| `--envgate-version` / `--envgate-time` / `--envgate-debug` / `--envgate-include` | Toggle each probe individually (all on by default; `--no-` prefix disables one). `--envgate-debug` is the "is a debugger present" boolean |
+| `--sm-dynamic-case` / `--no-sm-dynamic-case` | **Runtime `case` labels** (default on): the state-machine dispatch table becomes `case $base + <offset>`, with `$base = (PHP_VERSION_ID > 0) - 1` only computable at runtime. The branch table is no longer a list of literal constants, so state-machine pruning has to degrade to full-path analysis |
+| `--logic-cheap` / `--no-logic-cheap` | **Low-cost identity bricks** (default on): integer identities switch from `strlen(md5('…'))` to decimal three-digit chunks + weight multiplication + bit-mask wrapping — 1–3 integer instructions per evaluation; shapes still rotate by salt/counter, so static reading difficulty does not drop || `--no-sm-opaque` | Disable the opaque predicate on transitions (default on: `if(($o^$o)===0)`, with an `else` leading to a decoy dead end) |
 | `--vm` | VM shell (custom instruction set + interpreter) |
 | `--vm-layers=` | VM nesting depth (true nested VM): `>=2` feeds the previous VM artifact back into the VM compiler, stacking layers; default `1` |
 | `--vm-linker=` | ModuleLinker module directory (JSON manifest): calls matching the manifest are inlined into the same Program, so artifacts contain no module path and no `include`. **Since v1.1.9**, passing this directory in a loose-key build also enables the `shell:module_link` **native path** (inlining outside VM presets: call-site rewriting + module native definitions appended); the `low` / `mid` presets already enable that layer without any flag |
@@ -159,7 +163,9 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 | Option | Description |
 |------|------|
 | `--format=` | `text\|json` (json for GUI / script parsing) |
-| `--verbose` | Verbose logging |
+| `--report` | Print a **per-layer timing / token throughput** table when the build ends (stderr, never in the artifact) |
+| `--report-json=` | Same data written to a JSON file as well (CI archives, version-to-version comparison) |
+| `--verbose` | Verbose logging (includes the per-file `shell:vm` fallback reason) |
 | `--silence` | Silent |
 | `-h, --help` | Show help |
 | `--info` | Show tool information |
@@ -196,10 +202,8 @@ A whitelist keeps **directories, files or symbols that must never be renamed** o
 | Flag / config | Description |
 | --- | --- |
 | `--no-loop-fold` | **Disable build-time pure-compute loop folding** (on by default). `loop_fold` uses `ConstEval` (a token-level symbolic evaluator with PHP native operators, **zero `eval`**) to fold literal-bound, pure-local-arithmetic deterministic loops (the classic 200k `for`) into result literals — zero runtime iterations. Evaluating *user-uploaded* tokens with real eval is a free webshell injector; that surface is now removed. The 200k loop drops from ~12 ms to ~8.5 ms (faster than native), byte-identical. Strict whitelist + iteration cap + double check; uncertain loops are left untouched |
-| `--aggressive-prune` | **Aggressive identity compression + dead-branch pruning** (a *performance* layer; on by default in `aggressive`): folds the identities and dead branches **you** wrote so the artifact stops recomputing them — smaller and faster. **Hard-pinned before `logic`**; a preset declaring it later is rewritten, because a pruner running after Logic would fold the obfuscator's own identities back to literals (protection destroying itself). Two fallbacks: the layer idles when the pipeline reports it ran after `logic`, and idles when the token stream already carries Logic's building-block fingerprint |
-| `--level=aggressive` | **aggressive performance tier**: full ultra protection + the `aggressive_prune` layer; byte-identical end-to-end |
 | `--no-vm-runtime-logic` | **Disable VM interpreter Logic morphing** (on by default). When on, the interpreter's integer literals become compile-time bitwise identity expressions `N → ((Ka) ^ (Kb))` — opcode numbers vanish from the interpreter source at zero runtime cost; off restores the v1.2.6 hexadecimal form. `break`/`continue` level operands are auto-skipped |
-| `struct_poison rounds` | StructPoison KDF rounds keep the original algorithm (default 3, ultra/aggressive 5); the earlier downgrade was reverted |
+| `struct_poison rounds` | StructPoison KDF rounds keep the original algorithm (default 3, ultra 5); the earlier downgrade was reverted |
 
 > Stability: the VM per-instruction main-loop semantics are unchanged (the interpreter only gets an
 > equivalent compile-time literal form); all min–ultra tiers keep their protection strength and

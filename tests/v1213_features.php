@@ -74,9 +74,26 @@ function logic_only(string $code, int $intensity = 3, array $extra = []): string
 }
 
 /** 循环里是否还有函数调用积木（sha1 / md5 / base64_decode / in_array / strlen） */
+/**
+ * 函数调用型积木（v1.2.x 及以前的主形态）。
+ * 反例：v1.3.0 的轻量形态 `((7)|0)`、`((((5)))^0)` 不含函数调用，
+ * 想判「有没有积木」请用 has_brick()。
+ */
 function has_call_junk(string $code): bool
 {
     return (bool) preg_match('/\b(sha1|md5|base64_decode|in_array|strlen)\s*\(/', $code);
+}
+
+/**
+ * 任意形态的积木：函数调用型，或 v1.3.0 的十进制分块 + 位掩码型
+ * （`((908)*1000000 + ((468)*1000) + (267)) ^ 0`、`((7)|0)`）。
+ */
+function has_brick(string $code): bool
+{
+    if (has_call_junk($code)) {
+        return true;
+    }
+    return (bool) preg_match('/\d+\s*\*\s*(1000|1000000|1000000000)|[\^|&]\s*0\s*\)/', $code);
 }
 
 /**
@@ -171,7 +188,7 @@ PHP;
 $outSmall = logic_only($small);
 // 注意：for 的比较操作数在变换里本就不展开，所以「有没有积木」只能看循环体
 [$headSmall, $bodySmall] = loop_parts($outSmall, 'for');
-if (has_call_junk($bodySmall)) {
+if (has_brick($bodySmall)) {
     t_ok('B 小循环（3 次）：保留完整积木');
 } else {
     t_no('B 小循环', '本该保留积木，却已外提：' . substr($bodySmall, 0, 120));

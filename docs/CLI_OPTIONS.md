@@ -19,8 +19,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `-i, --input=` | 输入文件或目录（必填；目录递归混淆） |
 | `-o, --output=` | 输出文件或目录 |
 | `-c, --config=` | 指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；`.php` 文件需 `return` 一个数组，可直接用 PHP 表达式与注释，便于维护） |
-| `--level=` | 等级预设：`min\|low\|mid\|high\|max\|ultra\|aggressive`（一键切换完整方案）。强度递进：**`min` = 低混淆（只做词法级替换，无任何壳，运行时零开销）→ `low` = 大部分混淆 → `mid` = 几乎所有混淆**（这三档都不含 VM），`high` / `max` / `ultra` / `aggressive` 启用 VM。各档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
-| `-min -low -mid -high -max -ultra -aggressive` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
+| `--level=` | 等级预设：`min\|low\|mid\|high\|max\|ultra`（一键切换完整方案）。强度递进：**`min` = 低混淆（只做词法级替换，无任何壳，运行时零开销）→ `low` = 大部分混淆 → `mid` = 几乎所有混淆**（这三档都不含 VM），`high` / `max` / `ultra` 启用 VM。各档均默认保留属性名 / 参数名以保证框架可运行（见 `--no-var-keep-props`）。开销对比见 `docs/PERFORMANCE.md` |
+| `-min -low -mid -high -max -ultra` | 等价 `--level=<name>` 的短旗标（等级仅作默认，散装参数可叠加覆盖） |
 | `--salt=` | 混淆盐（空=不加盐，相同盐可复现） |
 | `--repeat=` | 重复加密次数（默认 1） |
 
@@ -155,7 +155,9 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | 选项 | 说明 |
 |------|------|
 | `--format=` | `text\|json`（json 便于 GUI / 脚本解析） |
-| `--verbose` | 详细日志 |
+| `--report` | 构建结束打印**逐层耗时 / 进出台节数**表格（写 stderr，不进产物）：定位「时间花在哪一层」 |
+| `--report-json=` | 同上，另把同一份数据落一份 JSON（CI 存档、版本间对比） |
+| `--verbose` | 详细日志（含 `shell:vm` 逐文件的降级原因） |
 | `--silence` | 静默 |
 | `-h, --help` | 显示帮助 |
 | `--info` | 显示工具信息 |
@@ -193,10 +195,8 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | 开关 / 配置 | 说明 |
 | --- | --- |
 | `--no-loop-fold` | **关闭构建期纯计算循环折叠**（默认开）。`loop_fold` 由 `ConstEval`（token 级符号执行、调用 PHP 原生运算符，**零 eval**）把字面量边界、纯局部算术的确定性循环（典型 20 万次 `for`）在构建期算完并替换为结果字面量，运行时零迭代。用真实 eval 求值用户上传 token = 免费 webshell 注入器，该注入面已移除。20 万次循环实测约 12 ms → 约 8.5 ms（比原生更快），输出逐字节一致。严格白名单 + 迭代上限 + 双校验，任何不确定循环原样保留 |
-| `--aggressive-prune` | **激进恒等式压缩 + 死分支剪枝**（性能层，`aggressive` 档默认开）：折叠的是**用户自己写的**恒等式与死分支，让产物运行期不再重算，产物更小。**硬钉在 logic 之前**——预设里写反也会被重排，因为排在 Logic 之后的剪枝会把混淆器自己注入的恒等式折回字面量（保护自残）。两道兜底：管线报告本层跑在 `logic` 之后即整层空转；token 流已带 Logic 积木指纹（成规模的 sha1+md5、或 base64_decode/hex2bin/str_rot13 组合）时也整层空转 |
-| `--level=aggressive` | **aggressive 性能优先档**：ultra 全部保护 + `aggressive_prune` 层，端到端逐字节一致 |
 | `--no-vm-runtime-logic` | **关闭 VM 解释器 Logic 混淆**（默认开）。开启时解释器整数字面量改成编译期位运算恒等式 `N → ((Ka) ^ (Kb))`，opcode 数字从解释器源码消失，零运行成本；关闭退回 v1.2.6 十六进制形态。`break`/`continue` 层级操作数自动跳过 |
-| `struct_poison rounds` | StructPoison 的 KDF 轮数保持原算法（默认 3、ultra/aggressive 5），本版撤销早前降级 |
+| `struct_poison rounds` | StructPoison 的 KDF 轮数保持原算法（默认 3、ultra 5），本版撤销早前降级 |
 
 > 稳定性：VM 逐指令主循环语义不变（解释器仅做编译期等值形态改写）；min~ultra 各档保护强度与行为不变，激进压缩层默认关闭。详见 `CHANGELOG.md` v1.2.8。
 
@@ -221,7 +221,11 @@ php entry.php --input=<文件|目录> [--output=<文件|目录>] [选项]
 | `--vm-isa-split[=N]` / `--no-vm-isa-split` | **字节码拆解**（默认 2，1=关，最多 4）：同一语义 opcode 造 N 种功能完全相同的物理 ISA 并在字节码里轮转使用；各别名独立 case 标签、共用一份 handler，派发仍是一次跳转表查找，**运行期零开销**。分层键：`shell:vm` 层 `isaSplit` 参数 |
 | `--decoy[=N]` / `--no-decoy` | **多变恒真三分支诱饵总开关**（v1.2.6）：`=N` 等价打开并设密度。真语句改写成 if/elseif/else 三路，真条件从 12 种「看似业务校验」的恒真式按盐选取，另两路用形近假值且永不可达；真分支做变量替变量、字符串替字符串的同理替换。**仅对 echo/print 生效**，赋值/写回语句跳过（同理替换的值拷贝会丢写回） |
 | `--decoy-level=1\|2\|3` | 诱饵密度：1≈12%、2≈25%（默认）、3≈45% 的可选语句被改写。分层键：`decoy` 层 `level` 参数 |
-| `--func-split-level=3` | v1.2.6 起等级 3 新增**写回语句**：数组/属性赋值、复合赋值、`unset`、`++`/`--`。只对「本语句前已明确赋值」的变量引用传参，未定义变量仍值传参；goto 标签、控制流头、闭包、插值串、`$this`、超全局整条跳过 |
+| `--envgate` / `--no-envgate` | **运行时环境门闩**（v1.3.0，**每一档默认开**，含 `min`）：文件开头取一次运行期事实——`PHP_VERSION_ID`、`time()`、是否装了 `xdebug`/`dbg`（反调试布尔）、是否被 `include` 进测试脚本——折算成带自增计数器的**环境指纹**，把 `echo`/`print` 包成两路**输出逐字节相同**的分支。条件不是自消恒等式（静态剪不掉），计数器让同一表达式第二次求值结果不同（迭代折叠自我污染），被 xdebug 接管时走另一支（动态插桩的路径线上复现不了）。成本：每文件 4 次 O(1) 探针 + 每条门闩 3~4 个位运算 |
+| `--envgate-max=` | 单文件最多把多少条 `echo`/`print` 包成两路等价分支（默认 8，0 = 只保留文件级探针） |
+| `--envgate-version` / `--envgate-time` / `--envgate-debug` / `--envgate-include` | 四个探针单独开关（默认全开，`--no-` 前缀关闭其一）。`--envgate-debug` 即"反调试布尔是否参与判断" |
+| `--sm-dynamic-case` / `--no-sm-dynamic-case` | **运行时 case 标签**（默认开）：状态机分派表写成 `case $base + <偏移>`，`$base = (PHP_VERSION_ID > 0) - 1` 运行期才算得出。分支表不再是字面量常量集合，状态机裁剪只能退化成全路径分析 |
+| `--logic-cheap` / `--no-logic-cheap` | **低成本恒等积木**（默认开）：数字恒等从 `strlen(md5('…'))` 改成「十进制三位分块 + 权重乘法 + 位运算掩码」，每次求值 1~3 条整数指令；形态仍按 salt/计数器轮换，静态阅读难度不降 || `--func-split-level=3` | v1.2.6 起等级 3 新增**写回语句**：数组/属性赋值、复合赋值、`unset`、`++`/`--`。只对「本语句前已明确赋值」的变量引用传参，未定义变量仍值传参；goto 标签、控制流头、闭包、插值串、`$this`、超全局整条跳过 |
 
 > 诱饵的恒真条件先做**标量归一**（非标量一律取 0），对象 / Closure 不会触发 `__toString` 错误；
 > 条件形态与结构变体均按 salt 派生，同盐可复现、跨产物不同。

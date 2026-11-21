@@ -115,57 +115,12 @@ $loopOff = (string) @file_get_contents($tmp . '/loop_off.php');
 (strpos($loopOff, 'for') !== false) ? t_ok('--no-loop-fold 保留循环') : t_no('--no-loop-fold 未生效');
 
 // ---------------------------------------------------------------------------
-// B) 激进恒等式压缩 + 死分支剪枝（aggressive_prune）
-// ---------------------------------------------------------------------------
-echo "\n=== B) 激进恒等式压缩 + 死分支剪枝 ===\n";
-
-$idSrc = put($tmp, 'ident', <<<'PHP'
-$s = strlen(md5('hello')) . ':' . hexdec('ff') . ':' . base64_decode('YWI=');
-echo $s, "\n";
-PHP
-);
-$r = case_run($entry, $idSrc, $tmp . '/ident_out.php', ['--level=min', '--aggressive-prune', '--salt=ap128']);
-$r['ok'] ? t_ok('恒等式折叠后输出一致') : t_no('恒等式折叠', $r['why']);
-
-$branchSrc = put($tmp, 'branch', <<<'PHP'
-$v = 'abc';
-if (($v === $v) || ($v !== $v)) { echo "T\n"; } else { echo "F\n"; }
-if ($v !== $v) { echo "DEAD\n"; } else { echo "LIVE\n"; }
-PHP
-);
-$r = case_run($entry, $branchSrc, $tmp . '/branch_out.php', ['--level=min', '--aggressive-prune', '--salt=ap128']);
-$r['ok'] ? t_ok('恒真/恒假死分支剪枝后输出一致') : t_no('死分支剪枝', $r['why']);
-
-// 死支含函数声明时不剪（避免破坏编译期声明 → 产物可运行且一致）
-$declSrc = put($tmp, 'decl', <<<'PHP'
-if (1 === 2) { function dead_fn() { return 'dead'; } } else { echo "LIVE\n"; }
-echo function_exists('dead_fn') ? 'HAS' : 'NO', "\n";
-PHP
-);
-$r = case_run($entry, $declSrc, $tmp . '/decl_out.php', ['--level=min', '--aggressive-prune', '--salt=ap128']);
-$r['ok'] ? t_ok('死支含函数声明时保护性不剪') : t_no('声明保护', $r['why']);
-
-// 默认关闭：不加开关时 aggressive_prune 不生效（恒等式不被折叠）
-$r = case_run($entry, $idSrc, $tmp . '/ident_off.php', ['--level=min', '--salt=ap128']);
-$r['ok'] ? t_ok('默认不启用 aggressive_prune 时输出一致') : t_no('默认关闭', $r['why']);
-
-// aggressive 预设端到端（含 VM + 剪枝，逐字节一致）
-$kdfSrc = put($tmp, 'aggr', <<<'PHP'
-$total = 0;
-for ($i = 1; $i <= 300; $i++) { $total += $i * $i; }
-echo $total, '|', strlen(md5('x')), "\n";
-PHP
-);
-$r = case_run($entry, $kdfSrc, $tmp . '/aggr_out.php', ['--level=aggressive', '--salt=aggr128']);
-$r['ok'] ? t_ok('--level=aggressive 预设输出一致（VM+剪枝）') : t_no('aggressive 预设', $r['why']);
-
-// ---------------------------------------------------------------------------
 // C) 构建期零 eval 注入面（在线混淆服务器安全：上传恶意 token 不得被执行）
 // ---------------------------------------------------------------------------
 echo "\n=== C) 构建期零 eval 注入面 ===\n";
 
 // 三个构建期求值器源码里不得出现实际 eval( 调用（注释里的说明文字除外）
-foreach (['src/LogicTransform/ConstFolder.php', 'src/LogicTransform/AggressivePruner.php', 'src/Support/ConstEval.php'] as $f) {
+foreach (['src/LogicTransform/ConstFolder.php', 'src/Support/ConstEval.php'] as $f) {
     $srcCode = (string) @file_get_contents($root . '/' . $f);
     $codeNoComment = preg_replace('!/\*.*?\*/|//[^\n]*!s', '', $srcCode);
     (strpos((string) $codeNoComment, 'eval(') === false)
@@ -189,7 +144,15 @@ $r['ok'] ? t_ok('受限 token 循环折叠后输出一致（白名单拒绝注�
 // ---------------------------------------------------------------------------
 echo "\n=== D) VM 解释器 Logic 混淆 ===\n";
 
-foreach (['high', 'max', 'ultra', 'aggressive'] as $lv) {
+// 夹具：循环累加 + 哈希长度（VM 解释器里会走 Logic 恒等式混淆）
+$kdfSrc = put($tmp, 'kdf', <<<'PHP'
+$total = 0;
+for ($i = 1; $i <= 300; $i++) { $total += $i * $i; }
+echo $total, '|', strlen(md5('x')), "\n";
+PHP
+);
+
+foreach (['high', 'max', 'ultra'] as $lv) {
     $r = case_run($entry, $kdfSrc, $tmp . '/vml_' . $lv . '.php', ['--level=' . $lv, '--salt=vml128']);
     $r['ok'] ? t_ok("{$lv} 档（VM+Logic 解释器混淆）输出一致") : t_no("{$lv} VM Logic", $r['why']);
 }

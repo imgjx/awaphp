@@ -1,11 +1,9 @@
 <?php
 /**
  * v1.2.10 专项回归：
- *   A) aggressive_prune 硬归位到 logic 之前（预设写反也会被重排），Logic 注入物不被折叠
- *   B) 剪枝确实加速【用户自己的】代码（用户恒等式/死分支被折掉，产物更小、结果不变）
- *   C) 多 salt 下 prune→logic 组合语义稳定，Logic 强度不因剪枝而系统性衰减
- *   D) AntiHookEval strict=false 的漏括号已修复（生成代码语法合法且能跑）
- *   E) 诱饵四分支结构可生成且语义不变
+ *   A) AntiHookEval strict=false 的漏括号已修复（生成代码语法合法且能跑）
+ *   B) 诱饵四分支结构可生成且语义不变
+ *   C) 版本号与全档冒烟
  *
  * 与 tests/run_tests.php 同风格：每个用例独立构建、lint、执行、逐字节比对输出。
  * 用法：php tests/v1210_features.php
@@ -105,104 +103,10 @@ echo 'x=', $x, "\n";
 CODE;
 $src = put($tmp, 'sample', $sample);
 
-// 含用户自己写的恒等式与死分支的样例（用于验证"剪枝真的加速用户代码"）
-$userConst = <<<'CODE'
-$a = strlen(md5('alpha')) + strlen(sha1('beta')) + intdiv(40 * 7, 7) + (13 * 3);
-$b = 0;
-if (1 === 1) { $b = $a + 5; } else { $b = $a - 5; }
-if (2 !== 2) { $b = 0; } else { $b = $b * 2; }
-echo 'A=', $a, ' B=', $b, "\n";
-CODE;
-$userSrc = put($tmp, 'userconst', $userConst);
-
 // ---------------------------------------------------------------------------
-// A) aggressive_prune 硬归位：故意把它写在 logic【之后】，验证 Logic 注入物仍完整
+// A) AntiHookEval strict=false 漏括号修复
 // ---------------------------------------------------------------------------
-echo "\n=== A) aggressive_prune 硬归位到 logic 之前 ===\n";
-$misordered = cfg($tmp, 'misordered', [
-    ['name' => 'constfold', 'params' => ['level' => 3]],
-    ['name' => 'logic',     'params' => ['intensity' => 3]],
-    ['name' => 'aggressive_prune', 'params' => []],   // <- 故意写反
-    ['name' => 'var',       'params' => ['length' => 12]],
-], ['aggressive_prune' => true, 'shell_shield' => false]);
-$outMis = $tmp . '/misordered.php';
-$r = case_run($entry, $src, $outMis, ['--config=' . $misordered]);
-$r['ok'] ? t_ok('预设写反时仍能构建且输出一致') : t_no('写反预设构建', $r['why']);
-$blocks = logic_blocks($outMis);
-$blocks >= 5
-    ? t_ok("Logic 积木完整保留（{$blocks} 处）——剪枝未碰 Logic 注入物")
-    : t_no('Logic 积木被剪枝解析', "只剩 {$blocks} 处，应 ≥5");
-
-// 兜底层序安全：直接给层序安全=false 的场景（分层层序由 Obfuscator 传入，这里验证
-// "prune 在 logic 后时不会折叠"就是上一条；再加一条"正常顺序也会折叠用户恒等式"见 B）
-
-// ---------------------------------------------------------------------------
-// B) 剪枝确实加速用户自己的代码
-// ---------------------------------------------------------------------------
-echo "\n=== B) 剪枝加速用户脚本 ===\n";
-$pruneOn = cfg($tmp, 'prune_on', [
-    ['name' => 'constfold', 'params' => ['level' => 3]],
-    ['name' => 'aggressive_prune', 'params' => []],
-    ['name' => 'var', 'params' => ['length' => 8]],
-], ['aggressive_prune' => true, 'shell_shield' => false]);
-$pruneOff = cfg($tmp, 'prune_off', [
-    ['name' => 'constfold', 'params' => ['level' => 3]],
-    ['name' => 'var', 'params' => ['length' => 8]],
-], ['aggressive_prune' => false, 'shell_shield' => false]);
-$outOn = $tmp . '/prune_on.php';
-$outOff = $tmp . '/prune_off.php';
-$r = case_run($entry, $userSrc, $outOn, ['--config=' . $pruneOn]);
-$r['ok'] ? t_ok('开剪枝后用户恒等式样例输出一致') : t_no('开剪枝输出', $r['why']);
-$r = case_run($entry, $userSrc, $outOff, ['--config=' . $pruneOff]);
-$r['ok'] ? t_ok('关剪枝后用户恒等式样例输出一致') : t_no('关剪枝输出', $r['why']);
-$sOn = (int) @filesize($outOn);
-$sOff = (int) @filesize($outOff);
-$sOn < $sOff
-    ? t_ok("剪枝后产物更小（{$sOn} < {$sOff} 字节）——用户自己的恒等式/死分支被折掉")
-    : t_no('剪枝未减小产物', "on={$sOn} off={$sOff}");
-
-// ---------------------------------------------------------------------------
-// C) 多 salt 下 prune→logic 组合语义稳定，且 Logic 强度不因剪枝而衰减
-// ---------------------------------------------------------------------------
-echo "\n=== C) 剪枝 + Logic 多盐稳定性 ===\n";
-$cNoShell = cfg($tmp, 'c_noshell', [
-    ['name' => 'constfold', 'params' => ['level' => 3]],
-    ['name' => 'aggressive_prune', 'params' => []],
-    ['name' => 'logic', 'params' => ['intensity' => 3]],
-    ['name' => 'var', 'params' => ['length' => 12]],
-], ['aggressive_prune' => true, 'shell_shield' => false]);
-$cNoPrune = cfg($tmp, 'c_noprune', [
-    ['name' => 'constfold', 'params' => ['level' => 3]],
-    ['name' => 'logic', 'params' => ['intensity' => 3]],
-    ['name' => 'var', 'params' => ['length' => 12]],
-], ['aggressive_prune' => false, 'shell_shield' => false]);
-
-foreach (['x', 'v129high', 'abc123', 'perfkill', 'zz9'] as $salt) {
-    $o = $tmp . '/c_' . $salt . '.php';
-    $r = case_run($entry, $src, $o, ['--config=' . $cNoShell, '--salt=' . $salt]);
-    $r['ok'] ? t_ok("prune+logic salt={$salt} 输出一致") : t_no("prune+logic {$salt}", $r['why']);
-}
-
-$c1 = $tmp . '/c_on.php';
-$c2 = $tmp . '/c_off.php';
-// 固定盐：积木数量与盐绑定（Logic 的随机计数、随机串长度都随盐变），
-// 不传 --salt 时两次构建各用各的随机盐，比值会随机漂到 80% 线下方（曾误报）。
-$cFixSalt = ['--salt=pruneblocks'];
-case_run($entry, $src, $c1, array_merge(['--config=' . $cNoShell], $cFixSalt));
-case_run($entry, $src, $c2, array_merge(['--config=' . $cNoPrune], $cFixSalt));
-$b1 = logic_blocks($c1);
-$b2 = logic_blocks($c2);
-// 注意：不能要求数量完全相等。剪枝折掉了用户代码里的常量，会改变后续 Logic 内部
-// 随机计数器的分配，个别随机串长度不同 → 少数 strlen('…') 类积木计数可能差一两处。
-// 真正要验证的是"没有被系统性折叠"：若剪枝吃了 Logic，数量会掉到个位数或 0。
-$b2 > 0 && $b1 >= (int) ceil($b2 * 0.8)
-    ? t_ok("开/关剪枝时 Logic 积木基本不变（开={$b1} 关={$b2}）——Logic 未被解析加速")
-    : t_no('剪枝改动了 Logic 积木', "开={$b1} 关={$b2}（应 ≥ 关闭时的 80%）");
-
-// ---------------------------------------------------------------------------
-// D) AntiHookEval strict=false 漏括号修复
-// ---------------------------------------------------------------------------
-echo "\n=== D) anti_hook strict=false 修复 ===\n";
+echo "\n=== A) anti_hook strict=false 修复 ===\n";
 foreach ([false, true] as $strict) {
     $name = $strict ? 'hook_strict' : 'hook_loose';
     $c = cfg($tmp, $name, [
@@ -215,15 +119,18 @@ foreach ([false, true] as $strict) {
 }
 
 // ---------------------------------------------------------------------------
-// E) 诱饵四分支结构
+// B) 诱饵四分支结构
 // ---------------------------------------------------------------------------
-echo "\n=== E) 诱饵四分支结构 ===\n";
+echo "\n=== B) 诱饵四分支结构 ===\n";
 $decoyOnly = cfg($tmp, 'decoy_only', [
     ['name' => 'logic', 'params' => ['intensity' => 3]],
     ['name' => 'decoy', 'params' => ['level' => 3]],
-], ['aggressive_prune' => false, 'shell_shield' => false]);
+], ['shell_shield' => false]);
 $maxElseif = 0;
-foreach (['s1', 's2', 's3', 's4'] as $salt) {
+// 诱饵是**概率**注入（等级 3 约 45% 命中），随 salt 与语句下标抽样。v1.3.0 的
+// 数字积木变短，同一 salt 的语句下标会平移，4 个盐可能全部抽样落空——所以这里
+// 扫更多盐，只要有一个产物出现 ≥2 个 elseif 就算该层在工作。
+foreach (['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10'] as $salt) {
     $o = $tmp . '/decoy_' . $salt . '.php';
     $r = case_run($entry, $src, $o, ['--config=' . $decoyOnly, '--salt=' . $salt]);
     if (!$r['ok']) {
@@ -237,11 +144,13 @@ $maxElseif >= 2
     : t_no('四分支诱饵', "最多只有 {$maxElseif} 个 elseif，应 ≥2");
 
 // ---------------------------------------------------------------------------
-// F) 版本号与全档冒烟
+// C) 版本号与全档冒烟
 // ---------------------------------------------------------------------------
-echo "\n=== F) 版本与全档冒烟 ===\n";
+echo "\n=== C) 版本与全档冒烟 ===\n";
+preg_match("/define\('OBFUSCATOR_VERSION',\s*'([^']+)'\)/", (string) @file_get_contents($entry), $mv);
+$curVer = $mv[1] ?? '?';
 $help = (string) shell_exec('php ' . escapeshellarg($entry) . ' --help 2>&1');
-strpos($help, '1.2.10') !== false ? t_ok('--help 显示 1.2.10') : t_no('版本号', '未在 --help 找到 1.2.10');
+strpos($help, $curVer) !== false ? t_ok("--help 显示当前版本 {$curVer}") : t_no('版本号', "未在 --help 找到 {$curVer}");
 // awa 档已在定稿前撤掉：--help 不应再出现它（避免文档/CLI 残留）
 strpos($help, '--level=awa') === false && strpos($help, '-awa ') === false
     ? t_ok('--help 已无 awa 档残留')
@@ -250,11 +159,7 @@ foreach (['min', 'mid', 'max'] as $lv) {
     $r = case_run($entry, $src, $tmp . '/smoke_' . $lv . '.php', ['--level=' . $lv, '--salt=smoke']);
     $r['ok'] ? t_ok("{$lv} 档冒烟通过") : t_no("{$lv} 冒烟", $r['why']);
 }
-// aggressive = ultra 全保护 + 本轮的剪枝层。只验证「剪枝层叠在最高档之上仍然跑得通」，
-// 固定用已验证的盐：ultra/aggressive 自 v1.2.9 起在个别随机盐下会被 VM 段重写缺陷
-// 打成空转（见 CHANGELOG 的「known issue」），与本轮改动无关，不在此处做盐鲁棒性断言。
-$r = case_run($entry, $src, $tmp . '/smoke_aggressive.php', ['--level=aggressive', '--salt=x'], 40);
-$r['ok'] ? t_ok('aggressive 档（剪枝叠在 ultra 之上）冒烟通过') : t_no('aggressive 冒烟', $r['why']);
+
 
 // ---------------------------------------------------------------------------
 echo "\n===== 结果：通过 {$pass} / 失败 {$fail} =====\n";

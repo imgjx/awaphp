@@ -109,7 +109,8 @@ final class Obfuscator
         private Logger $logger,
         private string $toolName = '嗷呜awaのphp混淆器',
         private string $toolVersion = 'dev',
-        private ?SymbolTable $symbols = null
+        private ?SymbolTable $symbols = null,
+        private ?BuildReport $report = null
     ) {
         $this->inj = null;
         // v1.1.8：未指定盐时用**随机盐**兜底。整套系统约 20 处以 salt->isEmpty() 分流
@@ -122,6 +123,25 @@ final class Obfuscator
     }
 
     private ?CodeInjector $inj = null;
+
+    /**
+     * shell:vm 降级原因的已报告集合（同一原因整站只 warn 一次）。
+     *
+     * 背景：VM 字节码编译是「按文件」的，某些文件天然不可编译（顶层 enum、带
+     * bracketed namespace 块、运行期 case 标签等），会退化成「不透明载荷嵌套」——
+     * 源码仍以加密载荷交 VM 的 _PHPRUN 执行，只是不走字节码。整站构建时这种
+     * 文件可能成百上千，逐文件 warn 会把构建日志刷爆，反而没人看；按原因去重后
+     * 每条原因只出现一次，第一次仍是 warn 级别（不静默），后续降为 debug 详情。
+     *
+     * @var array<string,bool>
+     */
+    private array $vmNestSeen = [];
+
+    /** 构建报告收集器（--report 时非空；未启用时各层计时分支整体跳过） */
+    public function report(): ?BuildReport
+    {
+        return $this->report;
+    }
 
     /** 逐层内联的层序号（同 salt 可复现的独立前缀来源） */
     private int $layerLinkSeq = 0;
@@ -498,33 +518,6 @@ final class Obfuscator
                 }
             }
         }
-        // v1.2.10：--aggressive-prune 的作用是【加速用户自己的脚本】：把用户自己写的恒等式
-        // 与死分支在构建期折叠/剪掉，产物运行期不再重算。它必须排在 logic 之前——
-        //   * 之前：只看到用户原始代码，折叠的是用户自己的恒等式 → 真加速；
-        //   * 之后：会把 Logic 注入的恒等式一并折掉 → Logic 白做（保护自残）。
-        // 因此这里做【硬归位】：无论预设里有没有该层、排在哪个位置，一律先摘除再插到
-        // logic 之前（constfold 之后）。这样 logic 注入的恒等式对剪枝层不可见，
-        // 天然无法被它解析加速。
-        $rawLayers = array_values(array_filter(
-            $rawLayers,
-            static fn (array $l): bool => ($l['name'] ?? '') !== 'aggressive_prune'
-        ));
-        if ($this->config->get('aggressive_prune')) {
-            $apLayer = ['name' => 'aggressive_prune', 'params' => []];
-            $at = null;
-            foreach ($rawLayers as $idx => $l) {
-                if (($l['name'] ?? '') === 'logic') {
-                    $at = $idx;
-                    break;
-                }
-            }
-            if ($at === null) {
-                // 无 logic 层（如纯 min 预设）：追加到末尾（由 orderShellLayers 归位）
-                $rawLayers[] = $apLayer;
-            } else {
-                array_splice($rawLayers, $at, 0, [$apLayer]);
-            }
-        }
         $layers = $this->orderShellLayers($rawLayers);
         // 外壳绑定 / 脱壳检测：分层模式下 VM 由 shell:vm 层启用（vm 配置键未必为真），
         // 故以"是否存在 shell:vm 层"判定是否启用；与 vm_selfcheck 配置共同决定。
@@ -545,8 +538,6 @@ final class Obfuscator
         $current = rtrim($code);
         $tokens = null; // 连续 token 层累积于此，遇 shell 层再 emit
         $bindingInjected = false;
-        // v1.2.10：进入分层管线前复位——logic 尚未运行，aggressive_prune 处于安全层序
-        $this->logicDone = false;
 
         // 文件头 banner 必须位于【毒化壳之内】：毒化壳的指纹对象是除载荷外的完整最终
         // 文件，若 banner 在壳之后追加，构建期骨架与运行期 __FILE__ 永久不等 → 全量毒化。
@@ -576,11 +567,24 @@ final class Obfuscator
                 }
                 $bannerDone = true;
             }
+            $tNs = $this->report !== null && $this->report->enabled() ? hrtime(true) : 0;
             $current = $this->applyLayer($layer, $tokens, $current);
-            // v1.2.10：logic 已经跑过 → 之后再遇到 aggressive_prune 一律拒绝折叠。
-            // （层序已在上面硬归位，这里是运行期兜底，防止自定义 config 绕过。）
-            if (($layer['name'] ?? '') === 'logic') {
-                $this->logicDone = true;
+            // 调试钩子：OBF_LAYER_DUMP=<目录> 时逐层落盘中间产物（定位"哪一层开始出错"）
+            $dumpLayers = getenv('OBF_LAYER_DUMP');
+            if (is_string($dumpLayers) && $dumpLayers !== '') {
+                @mkdir($dumpLayers, 0777, true);
+                static $layerSeq = 0;
+                @file_put_contents(
+                    $dumpLayers . '/' . sprintf('%02d_', ++$layerSeq) . preg_replace('/[^a-z0-9_]/i', '_', (string) ($layer['name'] ?? 'x')) . '.php',
+                    $current
+                );
+            }
+            if ($tNs > 0) {
+                $this->report->add(
+                    (string) ($layer['name'] ?? 'layer'),
+                    ((float) hrtime(true) - (float) $tNs) / 1e6,
+                    strlen($current)
+                );
             }
             // 外壳绑定标记（VM 高级环境自检的外侧锚点）：必须紧随 shell:vm 之后注入。
             // 位置约束三条同时成立：
@@ -890,12 +894,6 @@ final class Obfuscator
     private ?bool $spActive = null;
     /** 是否启用外壳绑定 / 脱壳检测（vm + vm_selfcheck 同时开启时为真） */
     private bool $selfcheck = false;
-    /**
-     * v1.2.10：分层管线里 logic 层是否已经跑过。
-     * 用于给 aggressive_prune 传"层序安全"信号——只在 logic 之前运行才允许折叠，
-     * 保证 Logic 注入的恒等式永远不会被剪枝层解析加速（保护自残）。
-     */
-    private bool $logicDone = false;
 
     /**
      * 本次构建是否启用结构指纹毒化壳。
@@ -999,7 +997,9 @@ final class Obfuscator
         foreach (LayerDescriptor::validate($name, $layer['params']) as $w) {
             $this->logger->warn($w);
         }
-        $inject = $layer['inject'];
+        // 分层层定义里 inject 键可省略（手写 JSON / 从旧版本迁移的配置都不带它），
+        // 直接取会抛 "Undefined array key "inject""。缺省按"无注入"处理。
+        $inject = $layer['inject'] ?? [];
         $before = $code; // 安全点：任何失败都回退到这一层开始前的已知有效源码
         try {
             if ($kind === 'token') {
@@ -1118,21 +1118,14 @@ final class Obfuscator
             case 'constfold':
                 $tokens = (new ConstFolder($this->logger))->process($tokens, $cfg);
                 break;
-            case 'aggressive_prune':
-                // v1.2.8：需要 require（按需加载，避免默认路径多一次 IO）
-                if (!class_exists(AggressivePruner::class, false)) {
-                    require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
-                }
-                // v1.2.10：只允许在 logic 之前运行。logic 已跑过则整层空转（保护自残防线）。
-                $ap = new AggressivePruner($this->logger);
-                $ap->setOrderSafe(!$this->logicDone);
-                $tokens = $ap->process($tokens, $cfg);
-                break;
             case 'funcsplit':
                 $tokens = (new FunctionSplitter($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
             case 'decoy':
                 $tokens = (new DecoyBranches($this->salt, $this->logger))->process($tokens, $cfg);
+                break;
+            case 'envgate':
+                $tokens = (new EnvGate($this->salt, $this->logger))->process($tokens, $cfg);
                 break;
             case 'logic':
                 $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
@@ -1182,9 +1175,6 @@ final class Obfuscator
                 $map['const_fold']       = true;
                 $map['const_fold_level'] = (int) ($params['level'] ?? 2);
                 break;
-            case 'aggressive_prune':
-                $map['aggressive_prune'] = true;
-                break;
             case 'funcsplit':
                 $map['func_split']       = true;
                 $map['func_split_level'] = (int) ($params['level'] ?? 1);
@@ -1193,6 +1183,14 @@ final class Obfuscator
             case 'decoy':
                 $map['decoy']       = true;
                 $map['decoy_level'] = (int) ($params['level'] ?? 2);
+                break;
+            case 'envgate':
+                $map['envgate']         = true;
+                $map['envgate_max']     = (int) ($params['max'] ?? 8);
+                $map['envgate_version'] = (bool) ($params['version'] ?? true);
+                $map['envgate_time']    = (bool) ($params['time'] ?? true);
+                $map['envgate_debug']   = (bool) ($params['debug'] ?? true);
+                $map['envgate_include'] = (bool) ($params['include'] ?? true);
                 break;
             case 'number':
                 $map['num_enc'] = (bool) ($params['on'] ?? false);
@@ -1244,6 +1242,7 @@ final class Obfuscator
                 $map['logic_extreme']   = (bool) ($params['extreme'] ?? false);
                 $map['logic_minify']    = (bool) ($params['minify'] ?? false);
                 $map['logic_wild']      = (bool) ($params['wild'] ?? false);
+                $map['logic_cheap']     = (bool) ($params['cheap'] ?? $this->config->get('logic_cheap', true));
                 $map['logic_loop_light']     = (bool) ($params['loop_light'] ?? $params['loop_hoist'] ?? $this->config->get('logic_loop_light', true));
                 $map['logic_loop_threshold'] = (int) ($params['loop_threshold'] ?? $this->config->get('logic_loop_threshold', 20));
                 break;
@@ -1658,7 +1657,7 @@ final class Obfuscator
             || str_contains($code, '__awa_run_') || str_contains($code, '__awa_prog_')) {
             $nested = $this->vmPayloadNest($code, $this->vmOpts($params));
             if ($nested !== null) {
-                $this->logger->info('shell:vm 嵌套层：上一层产物作为不透明载荷编入 VM');
+                $this->logger->info('shell:vm 嵌套层：上一层产物作为不透明载荷编入 VM（嵌套层语义与原生产物一致）');
                 return $nested;
             }
         }
@@ -1719,7 +1718,19 @@ final class Obfuscator
             // eval 单元里依旧合法），而字节码仍只有 VM 能跑。
             $nested = $this->vmPayloadNest($code, $opts);
             if ($nested !== null) {
-                $this->logger->info('shell:vm 改为不透明载荷嵌套（源码不直接编译）：' . $e->getMessage());
+                // 用 warn：降级意味着这个文件没拿到字节码级 VM 保护（只剩载荷外壳），
+                // 用户必须能在构建输出里看见，不能静默降级。但同一原因整站只报一次，
+                // 否则数百个文件各刷一行，反而把真正要看的信息埋了。
+                $why = $e->getMessage();
+                if (!isset($this->vmNestSeen[$why])) {
+                    $this->vmNestSeen[$why] = true;
+                    $this->logger->warn(
+                        'shell:vm 未做字节码编译，改走不透明载荷嵌套（源码加密后交 VM 执行，语义不变；'
+                        . '同一原因整站只提示一次，逐文件明细见 --verbose）：' . $why
+                    );
+                } else {
+                    $this->logger->debug('shell:vm 载荷嵌套：' . $why);
+                }
                 return $nested;
             }
             $this->logger->warn('shell:vm 编译失败，回退到未 VM 化代码: ' . $e->getMessage());
@@ -1905,7 +1916,10 @@ final class Obfuscator
         }
         // 序言归一：壳层 wrap 可能把 declare/namespace 推离首位，先修复再校验（完整保留壳，不回退）
         $next = DeclareHoist::reconcile($next);
-        $check = (new Validator($this->logger))->checkSyntaxString($next);
+        // 壳层用严格校验（真跑 php -l）：壳里常带 switch/goto 状态机与 `break N;`，
+        // 一旦被后续形态变换改成表达式（`break(44^46)`）就是编译期错误——进程内
+        // parser 只做语法解析，抓不到，坏代码会一路进到 eval 载荷里，运行期才 fatal。
+        $check = (new Validator($this->logger))->checkSyntaxString($next, true);
         if (!$check['ok']) {
             $this->logger->warn("{$label}产物未通过 php -l，回滚");
             return $code;
@@ -1965,7 +1979,13 @@ final class Obfuscator
             $tokens = (new LogicRewriter($this->salt, $this->logger, (int) $cfg->get('logic_intensity')))
                 ->process($tokens, $cfg);
             $out = $this->emit($tokens);
-            $check = (new Validator($this->logger))->checkSyntaxString($out);
+            // 严格校验（真跑 php -l）：逐壳变换最容易产出"语法合法但编译不过"的代码
+            // （典型：`break 2` 的层级被展开成表达式 → "'break' operator with
+            // non-integer operand"），进程内 parser 看不见这类编译期错误。
+            $check = (new Validator($this->logger))->checkSyntaxString($out, true);
+            if (!$check['ok']) {
+                $this->logger->debug("[层 {$layerName}] 逐壳层逻辑变换产物编译不过，回滚本层变换");
+            }
             return $check['ok'] ? $out : $before;
         } catch (Throwable $e) {
             $this->logger->warn("[层 {$layerName}] 逐壳层逻辑变换异常，回滚: " . $e->getMessage());
@@ -2040,18 +2060,6 @@ final class Obfuscator
             $tokens = $cf->process($tokens, $this->config);
         }
 
-        // v1.2.10 激进恒等式压缩 + 死分支剪枝：置于 logic 之前——它的用途是【加速用户脚本】
-        // （用户自己写的恒等式/死分支在构建期折掉，运行期不再重算），而不是"给 Logic 打补丁"。
-        // 由于排在 logic 之前，Logic 随后注入的恒等式对它完全不可见，天然无法被它解析加速。
-        if ($this->config->get('aggressive_prune')) {
-            if (!class_exists(AggressivePruner::class, false)) {
-                require_once __DIR__ . '/LogicTransform/AggressivePruner.php';
-            }
-            $ap = new AggressivePruner($this->logger);
-            $ap->setOrderSafe(true); // 本路径顺序由代码保证：constfold → prune → logic
-            $tokens = $ap->process($tokens, $this->config);
-        }
-
         // 超激进逻辑变换：必须置于变量重命名之前，使新引入的临时变量被 var 层
         // 一并改名；分层路径由 logic 层负责，散装路径由本 flag 触发。
         if ($this->config->get('logic')) {
@@ -2066,6 +2074,14 @@ final class Obfuscator
         if ($this->config->get('decoy')) {
             $decoy = new DecoyBranches($this->salt, $this->logger);
             $tokens = $decoy->process($tokens, $this->config);
+        }
+
+        // v1.3.0 运行时环境门闩：排在 logic/decoy【之后】、var【之前】。
+        // 之后：我们注入的 if/else 与常量表达式不会再被逻辑层二次改写（少一层风险）；
+        // 之前：注入的探针变量会被变量重命名层一并改名，不会留下可读指纹。
+        if ($this->config->get('envgate')) {
+            $envGate = new EnvGate($this->salt, $this->logger);
+            $tokens = $envGate->process($tokens, $this->config);
         }
 
         $var = new VariableObfuscator($this->salt, $this->logger);

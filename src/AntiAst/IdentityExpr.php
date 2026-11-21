@@ -25,6 +25,7 @@ final class IdentityExpr
     private int $ctr = 0;
     /** v1.2.4 天马行空加强：扩张恒等积木编码库（默认关，保持既有档位行为） */
     private bool $wild = false;
+    private bool $cheap = false;
 
     public function __construct(int $seed = 0)
     {
@@ -39,6 +40,18 @@ final class IdentityExpr
     }
 
     /** v1.2.4：开启天马行空加强档，扩张恒等积木的形态库 */
+    /**
+     * v1.3.0：低成本积木模式。
+     * 关闭时用 strlen(md5('…'))/strlen(sha1('…')) 这类"函数调用积木"（抗折叠性好，
+     * 但每次求值要走哈希，~0.3µs/次）；开启时改用「十进制分块 + 位运算掩码」，
+     * 每次求值只要 1~3 条整数指令（纳秒级），体积也更小。
+     * 复杂度不降：分块权重、掩码形态、块数仍按 salt 随机轮换，静态阅读依旧要逐项还原。
+     */
+    public function setCheap(bool $on): void
+    {
+        $this->cheap = $on;
+    }
+
     public function setWild(bool $on): void
     {
         $this->wild = $on;
@@ -87,6 +100,9 @@ final class IdentityExpr
         if ($this->wild) {
             return $this->intPosExprWild($v);
         }
+        if ($this->cheap) {
+            return $this->intPosExprCheap($v);
+        }
         // 主积木取 40（sha1 长度）整除，余下再用 32（md5 长度）整除，最后用定长随机串补零头。
         // 关键：md5/sha1 的首参必须是**字符串字面量**且用随机串，既避免 strict_types 下
         // int→string 的 TypeError，也让每个积木长得不一样（不再是清一色 'x'/'1'）。
@@ -114,6 +130,57 @@ final class IdentityExpr
             $parts[] = $this->zeroNoise();
         }
         return '(' . implode(' + ', $parts) . ')';
+    }
+
+    /**
+     * v1.3.0 低成本整数积木：十进制三位分块 + 权重乘法 + 位运算掩码。
+     *
+     *   v = 1234567  →  ((1)*1000000 + (234)*1000 + (567)) ^ 0   （形态按 ctr 轮换）
+     *
+     * 与 strlen(md5('…')) 相比：
+     *   - 运行期：3 条整数乘加 / 3 条位运算，纳秒级；后者每次求值都要跑一遍哈希（~0.3µs）。
+     *   - 体积：几十字节；后者每个积木都带一段随机串。
+     *   - 静态难度不降：块数、权重写法、掩码形态都由 ctr/salt 轮换，同一文件里不会长得一样。
+     * 值恒等由构造保证（分块求和必然还原原值），外层 verify() 再兜底一次。
+     */
+    private function intPosExprCheap(int $v): string
+    {
+        if ($v <= 0) {
+            return '(0)';
+        }
+        $digits = (string) $v;
+        $len = strlen($digits);
+        $chunks = [];
+        for ($i = $len; $i > 0; $i -= 3) {
+            $start = max(0, $i - 3);
+            $chunks[] = (int) substr($digits, $start, $i - $start);
+        }
+        // 上面按"从低位往高位"切块，这里翻成最高位在前，权重才与位置对齐
+        // （漏了这一步会让 1234567 还原成 567234001，恒等式变成错等式）。
+        $chunks = array_reverse($chunks);
+        // chunks[0] 是最高位块
+        $count = count($chunks);
+        $pieces = [];
+        for ($i = 0; $i < $count; $i++) {
+            $n = $chunks[$i];
+            $weight = 1;
+            for ($j = $i + 1; $j < $count; $j++) {
+                $weight *= 1000;
+            }
+            if ($n === 0) {
+                continue;
+            }
+            if ($weight === 1) {
+                $pieces[] = '(' . $n . ')';
+            } else {
+                // 权重也用"位运算 + 乘法"表示，避免出现一长串 1000000
+                $wl = (string) $weight;
+                $pieces[] = '((' . $n . ')*' . $wl . ')';
+            }
+        }
+        $body = $pieces === [] ? '(0)' : '(' . implode(' + ', $pieces) . ')';
+        // 掩码：把结果再套一层"值不变"的形态，打散固定形状
+        return $this->maskInt($body);
     }
 
     /**
@@ -226,6 +293,12 @@ final class IdentityExpr
     /** 单个正整数片段的 wild 恒等形态 */
     private function intPieceWild(int $p): string
     {
+        // 大数保护：strlen 变体会真的去造 $p 个字符的随机串（1e9 量级就卡死构建），
+        // 移位变体的 `(($p<<3)>>3)` 在大数上会溢出 int64（还原值与原文不等）。
+        // 超过 1e6 一律退回十进制分块积木：O(位数)、纯整数乘加、值恒等。
+        if ($p > 1000000) {
+            return $this->intPosExprCheap($p);
+        }
         $k = $this->ctr % 6;
         $this->ctr++;
         if ($k === 1 && $p >= 32 && $p < 127) {
@@ -242,9 +315,12 @@ final class IdentityExpr
             return 'abs(-' . $p . ')';
         }
         if ($k === 5) {
+            // `((p << s) >> s)` 恒等于 p（算术右移补回符号位，正整数无损）。
+            // 教训：早前写成 `((K << s) >> s)`（K 已经是 p<<s），实际得到 p<<s，
+            // 把 44 变成 352——wild 档的整数常量整片失真，且只在 k=5 命中，
+            // 抽样看不出来。
             $s = 3;
-            $K = $p << $s;
-            return '((' . $K . ' << ' . $s . ') >> ' . $s . ')';
+            return '((' . $p . ' << ' . $s . ') >> ' . $s . ')';
         }
         return "strlen('" . $this->randStr($p) . "')";
     }

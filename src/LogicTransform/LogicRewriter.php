@@ -96,6 +96,10 @@ final class LogicRewriter
         $this->id->setSeed($this->constSeed);
         // v1.2.4 天马行空加强：扩张恒等积木编码库（双层 base64 / strrev / ord / 移位链等）
         $this->id->setWild($this->wildOn);
+        // v1.3.0 低成本积木：数字恒等改成「十进制分块 + 位运算掩码」，
+        // 每次求值 1~3 条整数指令（原来是 strlen(md5())，每次 ~0.3µs）。
+        // 复杂度不降：分块/权重/掩码形态仍按 ctr 轮换，静态阅读一样要逐项还原。
+        $this->id->setCheap((bool) $cfg->get('logic_cheap', true));
         $this->genCtr = 0;
         $this->tempVars = [];
         $this->collectVars($tokens);

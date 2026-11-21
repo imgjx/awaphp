@@ -1,5 +1,113 @@
 # 更新日志（CHANGELOG）
 
+## v1.3.0 — runtime environment gate, dynamic `case` labels, cheaper identity blocks
+
+> **(1) Identity no longer constant-folds away: the `logic` layer now branches on the runtime environment.**
+> `if (($lvlsock ^ $lvlsock) === 0)` is dead code the moment a reader looks at it — the `else` branch can be
+> struck out with a pen, and so can every decoy built on the same shape. The new `envgate` layer replaces
+> that class of predicate with questions only the running machine can answer. Once per file it reads
+> `PHP_VERSION_ID`, `time()`, whether a debugger/extender is loaded (`xdebug` / `dbg`, via
+> `extension_loaded`, `function_exists`, `ini_get`) and how deep the file sits in the include chain
+> (`count(get_included_files()) > 1`), folds them into an environment fingerprint, and gates the `echo` /
+> `print` statements on it:
+>
+> ```php
+> $v=80500; $t=1763685…; $d=(int)(bool)0; $i=(int)(count(get_included_files())>1); $n=0;
+> if (((($v>>8)^($t&255)^$d^$i^($n=$n+1))&1)) { $n=$n-1; } else { $n=$n+1; }
+> ```
+>
+> Both branches of every gate emit **byte-identical output**, so the artifact behaves the same whether the
+> predicate is true or false — but the predicate itself depends on values that are not in the file: a build
+> run under Xdebug, an artifact `include`d by a harness, or one executed on another PHP build takes the other
+> branch. Static evaluation cannot resolve it, and symbolic execution that assumes a fixed answer produces
+> states the program never reaches. The `$n=$n+1` counter is deliberate: the same expression evaluated twice
+> returns different values, which breaks iterative folding / re-execution to a fixed point (round two sees a
+> fingerprint it just invalidated). Cost is four integer ops per file plus one per gate — no function calls,
+> no allocation. Wire-up: `--envgate` / `--no-envgate`, `--envgate-max=N`, and one switch per probe
+> (`--envgate-version`, `--envgate-time`, `--envgate-debug`, `--envgate-include`; `--no-…` to drop one).
+> Every preset from `min` up runs at least the version and time probes **once per file**; `min/low/mid/high/max/ultra`
+> default to `4/6/8/12/12/16` gates.
+>
+> **(2) The state machine no longer has a branch table to enumerate.** `case` labels used to be integer
+> literals, so `switch ($state) { case 0: … case 7: … }` could be read off the source and the dispatcher
+> pruned to the reachable subgraph. Labels are now `case $c + 3:` with
+> `$c = (PHP_VERSION_ID>0)-1` — zero on every PHP build that exists, but not a constant any analyser can
+> fold without knowing the engine it will run on. The state variable itself is initialised in the same
+> form, and the transition predicate is a bit-level opaque test (`(($o|1)&1) === 1`) rather than an
+> arithmetic tautology. Enumerating the CFG now requires assuming `$c`, and that assumption is exactly
+> what a hardened build refuses to honour. Switch: `--sm-dynamic-case` / `--no-sm-dynamic-case`.
+>
+> **(3) The identity blocks got cheaper without getting simpler.** The old integer blocks were built from
+> `strlen(md5('…'))` / `strlen(sha1('…'))` — one hash per evaluation (~0.3 µs) on every literal the layer
+> touches. They are now decimal three-digit chunks recombined with weights and a bit-mask
+> (`((908)*1000000 + ((468)*1000) + (267)) ^ 0`): one to three integer instructions, tens of bytes, and the
+> chunk count / weight form / mask shape still rotate per site, so two blocks in one file never look alike.
+> Measured on the loop benchmark from v1.2.14, the `logic` layer's share of runtime drops by two orders of
+> magnitude while the analysis cost stays where it was — the reader still has to reduce every chunk by hand.
+> Switch: `--logic-cheap` / `--no-logic-cheap`.
+>
+> **(4) `funcsplit` and `decoy` are now wired in by default — including `min`.** They were only reachable
+> behind explicit flags, which is why test builds "did not show them". `min` now runs
+> `constfold → decoy → envgate → var → funcsplit → number → string → comment → ws`; the order matters
+> (`var` renames identifiers, so the extracted functions must be split *after* renaming or the
+> parameters and the call site disagree). Statement splitting and multi-branch decoys are therefore present
+> at every level, and the environment gate sees the code *after* both, so its gates wrap real statements
+> rather than the pristine input.
+>
+> **(5) `aggressive_prune` removed.** The dead-branch pruner only ever worked on predicates it could prove,
+> i.e. exactly the predicates this release stops producing. The layer, its CLI flags (`--aggressive-prune`,
+> `--level=aggressive`), its preset and its documentation are gone; the remaining pruning work is done by
+> `constfold`.
+>
+> **Fixes found while verifying the above** — every one of them a silent-wrong-answer bug, not a crash:
+>
+> - **Integer blocks reassembled their chunks in reverse.** `intPosExprCheap()` sliced from the least
+>   significant end and then weighted the slices as if they were most-significant-first, so `1234567`
+>   became `567234001` and `2` became `6456448`. Every `for`/`while` bound built from a literal was wrong;
+>   a loop could run 3 million times instead of 2. Chunks are now reversed before weighting
+>   (`tests/v1215_features.php` A, plus a 1600-case value-fidelity fuzz over the four block modes).
+> - **The `wild` block's shift form shifted twice.** `$K = $p << 3` was emitted as `(($K << 3) >> 3)`,
+>   which is `$p << 3`, not `$p` — `44` came out as `352`. It only fired on one of six shapes, so sampling
+>   missed it. Negative test: 1600 random values across `cheap`/`wild`/plain, all exact.
+> - **`wild` blocks could hang or lose precision on large literals.** The `strlen('<random>')` shape
+>   materialises a literal of the target length, so a 10¹⁶-ish constant tried to build a 10¹⁶-byte string;
+>   values above 10⁶ now fall back to the chunk form (O(digits), integer-only).
+> - **Conditional function declarations must not be accepted by the VM.** `if (!function_exists('f')) { function f(&$a) {…} }`
+>   — the shape `funcsplit` emits, since the extracted function writes back through reference parameters —
+>   was treated as eval-safe, so the VM handed the bridged frame value to a by-reference parameter:
+>   `Argument #1 must be passed by reference` warnings, silently lost writes, and in the loop case a
+>   dispatcher that never advanced. The escape scan is conservative again (closure bodies only), which
+>   keeps such files on the opaque-payload path.
+> - **`break 2;` / `continue 2;` kept their literal.** The `number` layer expanded the level operand into
+>   an expression (`BREAK(62^60)`), which is a compile-time fatal in PHP 8.
+> - **The state machine lost its initial state assignment**, leaving `$state undefined` and `case` labels
+>   that referenced a variable that was never written.
+> - **`anti_debug` intensity 4 emitted a guard line without `=`**, which surfaced as
+>   `syntax error, unexpected token "@"` on the `max` / `ultra` artifacts.
+> - **The syntax gate let compile-time namespace errors through.** The in-process `token_get_all(…, TOKEN_PARSE)`
+>   fast path is a *parser* gate, and "Namespace declarations cannot be nested" / "No code may exist outside of
+>   namespace {}" are *compile-time* errors. A file using bracketed namespaces (`namespace A { … } namespace B { … }`)
+>   passed every per-layer check, got wrapped into a shell, and then died at runtime with
+>   `Namespace declarations cannot be nested` — after compression, `php -l` cannot see the payload any more, so
+>   the shell's rollback safety net never fired and the artifact was silently dead. `Lint` now also validates the
+>   namespace shape (single style, no nesting, no code outside the blocks), which restores the rollback path.
+> - **`$argv` / `$argc` are bound into the VM globals**, so `$argv[1] ?? …` survives a `high` build that
+>   compiles the file into bytecode (previously `(none)` at every level that enabled the VM).
+> - **The VM's `case` label acceptance is conservative again.** Letting `case (<expr>):` through looked harmless,
+>   but a label rewritten by the `number` / `logic` layers (`case (((3)) ^ (0)):`) is compiled with wrong jump
+>   offsets: `high` on `tests/fixtures/mixed_edge.php` printed 1.1 MB of repeating page and never terminated.
+>   Non-literal labels fall back to the opaque-payload path again, which is what v1.2.14 did. The state machine's
+>   own `case $base + 12:` labels still appear in the artifact — they just do not make the file VM-compilable.
+> - **The VM fallback is no longer silent.** Because the state-machine dispatcher trips the guard above, a
+>   `high` / `max` / `ultra` build of any normal business file lands on "opaque payload nesting" (source
+>   encrypted and executed by the VM's `_PHPRUN`, no bytecode). v1.2.14 logged that at `info` level per file,
+>   i.e. it was invisible. It is now a `warn`, deduplicated by reason so a 500-file site prints one line
+>   instead of 500; per-file detail is behind `--verbose`. Measured consequence: the presets cost 3–4× on
+>   pure compute (not the 11.9× the old docs quoted, which was measured on a file that did compile), while
+>   the real bytecode path costs ≈450× on the same workload. Both paths, the cause chain and the v1.3.1 plan
+>   (relax the label guard **and** add a runtime function-registration opcode) are written up in
+>   `docs/PERFORMANCE.md` §4.
+
 ## v1.2.14 — loop-local identity injection, two infinite-loop fixes, docs rewritten
 
 > **(1) The `logic` layer keeps injecting inside loops — but only at zero runtime cost.**

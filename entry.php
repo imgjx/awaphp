@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 // ============ 工具信息配置区 ============
 define('OBFUSCATOR_NAME',    '嗷呜awaのphp混淆器');
-define('OBFUSCATOR_VERSION', '1.2.14');
+define('OBFUSCATOR_VERSION', '1.3.0');
 define('OBFUSCATOR_AUTHOR',  'awa');
 
 // ============ 加载核心库 ============
@@ -28,6 +28,8 @@ foreach ([
     'src/Confrontation/ConfrontRng.php',
     'src/Support/DynamicSymbols.php',
     'src/Logger.php',
+    'src/Support/BuildReport.php',
+    'src/Support/Lint.php',
     'src/Support/LoopScanTrait.php',
     'src/Config.php',
     'src/Parser.php',
@@ -84,6 +86,7 @@ foreach ([
     'src/Support/ConstEval.php',
     'src/LogicTransform/FunctionSplitter.php',
     'src/LogicTransform/DecoyBranches.php',
+    'src/LogicTransform/EnvGate.php',
     'src/Project/SymbolTable.php',
     'src/Project/ProjectBuilder.php',
 ] as $f) {
@@ -98,7 +101,7 @@ function obf_parse_args(array $argv): array
     ];
     $out = [];
     // 等级短旗标：-min / -low / -mid / -high / -max / -ultra -> level=<name>
-    static $LEVEL_FLAGS = ['-min' => 'min', '-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max', '-ultra' => 'ultra', '-aggressive' => 'aggressive'];
+    static $LEVEL_FLAGS = ['-min' => 'min', '-low' => 'low', '-mid' => 'mid', '-high' => 'high', '-max' => 'max', '-ultra' => 'ultra'];
     $n = count($argv);
     for ($i = 1; $i < $n; $i++) {
         $a = $argv[$i];
@@ -174,15 +177,6 @@ function obf_parse_args(array $argv): array
             $out['loop_fold'] = false;
             continue;
         }
-        // v1.2.8：激进恒等式压缩 + 死分支剪枝层（默认关，避免削弱现有各档反 AST 强度）
-        if ($a === '--aggressive-prune') {
-            $out['aggressive_prune'] = true;
-            continue;
-        }
-        if ($a === '--no-aggressive-prune') {
-            $out['aggressive_prune'] = false;
-            continue;
-        }
         if ($a === '--func-split') {
             $out['func_split'] = true;
             continue;
@@ -198,6 +192,47 @@ function obf_parse_args(array $argv): array
         }
         if ($a === '--no-decoy') {
             $out['decoy'] = false;
+            continue;
+        }
+        // v1.3.0 运行时环境门闩（版本 / 时间 / 反调试 / include）
+        if ($a === '--envgate') {
+            $out['envgate'] = true;
+            continue;
+        }
+        if ($a === '--no-envgate') {
+            $out['envgate'] = false;
+            continue;
+        }
+        if (preg_match('/^--envgate-max=(\d+)$/', $a, $mm)) {
+            $out['envgate_max'] = (int) $mm[1];
+            continue;
+        }
+        foreach (['version', 'time', 'debug', 'include'] as $__probe) {
+            if ($a === '--no-envgate-' . $__probe) {
+                $out['envgate_' . $__probe] = false;
+                continue 2;
+            }
+            if ($a === '--envgate-' . $__probe) {
+                $out['envgate_' . $__probe] = true;
+                continue 2;
+            }
+        }
+        // v1.3.0 状态机：case 标签写成「运行期基址 + 偏移」
+        if ($a === '--sm-dynamic-case') {
+            $out['sm_dynamic_case'] = true;
+            continue;
+        }
+        if ($a === '--no-sm-dynamic-case') {
+            $out['sm_dynamic_case'] = false;
+            continue;
+        }
+        // v1.3.0 logic 低成本积木（十进制分块 + 位运算，替代 strlen(md5())）
+        if ($a === '--logic-cheap') {
+            $out['logic_cheap'] = true;
+            continue;
+        }
+        if ($a === '--no-logic-cheap') {
+            $out['logic_cheap'] = false;
             continue;
         }
         if ($a === '--no-vm-combo') {
@@ -323,6 +358,27 @@ function obf_parse_args(array $argv): array
     return $out;
 }
 
+/**
+ * 输出构建报告（stderr 表格 + 可选 JSON 文件）。
+ * 未启用时直接返回：开关关闭时构建路径上没有任何额外开销。
+ *
+ * @param array<string,mixed> $meta
+ */
+function obf_emit_report(?BuildReport $report, array $meta, string $jsonPath = ''): void
+{
+    if ($report === null || !$report->enabled()) {
+        return;
+    }
+    fwrite(STDERR, "\n" . $report->render($meta) . "\n");
+    if ($jsonPath !== '') {
+        $dir = dirname($jsonPath);
+        if ($dir !== '' && !is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        @file_put_contents($jsonPath, json_encode($report->toArray($meta), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+    }
+}
+
 function obf_help(): string
 {
     // v1.2.11：原来用 heredoc（<<<HELP）输出，`{OBFUSCATOR_NAME}` / `{OBFUSCATOR_VERSION}`
@@ -338,9 +394,8 @@ function obf_help(): string
   -o, --output=       输出文件或目录
   -c, --config=       指定配置文件（普通标量配置 / 分层 JSON / PHP 数组配置均可；
                         .php 文件需 return 一个数组，可直接用 PHP 表达式与注释，便于维护）
-      --level=        等级预设：min|low|mid|high|max|ultra|aggressive（一键切换完整分层方案；
-                       aggressive=v1.2.8 性能优先档：ultra 全保护 + 恒等式压缩/死分支剪枝）
-  -min -low -mid -high -max -ultra  等价 --level=<name> 的短旗标（-aggressive 同）
+      --level=        等级预设：min|low|mid|high|max|ultra（一键切换完整分层方案）
+  -min -low -mid -high -max -ultra  等价 --level=<name> 的短旗标
                         （等级仅作默认，散装参数如 --level high --junk_intensity 10 可叠加覆盖；
                          min 为最低强度：只做变量名/数字/字符串/去注释/压空白，无任何壳，
                            运行时仅每字符串一次 base64_decode，不改变运行特征；
@@ -381,11 +436,6 @@ function obf_help(): string
       --copyright=     版权注释注入文本
       --no-banner      关闭文件头"混淆引擎名+版本号"注入
       --no-loop-fold   v1.2.8：关闭构建期纯计算循环折叠（默认开，零 eval 符号执行，20 万次循环被构建期算完）
-      --aggressive-prune  v1.2.10：激进恒等式压缩 + 死分支剪枝（性能层，加速用户自己的脚本）。
-                        【硬规则】永远排在 logic 之前——折叠的是用户自己写的恒等式/死分支，
-                        logic 随后注入的恒等式对它不可见，因此不会被它解析加速。
-                        已内置两道兜底：层序被写反则整层空转 + Logic 积木指纹检测。
-                        推荐直接用 --level=aggressive（预设已内置）
 
 高级（第三阶段）
       --cfg=          控制流混淆：low|medium|high
@@ -532,6 +582,23 @@ function obf_help(): string
                        --no-logic-loop-light 关闭（--no-logic-loop-hoist 为旧名，同样有效）。
       --logic-loop-threshold=  迭代数阈值（默认 20）：超过才降级，短循环保留完整积木；
                        估不出迭代数（while(true)、while($row=f())）一律按大循环处理。
+运行时环境门闩（v1.3.0，每档默认开）
+      --envgate / --no-envgate   文件开头取一次运行期事实（PHP 版本 / 时间 / 是否装了
+                       xdebug·dbg / 是否被 include 进测试脚本），折算成带自增计数器的
+                       环境指纹，把 echo/print 包成两路**输出逐字节相同**的分支：
+                       · 条件不是 ($x^$x)===0 这类自消恒等式，静态侧剪不掉；
+                       · 计数器让同一表达式第二次求值结果不同，迭代式常量折叠自我污染；
+                       · 被 xdebug 接管时走另一支，动态插桩跟踪到的路径线上复现不了。
+      --envgate-max=     单文件最多包裹多少条 echo/print（默认 8，0=只留文件级探针）
+      --envgate-version / --envgate-time / --envgate-debug / --envgate-include
+                       四个探针单独开关（默认全开；前缀 --no- 关闭其一）
+      --sm-dynamic-case / --no-sm-dynamic-case
+                       状态机 case 标签写成「运行期基址 + 偏移」（默认开）：分支表不再是
+                       一列字面量常量，状态机裁剪只能退化成全路径分析。
+      --logic-cheap / --no-logic-cheap
+                       logic 数字积木换成「十进制分块 + 位运算」（默认开）：每次求值 1~3
+                       条整数指令，替代 strlen(md5()) 的函数调用积木；形态仍随机轮换。
+
 逐壳层激进变换（v1.2.4）
       --logic-shell      每个 shell 壳包裹后，对本层新生成的解码逻辑再施加一次逻辑恒等
                        重组：剥开任意一层看到的解码代码同样是面目全非的恒等式。内层密文
@@ -563,7 +630,9 @@ function obf_help(): string
 
 界面
       --format=        text|json（json 便于 GUI/脚本解析）
-      --verbose        详细日志
+      --report         构建结束打印逐层耗时/进出台节数的表格（stderr，不污染产物）
+      --report-json=   同上，另把同一份数据写成 JSON 文件（便于 CI 存档/比对）
+      --verbose        详细日志（含 shell:vm 逐文件的降级原因）
       --silence        静默
   -h, --help           显示本帮助
       --info           显示工具信息
@@ -594,6 +663,10 @@ if (isset($args['info'])) {
 //         -> 普通 JSON 配置（标量覆盖） -> 纯散装 CLI 参数
 // CLI 标量覆盖项（除去 level/config 等非配置键；input/output 是合法配置键，
 // 允许命令行覆盖 JSON 中的取值）在预设/分层/JSON 配置之上叠加。
+// 构建报告开关不参与配置合并（不是混淆参数）：先摘出，避免被 Config 当成未知键
+$reportOn   = (bool) ($args['report'] ?? false);
+$reportJson = isset($args['report_json']) ? (string) $args['report_json'] : '';
+unset($args['report'], $args['report_json']);
 $LEVEL_NON_OVERRIDE = ['level', 'config'];
 $cliOverrides = array_diff_key($args, array_flip($LEVEL_NON_OVERRIDE));
 try {
@@ -648,7 +721,15 @@ $level = $config->get('silence') ? Logger::LEVEL_ERROR
 $logger = new Logger($level, $mode);
 
 $salt = new Salt((string) $config->get('salt'));
-$obfuscator = new Obfuscator($config, $salt, $logger, OBFUSCATOR_NAME, OBFUSCATOR_VERSION);
+// 构建报告：--report 打表格到 stderr，--report-json=PATH 额外落一份 JSON
+$report = new BuildReport($reportOn || $reportJson !== '');
+$report->start();
+$reportMeta = [
+    'tool'   => OBFUSCATOR_NAME . ' v' . OBFUSCATOR_VERSION,
+    'preset' => (string) ($args['level'] ?? ($config->hasLayers() ? 'custom' : 'default')),
+    'salt'   => $salt->getSalt() === '' ? '(random)' : substr(sha1($salt->getSalt()), 0, 8),
+];
+$obfuscator = new Obfuscator($config, $salt, $logger, OBFUSCATOR_NAME, OBFUSCATOR_VERSION, null, $report);
 
 $input = $config->get('input');
 $output = $config->get('output');
@@ -659,8 +740,25 @@ if (is_dir($input)) {
         exit(1);
     }
     // 整套系统模式：两遍扫描 + 全局符号表 + manifest，跨文件调用与同名符号全系统一致
-    $builder = new ProjectBuilder($config, $salt, $logger, OBFUSCATOR_NAME, OBFUSCATOR_VERSION);
+    $builder = new ProjectBuilder($config, $salt, $logger, OBFUSCATOR_NAME, OBFUSCATOR_VERSION, $report);
     $res = $builder->build($input, $output, $config->get('manifest') ?: null);
+    if ($report->enabled()) {
+        $sumPhp = static function (string $dir): int {
+            $n = 0;
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $f) {
+                if ($f->isFile() && strtolower($f->getExtension()) === 'php') {
+                    $n += (int) $f->getSize();
+                }
+            }
+            return $n;
+        };
+        obf_emit_report($report, $reportMeta + [
+            'files'  => (int) $res['files'],
+            'in'     => $sumPhp($input),
+            'out'    => $sumPhp($output),
+        ], $reportJson);
+    }
     $logger->info("目录混淆完成：成功 {$res['files']} 个，失败 {$res['failed']} 个（函数 {$res['funcs']}，类 {$res['classes']}）");
     // OPcache 辅助编译（后处理：目录模式下对每个产物 .php 编译为 Zend 字节码；环境不支持时自动跳过）
     if ($config->get('opcache')) {
@@ -685,6 +783,14 @@ $src = file_get_contents($input);
 // 登记主文件路径：供 VM 的 include 解析（baseDir）与 __DIR__/__FILE__ 编译期折值
 $obfuscator->setSourceFile($input);
 $result = $obfuscator->run($src);
+
+if ($report->enabled()) {
+    obf_emit_report($report, $reportMeta + [
+        'in'     => strlen($src),
+        'out'    => strlen($result),
+        'sha256' => hash('sha256', $result),
+    ], $reportJson);
+}
 
 if ($output !== null && $output !== '') {
     file_put_contents($output, $result);

@@ -18,22 +18,47 @@ final class Validator
      * 用 php -l 校验一段 PHP 源码字符串。
      * @return array{ok:bool, output:string}
      */
-    public function checkSyntaxString(string $code): array
+    /**
+     * @param bool $strict true = 直接落盘跑 `php -l`（连同编译期错误一起判，如
+     *                     "break 操作数必须为整数"）；false = 进程内 parser 快路径。
+     *                     逐层做整段变换的地方（壳层自保护 / 语义重写）用 strict：
+     *                     那类变换最容易产出"语法合法但编译不过"的代码，而
+     *                     token_get_all 只做语法解析、看不到编译期错误。
+     */
+    public function checkSyntaxString(string $code, bool $strict = false): array
     {
-        $tmp = tempnam(sys_get_temp_dir(), 'obf_');
-        if ($tmp === false) {
-            return ['ok' => false, 'output' => '无法创建临时文件'];
+        // 快路径：进程内 parser（微秒级）。只有真出错时才落盘跑 `php -l` 取错误文本，
+        // 逐层校验时不再每层起一个进程——构建时间的主要开销曾在这里。
+        if (!$strict && Lint::ok($code)) {
+            return ['ok' => true, 'output' => ''];
         }
-        file_put_contents($tmp, $code);
-        $result = $this->checkSyntaxFile($tmp);
-        if (!$result['ok']) {
+        if ($strict) {
+            $tmp = tempnam(sys_get_temp_dir(), 'obf_');
+            if ($tmp === false) {
+                return ['ok' => false, 'output' => '无法创建临时文件'];
+            }
+            file_put_contents($tmp, $code);
+            $r = $this->checkSyntaxFile($tmp);
+            @unlink($tmp);
+            if ($r['ok']) {
+                return $r;
+            }
+            // 严格模式已给出权威结论（含编译期错误），不再回落到"只看语法"的快路径——
+            // 否则 `break(44^46);` 这类"语法合法、编译不过"的代码会被二次判成通过。
             $dir = getenv('OBF_LINT_DUMP');
             if (is_string($dir) && $dir !== '') {
                 @mkdir($dir, 0777, true);
-                @copy($tmp, rtrim($dir, '/') . '/' . date('His') . '_' . substr(md5($code), 0, 6) . '.php');
+                @file_put_contents(rtrim($dir, '/') . '/' . date('His') . '_' . substr(md5($code), 0, 6) . '.php', $code);
             }
+            return $r;
         }
-        @unlink($tmp);
+        $result = Lint::check($code, true);
+        $this->logger->warn('php -l 校验未通过: ' . trim($result['output']));
+        $dir = getenv('OBF_LINT_DUMP');
+        if (is_string($dir) && $dir !== '') {
+            @mkdir($dir, 0777, true);
+            @file_put_contents(rtrim($dir, '/') . '/' . date('His') . '_' . substr(md5($code), 0, 6) . '.php', $code);
+        }
         return $result;
     }
 

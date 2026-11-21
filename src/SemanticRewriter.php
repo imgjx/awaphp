@@ -539,6 +539,26 @@ final class SemanticRewriter
                 $out[] = $t;
                 continue;
             }
+            // v1.3.0：`break 2;` / `continue 2;` 的层级操作数必须是【整数字面量】，
+            // PHP 8 起写成表达式（含等值展开 `break(62^60);`）直接是编译期 fatal：
+            //   "'break' operator with non-integer operand is no longer supported"
+            // 这类跳转层级数字一律原样保留（ControlFlow / EvalShell 会生成 break 2;）。
+            if ($id === T_LNUMBER) {
+                $prevSig = null;
+                for ($pj = count($out) - 1; $pj >= 0; $pj--) {
+                    $pt = $out[$pj];
+                    if (Parser::isWhitespaceOrComment($pt)) {
+                        continue;
+                    }
+                    $prevSig = $pt;
+                    break;
+                }
+                $isJumpLevel = is_array($prevSig) && in_array($prevSig[0], [T_BREAK, T_CONTINUE], true);
+                if ($isJumpLevel) {
+                    $out[] = $t;
+                    continue;
+                }
+            }
             if ($id === T_LNUMBER && ($r = $this->numberReplacement((string) $t[1], $runtimeStmt, $strength)) !== null) {
                 foreach ($r as $rt) {
                     $out[] = $rt;
@@ -808,15 +828,11 @@ final class SemanticRewriter
         return $t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES;
     }
 
-    /** 把 token 流重建为源码，过 php -l 校验语法（token 流已含 T_OPEN_TAG，勿重复加前缀） */
+    /** 把 token 流重建为源码，校验语法（token 流已含 T_OPEN_TAG，勿重复加前缀） */
     private function syntaxOk(array $tk): bool
     {
-        $src = $this->toSource($tk);
-        $f = tempnam(sys_get_temp_dir(), 'sem') ?: '/tmp/sem_check.php';
-        file_put_contents($f, $src);
-        $out = shell_exec('php -l ' . escapeshellarg($f) . ' 2>&1') ?: '';
-        @unlink($f);
-        return str_contains($out, 'No syntax errors');
+        // 进程内 parser：与 `php -l` 同一个 parser，但不落盘、不起进程
+        return Lint::ok($this->toSource($tk));
     }
 
     /**

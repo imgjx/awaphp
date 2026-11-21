@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-![Version](https://img.shields.io/badge/version-1.2.14-orange)
+![Version](https://img.shields.io/badge/version-1.3.0-orange)
 ![PHP](https://img.shields.io/badge/PHP-7.4~8.5-777BB4?logo=php&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -138,7 +138,12 @@
 ### 编译时优化与性能层
 - **constfold 常量预计算**（`--const-fold-level=1|2|3`）：把「简单但费力」的纯字面量运算在**构建期**算完——`60*60*24 → 86400`、`'a'.'b'.'c' → 'abc'`。运行期不再计算（省指令、零额外开销），源码里也看不到原始计算过程。严格只对纯字面量求值，遵守 PHP 8 优先级与右结合（`2+3*4=14`、`2**3**2=512`）；除零 / 溢出 / 超长结果 / 类型不符一律跳过；折叠结果仍是字面量，`const`、参数默认值等常量上下文同样合法。**排在 `logic` 之前**：先把计算做完，再让逻辑层去混淆结果。
 - **构建期循环折叠**（默认开，`--no-loop-fold` 关闭）：对字面量边界 + 纯局部算术的确定性循环（典型的 20 万次 `for`），由 `ConstEval`——一个用 PHP 原生运算符求值的 token 级符号执行器，**完全不用 eval**——在构建期折叠成结果字面量。严格 token 白名单 + 迭代上限 + 双次校验兜底，任何不确定的循环原样保留。
-- **激进剪枝 `aggressive_prune`**（`--aggressive-prune`，`aggressive` 档默认开）：折叠用户自己写的常量恒等式与死分支，让产物运行期不再重算。它被**硬钉在 `logic` 之前**——排在 Logic 之后的剪枝会把混淆器自己注入的恒等式折回字面量（等于保护自残）。"Logic 无法被剪枝层解析加速"因此是结构保证，另有两道兜底：管线报告本层跑在 `logic` 之后即整层空转；token 流已带 Logic 积木指纹时也整层空转。
+- **运行时环境门闩 `envgate`**（**每一档默认开**，含最低档 `min`）：产物在文件开头取四个只有运行期才知道的事实——`PHP_VERSION_ID`、`time()`、是否装了调试/插桩扩展（`xdebug` / `dbg`）、本文件是否被别的脚本 `include` 进来，再折算成一个带自增计数器的**环境指纹**，用它把 `echo` / `print` 包成两路**输出逐字节相同**的分支。
+  - 条件**不是**自消恒等式（`($x^$x)===0` 一眼就能看出 else 是死代码），而是"要到运行期才有答案、换台机器可能就变"的环境问题，静态侧剪不掉。
+  - 计数器使**同一表达式第二次求值结果不同**：跑到不动点就停的常量折叠 / 符号执行，第二轮拿到的是自相矛盾的中间值，只会自我污染。
+  - 两路输出完全相同，走哪条都正确；但被 xdebug 接管时会走**另一条**——动态插桩费力跟踪到的路径，在线上根本不会出现。
+  - 成本：每文件 4 次 O(1) 探针 + 每条门闩 3~4 个位运算，比 `strlen(md5('…'))` 积木便宜两个数量级。开关：`--envgate` / `--no-envgate`，上限 `--envgate-max`（默认 8），探针单独开关 `--envgate-version|time|debug|include`。
+- **运行时 `case` 标签**：状态机的分派表写成 `case $base + <偏移>`，其中 `$base = (PHP_VERSION_ID > 0) - 1` 在运行期才算得出，而不是一列字面量常量。分支表再也列不出来，状态机裁剪只能退化成全路径分析。开关：`--sm-dynamic-case` / `--no-sm-dynamic-case`。
 
 ### 函数型代码打散（`funcsplit` 层）
 把一节 PHP 代码提取成函数封装：`echo $i + $k . $str;` → `function _fs9ab12c34($i, $k, $str){echo $i + $k . $str;}` + 原位调用 `_fs9ab12c34($i, $k, $str);`（定义集中落到文件顶层，调用留在原处）。

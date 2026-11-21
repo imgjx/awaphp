@@ -10,7 +10,7 @@
  *
  * 两个入口：
  *   - evalExpr($tokens, $env)：求一个表达式的值（字面量/变量/算术/位/比较/
- *     逻辑/括号/白名单纯函数）。用于 AggressivePruner 的恒等式与条件求值。
+ *     逻辑/括号/白名单纯函数）。用于 constfold 的条件求值与 logic 的恒等式折叠。
  *   - execStatements($tokens, $env, $maxIter)：执行一段受限语句（赋值/
  *     += -= 等复合赋值/++ --/if-elseif-else/for/while），更新 $env。
  *     用于 ConstFolder 的纯计算循环折叠。

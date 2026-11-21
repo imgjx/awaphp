@@ -42,6 +42,31 @@ function sh(string $cmd): string
 
 
 /**
+ * 只有混淆器才会生成的函数名（夹具里不会自然出现），用来判「有没有积木」。
+ * 不能把 strlen 放进来：夹具本身就写了 strlen('…')，那是用户代码不是积木。
+ */
+function has_brick_call(string $code): bool
+{
+    return (bool) preg_match(
+        '/\b(sha1|md5|base64_decode|in_array|str_repeat|hex2bin|str_rot13|strrev)\s*\(/',
+        $code
+    );
+}
+
+/**
+ * 任意形态积木：函数调用型（含 v1.3.0 的
+ * `strlen(hex2bin('…').str_rot13('…').strrev('…'))`），
+ * 或 v1.3.0 的十进制分块 + 位掩码型（`((7)|0)`、`((908)*1000000 + …) ^ 0`）。
+ */
+function has_brick(string $code): bool
+{
+    if (has_brick_call($code) || preg_match('/\bstrlen\s*\(\s*(hex2bin|str_rot13|strrev)\s*\(/', $code)) {
+        return true;
+    }
+    return (bool) preg_match('/\d+\s*\*\s*(1000|1000000|1000000000)|[\^|&]\s*0\s*\)/', $code);
+}
+
+/**
  * 截出循环语句本身（关键字 + 头括号 + 体括号），找不到返回空串。
  * 只取循环本身，避免把循环之后的代码也算进来。
  */
@@ -188,7 +213,7 @@ PHP;
 $outBig = pipeline($big);
 $loop = loop_slice($outBig, 'for');
 
-if ($loop !== '' && !preg_match('/\b(sha1|md5|base64_decode|in_array|str_repeat)\s*\(/', $loop)) {
+if ($loop !== '' && !has_brick_call($loop)) {
     t_ok('D 大循环：循环头与循环体内无函数调用积木');
 } else {
     t_no('D 大循环', '仍有函数调用：' . substr($loop, 0, 160));
@@ -214,7 +239,8 @@ echo $s;
 PHP;
 $outSmall = pipeline($small);
 $smallLoop = loop_slice($outSmall, 'for');
-if ($smallLoop !== '' && preg_match('/\b(sha1|md5|base64_decode|str_repeat)\s*\(/', $smallLoop)) {
+// v1.3.0：积木默认换成十进制分块 + 位掩码形态，has_brick() 一并认。
+if ($smallLoop !== '' && has_brick($smallLoop)) {
     t_ok('E 小循环（3 次）：仍使用完整积木');
 } else {
     t_no('E 小循环', '小循环丢了积木：' . substr($smallLoop, 0, 160));
@@ -255,7 +281,7 @@ foreach (['low', 'mid'] as $p) {
 // ---------------------------------------------------------------------------
 $outOff = pipeline($big, ['logic_loop_light' => false]);
 $offLoop = loop_slice($outOff, 'for');
-if ($offLoop !== '' && preg_match('/\b(sha1|md5|base64_decode)\s*\(/', $offLoop)) {
+if ($offLoop !== '' && has_brick_call($offLoop)) {
     t_ok('G --no-logic-loop-light：循环内恢复完整积木');
 } else {
     t_no('G 关闭开关', '仍是轻量形态：' . substr($offLoop, 0, 160));

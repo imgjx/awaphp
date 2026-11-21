@@ -155,17 +155,6 @@ final class LayerDescriptor
                 ],
                 'tags' => ['优化', '反分析'],
             ],
-            'aggressive_prune' => [
-                'kind'  => 'token',
-                'label' => '激进恒等式压缩 + 剪枝（性能优先，默认关）',
-                'desc'  => '把反 AST 恒等式（strlen(md5(\'x\'))、base64_decode/hex2bin、移位恒等…）用真实 PHP '
-                    . '求值折叠回字面量，并把恒真/恒假死分支（$x===$x、业务式恒真）剪成直达路径。'
-                    . '运行时不再重算恒等式、不再走诱饵判断，显著压低计算密集负载的开销。'
-                    . '代价：等于替破解者去混淆，会削弱反 AST 强度——故默认关闭，仅在 --aggressive-prune '
-                    . '或 --level=aggressive 时启用。严格白名单 + 真实求值双校验 + 声明保护，绝不改炸输出',
-                'params' => [],
-                'tags' => ['优化', '默认关'],
-            ],
             'funcsplit' => [
                 'kind'  => 'token',
                 'label' => '函数型代码打散',
@@ -195,6 +184,31 @@ final class LayerDescriptor
                 ],
                 'tags' => ['反分析', '控制流', '诱饵'],
             ],
+            'envgate' => [
+                'kind'  => 'token',
+                'label' => '运行时环境门闩',
+                'desc'  => '文件开头取一次运行期事实（PHP 版本、当前时间、是否装了 xdebug/dbg、'
+                    . '是否被 include 进测试脚本），据此派生一个带自增计数器的环境指纹，'
+                    . '把 echo/print 包成两路等价分支。要点：'
+                    . '① 条件不是 ($x^$x)===0 这类自消恒等式，而是"要到运行期才知道答案"的环境问题，'
+                    . '静态侧无法剪枝；② 计数器让同一表达式第二次求值结果不同于第一次，'
+                    . '迭代式常量折叠/符号执行会在第二轮自我污染；③ 两支输出逐字节相同，走哪支都正确，'
+                    . '但被 xdebug 接管时走的是另一支 —— 动态插桩跟踪到的路径在线上复现不了。'
+                    . '成本：文件级 4 次 O(1) 探针 + 每条门闩 3~4 个位运算，远低于 strlen(md5()) 积木',
+                'params' => [
+                    'max'     => ['label' => '单文件包裹上限', 'type' => self::T_INT, 'default' => 8, 'min' => 0, 'max' => 512,
+                                  'hint' => '每个文件最多把多少条 echo/print 包成两路等价分支（0=只留文件级探针）'],
+                    'version' => ['label' => 'PHP 版本识别', 'type' => self::T_BOOL, 'default' => true,
+                                  'hint' => 'PHP_VERSION_ID 参与环境指纹（运行期常量，换机器取值不同）'],
+                    'time'    => ['label' => '时间识别', 'type' => self::T_BOOL, 'default' => true,
+                                  'hint' => 'time() 参与环境指纹（文件级只取一次）'],
+                    'debug'   => ['label' => '反调试布尔', 'type' => self::T_BOOL, 'default' => true,
+                                  'hint' => '把"是否处于 xdebug/dbg 等调试环境"算成一个布尔变量并参与判断'],
+                    'include' => ['label' => 'include 探测', 'type' => self::T_BOOL, 'default' => true,
+                                  'hint' => '是否被别的脚本 include 进来（测试脚本包裹会改变分支走向）'],
+                ],
+                'tags' => ['反分析', '反调试', '环境'],
+            ],
             'logic' => [
                 'kind'  => 'token',
                 'label' => '超激进逻辑变换',
@@ -212,6 +226,8 @@ final class LayerDescriptor
                                     'hint' => '删除空白/注释压成最少行'],
                     'wild'      => ['label' => '天马行空加强', 'type' => self::T_BOOL, 'default' => false,
                                     'hint' => '字符串/整数恒等积木库扩张（双层 base64 / strrev / rot13 组合 / ord/hexdec/bindec / 缠结掩码链），逐值校验保真；ultra 默认开'],
+                    'cheap'     => ['label' => '低成本积木', 'type' => self::T_BOOL, 'default' => true,
+                                    'hint' => '数字恒等改用「十进制分块 + 位运算」（每条 1~3 条整数指令），替代 strlen(md5())；形态仍随机轮换'],
                 ],
                 'tags' => ['反分析'],
             ],

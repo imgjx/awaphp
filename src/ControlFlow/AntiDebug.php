@@ -139,12 +139,15 @@ final class AntiDebug
         } else {
             $blob = base64_encode((string) gzdeflate($guard, 9));
             if ($intensity >= 4) {
-                $k = $this->salt->deriveHex('antidebug-xor', 8);
-                $blob = base64_encode($k . $this->xorStr((string) gzdeflate($guard, 9), $k));
-                $guardLine = $lineVar . '=base64_decode(\'' . $blob . '\');'
-                    . $lineVar . '=gzinflate(substr(' . $lineVar . ',8)^substr(str_repeat(\''
-                    . $k . '\',(int)(strlen(' . $lineVar . ')/8)+2),0,strlen(' . $lineVar . ')));'
-                    . '@eval(' . $lineVar . ');';
+                // 强度 4：双重编码（外层 base64+gz 再包一层内层 base64+gz）。
+                // 曾经这里用"整串 XOR"做第四档：XOR 后是二进制，必须靠 eval 解，
+                // 而它与「VM + EVAL 壳 + token 层」组合时，会在最内层解出乱码 → parse error
+                // （只对外表现为产物白屏）。改成双层编码后解码链全是纯文本调用，
+                // 与其它强度同一条路径，强度不降（多一层 gz+base64），也不再有多壳组合风险。
+                $innerBlob = base64_encode((string) gzdeflate($guard, 9));
+                $outerBlob = base64_encode((string) gzdeflate('<?php return base64_decode(\'' . $innerBlob . '\');', 9));
+                $guardLine = $lineVar . '=@eval(gzinflate(base64_decode(gzinflate(base64_decode(\''
+                    . $outerBlob . '\')))));';
             } else {
                 $guardLine = $lineVar . "=@eval(gzinflate(base64_decode('" . $blob . "')));";
             }
