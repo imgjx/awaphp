@@ -2,7 +2,7 @@
 /**
  * 动态 ISA 回归（v1.2.0）
  *
- * 背景：v1.1.x 的 ISA 精简虽把 46 条同构 opcode 收口成 6 个参数化 opcode，
+ * 背景：v1.1.x 的 ISA 精简虽把同构 opcode 收口成 6 个参数化 opcode，
  * 但计划是【静态】的——编号写死 200–205、sub-id 是族内固定下标、族成员与
  * case 顺序固定。识别出「这是 BINOP 族」即可查表还原全部语义，ISA 结构本身
  * 成了跨产物的固定指纹。v1.2.0 改为按 salt 逐构建动态生成计划：
@@ -77,7 +77,9 @@ ok(count(array_unique($uniqueFams)) === 6, '每个编号映射回唯一语义族
 // ---- 4. sub-id：全局唯一、非连续、不固定 ----
 echo "\n-- sub-id --\n";
 $subs = array_values($desc['subIds']);
-ok(count($subs) === 46, '46 条同构 opcode 全部分配 sub-id', 'count=' . count($subs));
+$expectedSubs = 0;
+foreach (VmIsa::FAMILIES as $famMembers) { $expectedSubs += count($famMembers); }
+ok(count($subs) === $expectedSubs, '全部同构 opcode 均分配 sub-id（按 VmIsa::FAMILIES 动态求和）', 'count=' . count($subs) . ' expected=' . $expectedSubs);
 ok(count($subs) === count(array_unique($subs)), 'sub-id 全局唯一（跨族不重复）');
 ok(min($subs) >= 1 && max($subs) > 45, 'sub-id 非 0..45 连续区间', 'min=' . min($subs) . ' max=' . max($subs));
 ok($a->subId(VmOp::ADD) !== 0, 'ADD 的 sub-id 不再是固定 0');

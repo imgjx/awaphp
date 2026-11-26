@@ -54,14 +54,16 @@ final class VmIsa
         VmOp::CAST_BOOL, VmOp::CAST_ARRAY, VmOp::CAST_OBJECT,
     ];
     /**
-     * 属性 / 下标的自增自减（操作数：sub, name）。
-     * 变量的 PRE_INC/PRE_DEC/POST_INC/POST_DEC（原 80–83）已精简移除，
-     * 编译器改用基础栈指令复合序列（见 VmIncTrait::emitIncDec），故本族仅含
-     * 属性 / 下标 8 条；运行期各 case 的语义由 paramFamilyBody 的 arms 表按旧 opcode 给出。
+     * 自增自减（操作数：sub, name）。
+     * 前 8 条为属性 / 下标（PROP_* / IDX_*）。后 4 条为简单变量（VAR_*）——
+     * 变量自增必须有专用码：纯算术 ADD/SUB 无法表达 PHP 的字符串字母进位与
+     * 布尔自增语义（会 TypeError / coercion）。编译器经 VmIncTrait::emitIncDec
+     * 发射 VAR_*；运行期各 case 的语义由 paramFamilyBody 的 arms 表按旧 opcode 给出。
      */
     public const INC = [
         VmOp::PROP_POST_INC, VmOp::PROP_POST_DEC, VmOp::PROP_PRE_INC, VmOp::PROP_PRE_DEC,
-        VmOp::IDX_POST_INC,  VmOp::IDX_POST_DEC,  VmOp::IDX_PRE_INC,  VmOp::IDX_PRE_DEC];
+        VmOp::IDX_POST_INC,  VmOp::IDX_POST_DEC,  VmOp::IDX_PRE_INC,  VmOp::IDX_PRE_DEC,
+        VmOp::VAR_POST_INC,  VmOp::VAR_POST_DEC,  VmOp::VAR_PRE_INC,  VmOp::VAR_PRE_DEC];
     /** isset / empty / unset（操作数：name, nkeys） */
     public const VAR = [VmOp::ISSET_, VmOp::EMPTY_, VmOp::UNSET_];
     /** 数组构造（操作数：n）。ARRAY_MAKE=索引数组，ARRAY_KV=关联数组 */

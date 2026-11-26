@@ -68,7 +68,12 @@ final class VariableObfuscator
 
         // 框架应用：保留属性名（见 $keepProps 说明）。把全部已声明属性名加入排除集，
         // 属性声明 T_VARIABLE 与 `$this->prop` 引用都不再重命名。
-        $this->keepProps = (bool) $config->get('var_keep_props');
+        //
+        // v1.3.1：动态属性读取（`$o->$name` / `$o->{'k'}`，且不是 `$o->$m()` 动态方法调用）
+        // 的属性名在编译期不可知——若仍重命名属性，运行期字符串里保存的原名找不到被改名的
+        // 属性，会静默得到 null（实测 `$k="n"; echo $o->$k;` 输出空）。故检测到动态属性读取
+        // 时自动按「保留属性名」处理（等价 var_keep_props），只牺牲属性名混淆、保证语义正确。
+        $this->keepProps = (bool) $config->get('var_keep_props') || $this->hasDynamicPropRead($tokens);
         if ($this->keepProps) {
             foreach ($this->declaredProps as $p => $_) {
                 $this->excluded[$p] = true;
@@ -181,6 +186,50 @@ final class VariableObfuscator
 
         $this->logger->debug('变量名混淆：' . count($map) . ' 个变量被重命名');
         return $tokens;
+    }
+
+    /**
+     * 是否存在「运行期才知道属性名」的动态属性读取。
+     *
+     * 识别 `->` / `?->` 后紧跟 T_VARIABLE 的形态；若该变量后紧跟 `(`，则是
+     * 动态方法调用 `$o->$m()`（方法名不归本类重命名，不影响属性），不算动态读取。
+     * 另把 `$o->{...}` 一律视为动态（保守）。命中时上层自动保留属性名，避免
+     * 属性声明被改名、而字符串中的原名在运行期查不到 → 静默 null。
+     *
+     * @param array<int,mixed> $tokens
+     */
+    private function hasDynamicPropRead(array $tokens): bool
+    {
+        $objOps = [T_OBJECT_OPERATOR];
+        if (defined('T_NULLSAFE_OBJECT_OPERATOR')) {
+            $objOps[] = T_NULLSAFE_OBJECT_OPERATOR;
+        }
+        $n = count($tokens);
+        for ($i = 0; $i < $n; $i++) {
+            $tok = $tokens[$i];
+            if (!is_array($tok) || !in_array($tok[0], $objOps, true)) {
+                continue;
+            }
+            $j = Parser::nextSignificant($tokens, $i);
+            if ($j < 0) {
+                continue;
+            }
+            $nx = $tokens[$j];
+            if (!is_array($nx)) {
+                if ($nx === '{') { return true; }   // $o->{expr} / $o->{expr}()
+                continue;
+            }
+            if ($nx[0] !== T_VARIABLE) {
+                continue;
+            }
+            $k = Parser::nextSignificant($tokens, $j);
+            // 动态方法调用 $o->$m(...) → 属性名不受影响
+            if ($k >= 0 && !is_array($tokens[$k]) && $tokens[$k] === '(') {
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     /**

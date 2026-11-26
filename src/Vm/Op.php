@@ -85,8 +85,9 @@ final class VmOp
     public const ARRAY_PUSH  = 75; // 弹出 val、弹出 arr，执行 $arr[] = val（再压回 arr）
 
     // ---- 变量自增自减 ----
-    // 说明：PRE_INC/PRE_DEC/POST_INC/POST_DEC（原 80–83）已精简移除，
-    // 编译器改用基础栈指令的复合序列（见 VmIncTrait::emitIncDec）。
+    // 说明：PRE_INC/PRE_DEC/POST_INC/POST_DEC（原 80–83）曾精简移除、改用基础栈复合序列，
+    // 但复合序列无法表达字符串字母进位与布尔自增语义。v1.3.1 起以 VAR_*（161–164）
+    // 恢复变量专用码（见 VmIncTrait::emitIncDec 与 VmIsa::INC 族）。
     // 属性 / 下标自增族（PROP_*_INC/DEC、IDX_*_INC/DEC）因依赖对象 / 容器在栈上、
     // 干净叠加需 SWAP 原语，仍保留专用码。
     public const CALL_VAR = 90;    // 操作数: argc -> 弹出 argc 参数 + 函数名（变量值），动态调用
@@ -221,6 +222,18 @@ final class VmOp
     public const IDX_POST_DEC  = 134;
     public const IDX_PRE_INC   = 135;
     public const IDX_PRE_DEC   = 136;
+
+    // ---- 简单变量自增自减（PHP 原生 ++/-- 语义）----
+    // 早先为精简 ISA 改用 PUSH_V / PUSH_C / ADD / DUP / POP_V 复合序列，但纯算术
+    // ADD/SUB 无法表达 PHP 的两类边角语义：字符串字母进位（"a"++ → "b"）在 VM 下抛
+    // TypeError；布尔自增（true++ 仍为 true）被 coercion 成 int。二者均与原生不一致。
+    // 现恢复 4 条变量专用码，handler 直接对帧槽执行原生语义（经与属性/下标自增同源的
+    // $__inc 助手，覆盖 int/float/null/bool/string/array），逐字节对齐原生。
+    // 操作数: name(帧槽名)。加入 VmIsa::INC 族后仍会被参数化收口为 INC_OP + 随机 sub。
+    public const VAR_POST_INC  = 161;
+    public const VAR_POST_DEC  = 162;
+    public const VAR_PRE_INC   = 163;
+    public const VAR_PRE_DEC   = 164;
 
     // ---- 引用返回函数调用（function &g() 的 $r = &g()）----
     // PHP 语义：$r = &g() 把 $r 绑定到 g 内 return 的变量本身（非值拷贝），
@@ -411,6 +424,10 @@ final class VmOp
         self::IDX_POST_DEC  => ['n'],
         self::IDX_PRE_INC   => ['n'],
         self::IDX_PRE_DEC   => ['n'],
+        self::VAR_POST_INC  => ['n'],
+        self::VAR_POST_DEC  => ['n'],
+        self::VAR_PRE_INC   => ['n'],
+        self::VAR_PRE_DEC   => ['n'],
         self::CALL_RR       => ['n', 'n', 'i'],
         self::INSTANCEOF_V  => [],
         self::LSB_BIND      => ['n'],
@@ -531,6 +548,10 @@ final class VmOp
         self::IDX_POST_DEC  => 'IDX_POST_DEC',
         self::IDX_PRE_INC   => 'IDX_PRE_INC',
         self::IDX_PRE_DEC   => 'IDX_PRE_DEC',
+        self::VAR_POST_INC  => 'VAR_POST_INC',
+        self::VAR_POST_DEC  => 'VAR_POST_DEC',
+        self::VAR_PRE_INC   => 'VAR_PRE_INC',
+        self::VAR_PRE_DEC   => 'VAR_PRE_DEC',
         self::CALL_RR       => 'CALL_RR',
         self::INSTANCEOF_V  => 'INSTANCEOF_V',
         self::LSB_BIND      => 'LSB_BIND',

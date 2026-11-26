@@ -1,5 +1,46 @@
 # 更新日志（CHANGELOG）
 
+## v1.3.1 — reference-parameter callbacks, exact `++/--`, dynamic properties
+
+> **(1) Exact PHP `++`/`--` semantics.** Variable increment/decrement had been lowered to
+> `PUSH_V/PUSH_C/ADD/DUP/POP_V`; plain arithmetic cannot express PHP's string carry (`"a"++ → "b"`)
+> or boolean no-op (`true++` stays `true`). The VM raised `TypeError` on the former and coerced the
+> latter to `int`. Four variable opcodes are back (`VAR_POST/PRE_INC/DEC`, Op 161–164), joined to the
+> `INC_OP` family (sub-ids 8–11) so the dynamic-ISA plan still folds them into `INC_OP + random sub`.
+> The handlers run PHP's native `++/--` on the frame slot through the same `$__inc` helper used by
+> property/index increments. Covered by `tests/zz_incdec_probe.php` (24 required cases).
+>
+> **(2) By-reference closure parameters and callbacks.** The closure wrapper was variadic by value,
+> so `function (&$x){}` never wrote back and `array_walk($a, function (&$v){…})` silently lost
+> mutations. `MAKE_CLOSURE` now emits a dedicated `&`-parameter wrapper (copy-in/copy-out) and
+> registers the signature; `CALL_VAR` binds real references for known closure signatures. Named VM
+> functions used as `array_walk`/`usort` callbacks get the same treatment through a morph-safe
+> registry-backed wrapper (the runtime source is variable-morphed in `--vm-p8`, so the eval'd wrapper
+> keeps no references to outer variable names). Covered by `tests/v131_fixes.php`.
+>
+> **(3) Dynamic property access + variable renaming.** `$k="n"; echo $o->$k;` printed nothing because
+> the var layer renamed the declared property `n` while the string kept the original name. The var
+> layer now detects dynamic property reads (`$o->$k`, `$o->{…}`, excluding `$o->$m()` calls) and keeps
+> property names for that file (equivalent to `var_keep_props`).
+>
+> **(4) `compact()` / `get_defined_vars()`.** Both previously died with "Cannot call … dynamically".
+> The native dispatcher now resolves them against the caller frame (`compact` in tandem with the
+> string layer; `get_defined_vars` returns frame keys, which are the obfuscated names when renaming is
+> on).
+>
+> **(5) Native by-ref argument table.** `parse_str`, `mb_parse_str`, `similar_text`, `preg_replace`
+> (`$count`) and `array_walk(_recursive)` were missing from `NATIVE_REF_POS`; their by-ref arguments
+> were passed by value (lost writes, "must be passed by reference" warnings). Added.
+>
+> Test fixes: `statemachine_native` (new opaque predicate shape), `vm_module_link_native` (per-file
+> module prefix; use `explode → substr` for the transitive case), `vm_isa_dynamic` (derive the family
+> size from `VmIsa::FAMILIES`), `vm_syntax_probe` (normalize diagnostics and set the source context so
+> `__FILE__` is comparable). New `tests/v131_fixes.php` covers the fixes above.
+>
+> Still open: non-literal `case` labels at high/max/ultra fall back to the opaque payload (needs the
+> planned runtime function-registration opcode); by-ref variadic closures; method callbacks
+> (`[$o,'m']`) with reference parameters.
+
 ## v1.3.0 — runtime environment gate, dynamic `case` labels, cheaper identity blocks
 
 > **(1) Identity no longer constant-folds away: the `logic` layer now branches on the runtime environment.**

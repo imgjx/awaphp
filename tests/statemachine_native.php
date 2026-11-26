@@ -110,10 +110,14 @@ foreach ($fixtures as $fixture) {
     $hasLoop = (bool) preg_match('/for\(\s*;?\s*;?\s*\)|while\(\s*(1|true)\s*\)/i', $code);
     ok($hasLoop, "{$label} 含状态机循环头", '未找到 for(;;)/while(1)');
 
-    // 不透明谓词：($x ^ $x) === 0 形态（xor 自比较恒真）
-    // 形如 if(($a^$a)===0){...}else{...}；^ 与 === 之间隔着右括号，故不能排除 ')'
-    $hasOpaque = (bool) preg_match('/\^[^;]{0,20}===?\s*0\b/', $code);
-    ok($hasOpaque, "{$label} 含不透明谓词转移", '未找到 (x^x)===0 形态');
+    // 不透明谓词：v1.3.0 起转移条件为 ((($o|1)&1)===1)（任何整数或 1 后最低位恒 1，
+    // 静态侧还需先算出运行期派生的 $o）；旧形态 ($o^$o)===0 作为历史产物兼容保留。
+    $hasOpaque = (bool) preg_match(
+        '/(?:\(\s*)?\(\s*\(\s*\$[A-Za-z_]\w*\s*\|\s*1\s*\)\s*&\s*1\s*\)\s*===?\s*1'
+        . '|\$\w+\s*\^\s*\$\w+\s*\)?\s*===?\s*0\b/',
+        $code
+    );
+    ok($hasOpaque, "{$label} 含不透明谓词转移", '未找到 (($x|1)&1)===1 形态');
 
     // 诱饵死状态：形如  $d = <id> * 3; $s = <id>; 的自锁片段（至少存在一次 *3 赋值）
     $hasTrap = (bool) preg_match('/\*\s*3\s*;/', $code);

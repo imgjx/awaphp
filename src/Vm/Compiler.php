@@ -157,8 +157,15 @@ final class VmCompiler
         'reset' => [0], 'end' => [0], 'next' => [0], 'prev' => [0],
         'current' => [0], 'key' => [0], 'each' => [0],
         'preg_match' => [2], 'preg_match_all' => [2],
+        'preg_replace' => [4],
         'str_replace' => [3], 'str_ireplace' => [3],
         'settype' => [0],
+        // 遍历/统计类：数组参数与输出参数按引用传才能真正写回，否则运行期报
+        // "must be passed by reference" 且修改丢失（array_walk 不回调出修改、
+        // similar_text 的 $percent 恒为 0、parse_str 的 $result 为空）。
+        'array_walk' => [0], 'array_walk_recursive' => [0],
+        'similar_text' => [2],
+        'parse_str' => [1], 'mb_parse_str' => [1],
     ];
 
     public function setIncludePlan(array $plan): void

@@ -289,10 +289,10 @@ if ($stillThere === []) {
 // J) 版本号
 // ---------------------------------------------------------------------------
 $entry = (string) file_get_contents($root . '/entry.php');
-if (preg_match("/define\('OBFUSCATOR_VERSION',\s*'([^']+)'\)/", $entry, $m) && $m[1] === '1.3.0') {
-    t_ok('J 版本号 1.3.0');
+if (preg_match("/define\('OBFUSCATOR_VERSION',\s*'([^']+)'\)/", $entry, $m) && $m[1] === '1.3.1') {
+    t_ok('J 版本号 1.3.1');
 } else {
-    t_no('J 版本号', 'entry.php 中的版本不是 1.3.0');
+    t_no('J 版本号', 'entry.php 中的版本不是 1.3.1');
 }
 
 echo "\n----------------------------------------\n";

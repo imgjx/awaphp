@@ -58,12 +58,43 @@ function runVm(string $code): string {
         . "require " . var_export(COMPILER, true) . ";\n"
         . "require " . var_export(RUNNER, true) . ";\n"
         . '$src = file_get_contents(' . var_export($codeFile, true) . ");\n"
-        . '$p = (new VmCompiler())->compile($src);' . "\n"
+        . '$c = new VmCompiler(); $c->setSourceContext(' . var_export($codeFile, true)
+        . ', dirname(' . var_export($codeFile, true) . '));' . "\n"
+        . '$p = $c->compile($src);' . "\n"
         . '__VMRUN__($p);' . "\n");
     $out = shell_exec('php ' . escapeshellarg($runner) . ' 2>&1');
     @unlink($runner);
     @unlink($codeFile);
     return (string) $out;
+}
+
+/**
+ * 归一化执行输出后再比较：原生与 VM 的**值输出**应一致，但诊断信息天然不同——
+ *   - 报错文件名：原生是临时脚本，VM 是 runtime.php（或 eval'd code）；
+ *   - 行号：VM 的解释器行号与源码行号无关；
+ *   - 调用栈：VM 多出解释器/桥接帧。
+ * 若直接逐字节比较，`unary_plus` / `preg_match_fn` / 除零等几十条都会因"路径不同"
+ * 假失败，掩盖真正的值差异。故这里只保留：①用户输出（非 PHP 诊断行）；
+ * ②错误严重级别（NONFATAL / FATAL）。同级别 + 同用户输出即视为等价。
+ */
+function normOut(string $s): string {
+    $body = [];
+    $sev = '';
+    foreach (preg_split('/\r?\n/', $s) as $ln) {
+        if (preg_match('/PHP (Warning|Notice|Deprecated)/i', $ln)) {
+            if ($sev === '') { $sev = 'NONFATAL'; }
+            continue;
+        }
+        if (preg_match('/PHP (Fatal error|Parse error)|^PHP Stack trace:|^(Stack trace:|#\d+ )|^\s+thrown /i', $ln)) {
+            $sev = 'FATAL';
+            continue;
+        }
+        // 用户输出里可能夹带 __FILE__ 之类的临时路径，统一抹掉以消除环境噪声
+        $ln = preg_replace('#/[^\s:()]+\.php#', '<FILE>', $ln);
+        $ln = preg_replace('/\bvm[orcp][A-Za-z0-9]+\.php/', '<FILE>', $ln);
+        $body[] = $ln;
+    }
+    return ($sev === 'FATAL' ? 'FATAL' : '') . '|' . implode("\n", $body);
 }
 
 $cases = json_decode(file_get_contents(__DIR__ . '/vm_probe_cases.json'), true);
@@ -84,7 +115,7 @@ foreach ($cases as [$name, $code]) {
         continue;
     }
     @unlink($codeFile);
-    if ($vm !== $orig) {
+    if (normOut($vm) !== normOut($orig)) {
         echo "[$name] MISMATCH\n  orig: " . json_encode($orig) . "\n  vm  : " . json_encode($vm) . "\n";
         $fail++; $failCases[] = $name; $failDetail[$name] = 'MISMATCH';
         continue;

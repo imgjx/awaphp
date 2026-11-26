@@ -112,20 +112,20 @@ ok($got === $native, '最小化分层运行输出与原生一致', 'got=[' . sub
 
 // ============================================================= 3. 传递式内联（模块体内引用其它清单函数）
 echo "===== [3] 传递式：模块内引用其它清单函数一并内联 =====\n";
-// 让源码调用某模块，其体内再调用 substr（另一清单）：base64_enc 模块内部使用 strlen（真实内置），
-// 而 __b64_enc 不引用其它清单；改用 substr_replace 依赖 substr —— 见下方专门构造。
+// explode 模块内部依赖 substr / strpos / strlen（同属清单），故调用 explode 时这些依赖
+// 都应被传递式内联进同一产物；否则运行期会因未定义函数致命。
+// 注意 v1.3.x 起模块函数带「每文件前缀」（__ml<层><文件tag>_ + target），断言需前缀宽容。
 $transFix = $tmp . '/trans.php';
 file_put_contents($transFix, <<<'PHP'
 <?php
-$s = "abcdef";
-$r = substr_replace($s, 'XY', 1, 2);   // 调用 substr_replace（依赖 substr 模块）
-echo $r;
+$p = explode(',', 'a,b,c');
+echo count($p);
 PHP
 );
 $transNative = trim(runPhp($transFix));
 $tout = $tmp . '/trans_out.php';
 ok(build($transFix, $tout, '--level=low --salt=sln3'), '构建传递式夹具 (low)');
-// 最小分层检视：substr_replace 引用 __mod_substr，二者都应内联
+// 最小分层检视：explode 引用 __mod_substr，二者都应内联
 $tcfg = $cfg;
 $tcfg['salt'] = 'sln3';
 $tcfg['input'] = $transFix;
@@ -133,9 +133,9 @@ $tcfg['output'] = $tmp . '/trans_plain.php';
 file_put_contents($tmp . '/tcfg.json', json_encode($tcfg));
 build($transFix, $tmp . '/trans_plain.php', '--config=' . $tmp . '/tcfg.json');
 $tplain = file_get_contents($tmp . '/trans_plain.php');
-ok(strpos($tplain, 'function __mod_substr_replace') !== false, '__mod_substr_replace 已内联');
-ok(strpos($tplain, 'function __mod_substr') !== false, '依赖的 __mod_substr 传递式内联');
-ok(!preg_match('/\bsubstr_replace\s*\(/', $tplain), 'substr_replace 调用位已改写');
+ok((bool) preg_match('/function\s+\w*__mod_explode\s*\(/i', $tplain), '__mod_explode 已内联');
+ok((bool) preg_match('/function\s+\w*__mod_substr\s*\(/i', $tplain), '依赖的 __mod_substr 传递式内联');
+ok(substr_count($tplain, '__mod_explode(') >= 2, 'explode 调用位已改写');
 $got = trim(runPhp($tout));
 ok($got === $transNative, '传递式 low 输出与原生一致', 'got=[' . $got . '] native=[' . $transNative . ']');
 

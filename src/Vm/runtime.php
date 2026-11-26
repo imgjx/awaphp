@@ -39,6 +39,7 @@ function __VMRUN__($__P)
     $PUSH_GLOBALS=106;$GLOBALS_SET=107;$GLOBAL_REF=108;$DEFINE=109;$CONST_FETCH=110;
     $INCLUDE_EMBED=111;$INCLUDE_RT=112;$EVAL_STMT=113;$CALL_NATIVE=114;$PUSH_REF=115;$SCALL_VAR=117;$INSTANCEOF=118;
     $THROW=119;$EX_FINALLY_ENTER=120;$EX_FINALLY_END=121;$ARG_SPREAD=122;$ARG_NAMED=123;$MAKE_REF=124;$MAKE_REF_EL=125;$MAKE_REF_PROP=126;$MAKE_REF_APPEND=127;$PUSH_REF_EL=128;$PROP_POST_INC=129;$PROP_POST_DEC=130;$PROP_PRE_INC=131;$PROP_PRE_DEC=132;$IDX_POST_INC=133;$IDX_POST_DEC=134;$IDX_PRE_INC=135;$IDX_PRE_DEC=136;$CALL_RR=137;$INSTANCEOF_V=138;$LSB_BIND=139;$LSB_CLASS=140;
+    $VAR_POST_INC=161;$VAR_POST_DEC=162;$VAR_PRE_INC=163;$VAR_PRE_DEC=164;
     // FCC（PHP 8.1+ 一等可调用方法语法）
     $MECALL_FCC=141;$SCALL_FCC=142;$MECALL_FCC_VAR=143;$SCALL_FCC_VAR=144;$SCALL_FCC_DYN=145;
     $CLONE=150;$MAKE_CLOSURE=157;$NULLSAFE_PROPGET=151;$NULLSAFE_MECALL=152;$ARRAY_SPREAD=153;$EMPTY_ANY=154;$PROPGET_DYN=155;$PROPSET_DYN=156;
@@ -422,6 +423,31 @@ function __VMRUN__($__P)
             $seg = $__P['funcs'][$cb];
             $sp = $__P['funcParams'][$cb] ?? [];
             $fet = $__P['funcET'][$cb] ?? null;
+            // 回调含按引用参数（且非变参）：生成带 & 形参的包装器，copy-in/out 保真。
+            $__hRef = false; $__hVar = false;
+            foreach ($sp as $__pp) {
+                $__fl = (int) ($__pp[2] ?? 0);
+                if ($__fl & 1) { $__hRef = true; }
+                if ($__fl & 2) { $__hVar = true; }
+            }
+            if ($__hRef && !$__hVar) {
+                $__sig = ''; $__arr = []; $__out = '';
+                foreach ($sp as $__i => $__pp) {
+                    $__pv = '$__cba' . $__i;
+                    $__ir = ((int) ($__pp[2] ?? 0) & 1) === 1;
+                    $__sig .= ($__ir ? '&' : '') . $__pv . ' = null, ';
+                    $__arr[] = $__pv;
+                    if ($__ir) { $__out .= $__pv . ' = $__ev[' . var_export((string) $__pp[0], true) . '];'; }
+                }
+                $__sig = rtrim($__sig, ', ');
+                return eval('return function(' . $__sig . ') use (&$__exec, &$__code, &$__pad, $seg, $sp, $fet) {'
+                    . '$__ca = array_slice([' . implode(', ', $__arr) . '], 0, func_num_args());'
+                    . 'if ($sp !== []) { $__ca = $__pad($sp, $__ca); }'
+                    . '$__ev = [];'
+                    . '$__r = $__exec($__code($seg), $__ev, null, $__ca, null, false, $fet);'
+                    . $__out
+                    . 'return $__r;};');
+            }
             return function(...$a) use (&$__exec,&$__code,&$__pad,$seg,$sp,$fet) { $__ev=[]; return $__exec($__code($seg),$__ev,null,$__pad($sp,$a),null,false,$fet); };
         }
         if (is_array($cb) && count($cb)===2) {
@@ -591,7 +617,7 @@ function __VMRUN__($__P)
 
     // 原生函数间接分发（CALL_NATIVE）：natTbl 索引 → 真实函数名。
     // 高阶函数的 VM 回调参数包装为原生闭包，保留原生语义。
-    $__callFn = function($idx,$args) use ($__P,$__vmcb,$__META,&$__calledCls){
+    $__callFn = function($idx,$args,$__frm=null) use ($__P,$__vmcb,$__META,&$__calledCls){
         $nt = $__P['natTbl'] ?? [];
         $name = is_int($idx) && isset($nt[$idx]) ? (string)$nt[$idx] : (string)$idx;
         // VM 类是 stdClass + META 代理：反射类名的内建函数须经 META 还原真实类名，
@@ -618,6 +644,32 @@ function __VMRUN__($__P)
             ||$name==='uasort'||$name==='uksort'||$name==='preg_replace_callback') && isset($args[1])) {
             $args[1] = $__vmcb($args[1]);
             return call_user_func_array($name,$args);
+        }
+        // compact() / get_defined_vars() 依赖「调用方作用域」，无法经
+        // call_user_func_array 动态调用（PHP 会抛 "Cannot call ... dynamically"）。
+        // 二者改为直接读取调用方帧表（$__frm，由 CALL_NATIVE 传入）。
+        if ($name === 'compact') {
+            $__out = [];
+            foreach ($args as $__it) {
+                foreach ((array) $__it as $__vn) {
+                    if (!is_string($__vn)) { continue; }
+                    $__k = '$' . $__vn;
+                    if (is_array($__frm) && array_key_exists($__k, $__frm)) {
+                        $__out[$__vn] = $__frm[$__k];
+                    }
+                }
+            }
+            return $__out;
+        }
+        if ($name === 'get_defined_vars') {
+            $__out = [];
+            if (is_array($__frm)) {
+                foreach ($__frm as $__k => $__v) {
+                    if ($__k === '$GLOBALS' || strpos($__k, "\x01") === 0) { continue; }
+                    $__out[substr($__k, 1)] = $__v;
+                }
+            }
+            return $__out;
         }
         return call_user_func_array($name,$args);
     };
@@ -753,6 +805,10 @@ function __VMRUN__($__P)
         return $v;
     };
 
+    // 闭包签名登记表：spl_object_id(Closure) → funcParams。
+    // 用于变量函数调用 $f(...) 时按闭包真实签名绑定按引用实参（引用位传真实引用而非值快照）。
+    // 仅登记「含按引用参数且非变参」的闭包（其包装器由 MAKE_CLOSURE 用 eval 生成带 & 形参）。
+    $__CLSPECS = [];
     // 主执行器（递归执行函数/方法/表达式段）
     // 帧变量表 $__vars 以【引用】传入：INCLUDE_EMBED 的被包含段要与当前帧共享变量表
     //（PHP 包含作用域语义：被包含文件能看到 includer 的变量，其新变量返回后也对
@@ -773,7 +829,7 @@ function __VMRUN__($__P)
         $SCALL,$SPROP,$ISSET_,$EMPTY_,$UNSET_,$EXIT_,$EXIT_VOID,$PRINT_,
         $CAST_INT,$CAST_FLOAT,$CAST_STRING,$CAST_BOOL,$CAST_ARRAY,$CAST_OBJECT,
         $PUSH_GLOBALS,$GLOBALS_SET,$PHPRUN,$GLOBAL_REF,$DEFINE,$CONST_FETCH,
-        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$MAKE_CLOSURE,$YIELD,$YIELD_FROM,$GEN_HEAD,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$ARRAY_SPREAD,$EMPTY_ANY,$PROPGET_DYN,$PROPSET_DYN,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls
+        $INCLUDE_EMBED,$INCLUDE_RT,$EVAL_STMT,$CALL_NATIVE,$PUSH_REF,$SCALL_VAR,$INSTANCEOF,$BOOL_XOR,$THROW,$EX_FINALLY_ENTER,$EX_FINALLY_END,$ARG_SPREAD,$ARG_NAMED,$MAKE_REF,$MAKE_REF_EL,$MAKE_REF_PROP,$MAKE_REF_APPEND,$PUSH_REF_EL,$PROP_POST_INC,$PROP_POST_DEC,$PROP_PRE_INC,$PROP_PRE_DEC,$IDX_POST_INC,$IDX_POST_DEC,$IDX_PRE_INC,$IDX_PRE_DEC,$CALL_RR,$INSTANCEOF_V,$LSB_BIND,$LSB_CLASS,$MECALL_FCC,$SCALL_FCC,$MECALL_FCC_VAR,$SCALL_FCC_VAR,$SCALL_FCC_DYN,$CLONE,$MAKE_CLOSURE,$YIELD,$YIELD_FROM,$GEN_HEAD,$NULLSAFE_PROPGET,$NULLSAFE_MECALL,$ARRAY_SPREAD,$EMPTY_ANY,$PROPGET_DYN,$PROPSET_DYN,$VAR_POST_INC,$VAR_POST_DEC,$VAR_PRE_INC,$VAR_PRE_DEC,$__callFn,$__fcc,&$__GFRAME,&$__INCTRACK,&$__calledCls,&$__CLSPECS
     ){
         $__mcKey = substr(hash('sha256', (string)microtime(true).(string)memory_get_usage(), true), 0, 16);
 $__mcPlain=[];$__mcFlags=[];
@@ -858,11 +914,45 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                     $__csp = $__P['funcParams'][$__ins[1]] ?? [];
                     $__cet = $__P['funcET'][$__ins[1]] ?? null;
                     $__cself = $__ins[4] ? null : $__this;
-                    $__mcPush(function (...$__ca) use (&$__exec, &$__pad, $__csg, $__cap, $__csp, $__cet, $__cself) {
-                        $__cvars = $__cap;
-                        if ($__csp !== []) { $__ca = $__pad($__csp, $__ca); }
-                        return $__exec($__csg, $__cvars, $__cself, $__ca, false, $__cet);
-                    });
+                    // 含按引用参数且非变参：用 eval 生成带 & 形参的专用包装器。
+                    //   - 形参按 & 传递 → 原生调用方（array_walk 等）传入的引用可写回；
+                    //   - 调用体先把实参值交给解释器（copy-in），执行后把帧内最终值
+                    //     写回 by-ref 形参（copy-out），与命名函数的引用参数语义一致。
+                    // 变参（...$x）暂不适用，保持原可变参包装器（按值）。
+                    $__hasRef = false; $__hasVar = false;
+                    foreach ($__csp as $__cp) {
+                        $__fl = (int) ($__cp[2] ?? 0);
+                        if ($__fl & 1) { $__hasRef = true; }
+                        if ($__fl & 2) { $__hasVar = true; }
+                    }
+                    if ($__hasRef && !$__hasVar) {
+                        $__csig = ''; $__carr = []; $__cout = '';
+                        foreach ($__csp as $__ci => $__cp) {
+                            $__pv = '$__ca' . $__ci;
+                            $__isRef = ((int) ($__cp[2] ?? 0) & 1) === 1;
+                            $__csig .= ($__isRef ? '&' : '') . $__pv . ' = null, ';
+                            $__carr[] = $__pv;
+                            if ($__isRef) {
+                                $__cout .= $__pv . ' = $__cvars[' . var_export((string) $__cp[0], true) . '];';
+                            }
+                        }
+                        $__csig = rtrim($__csig, ', ');
+                        $__cl = eval('return function(' . $__csig . ') use (&$__exec, &$__pad, $__csg, $__cap, $__csp, $__cet, $__cself) {'
+                            . '$__ca = array_slice([' . implode(', ', $__carr) . '], 0, func_num_args());'
+                            . 'if ($__csp !== []) { $__ca = $__pad($__csp, $__ca); }'
+                            . '$__cvars = $__cap;'
+                            . '$__r = $__exec($__csg, $__cvars, $__cself, $__ca, false, $__cet);'
+                            . $__cout
+                            . 'return $__r;};');
+                        $__CLSPECS[spl_object_id($__cl)] = $__csp;
+                        $__mcPush($__cl);
+                    } else {
+                        $__mcPush(function (...$__ca) use (&$__exec, &$__pad, $__csg, $__cap, $__csp, $__cet, $__cself) {
+                            $__cvars = $__cap;
+                            if ($__csp !== []) { $__ca = $__pad($__csp, $__ca); }
+                            return $__exec($__csg, $__cvars, $__cself, $__ca, false, $__cet);
+                        });
+                    }
                     break;
 
                 case $YIELD:
@@ -945,8 +1035,21 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                     // 变量函数：值可能为非字符串可调用体（闭包/数组 callable，如
                     // EVAL_STMT 回退段写回的闭包）——直接调用，避免 (string) 化致命
                     if (!is_string($__fn) && is_callable($__fn)) {
-                        [$__a,] = $__bindArgs($__a, null, $__vars);
-                        $__mcPush(call_user_func_array($__fn, $__a));
+                        $__cid = is_object($__fn) ? spl_object_id($__fn) : -1;
+                        if (isset($__CLSPECS[$__cid])) {
+                            // 已知闭包签名（含按引用参数）：引用位绑定调用方帧变量的真实引用，
+                            // 由 MAKE_CLOSURE 生成的 & 形参包装器直接写回。
+                            [$__a, $__refs] = $__bindArgs($__a, $__CLSPECS[$__cid], $__vars);
+                            foreach ($__refs as $__ri => $__rm) {
+                                $__cn = $__rm[0];
+                                if (!array_key_exists($__cn, $__vars)) { $__vars[$__cn] = null; }
+                                $__a[$__ri] = &$__vars[$__cn];
+                            }
+                            $__mcPush(call_user_func_array($__fn, $__a));
+                        } else {
+                            [$__a,] = $__bindArgs($__a, null, $__vars);
+                            $__mcPush(call_user_func_array($__fn, $__a));
+                        }
                     } else {
                         $__mcPush($__callFunc((string)$__fn, $__a, $__vars));
                     }
@@ -1545,7 +1648,7 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                     // 实参绑定：展平解包 + 命名重排 + refMask 位真实引用绑定
                     $__a = $__bindNative($__a, $__ins[3] ?? 0, $__vars);
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__vars)) { $__GFRAME[$k] = $__vars[$k]; } } }
-                    $__mcPush($__callFn((int) $__ins[1], $__a));
+                    $__mcPush($__callFn((int) $__ins[1], $__a, $__vars));
                     if ($__isG && !empty($__P['globals'])) { foreach ($__P['globals'] as $g) { $k='$'.$g; if (array_key_exists($k,$__GFRAME)) { $__vars[$k] = $__GFRAME[$k]; } } }
                     break;
                 case $ARRAY_MAKE:
@@ -1662,6 +1765,22 @@ $__mcPeek=function()use(&$__stack,&$__mcFlags,&$__mcDec,&$__mcPlain){$__c=count(
                     $__fn = $__ins[1] ?? '';
                     if ($__fn !== '') { $__vars[$__fn] = $__a; }
                     $__mcPush(($__op === $IDX_POST_INC || $__op === $IDX_POST_DEC) ? $__old : $__new);
+                    break;
+                // —— 简单变量自增自减（$x++ / --$x 等）——
+                // 直接对帧槽执行 PHP 原生 ++/--（经 $__inc：int/float/null/bool/
+                // string 含字母进位/array 抛 TypeError），与原生逐字节一致。
+                // 引用别名经帧表引用自然穿透（$__vars[$n] 本身是 reference）。
+                case $VAR_POST_INC: case $VAR_POST_DEC:
+                    $__vn = $__ins[1];
+                    $__old = $__vars[$__vn] ?? null;
+                    $__vars[$__vn] = $__inc($__old, $__op === $VAR_POST_DEC ? -1 : 1);
+                    $__mcPush($__old);
+                    break;
+                case $VAR_PRE_INC: case $VAR_PRE_DEC:
+                    $__vn = $__ins[1];
+                    $__new = $__inc($__vars[$__vn] ?? null, $__op === $VAR_PRE_DEC ? -1 : 1);
+                    $__vars[$__vn] = $__new;
+                    $__mcPush($__new);
                     break;
                 default:
                     break 2; // 未知 opcode：终止
